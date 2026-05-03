@@ -182,22 +182,34 @@ def _commits_between(worktree: Path, before: str, after: str) -> int:
     return int(proc.stdout.strip() or "0")
 
 
-def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None, list[str]]:
-    """Run claude in the worktree to fix CI failures.
+def _invoke(
+    worktree: Path,
+    prompt: str,
+    *,
+    mode: str,
+    expect_merge_commit: bool,
+) -> tuple[bool, str | None, list[str]]:
+    """Run claude in ``worktree`` and validate that its output meets the contract.
+
+    Shared by ``invoke_fixer`` and ``invoke_merge_resolver``. The two modes
+    differ only in two extra checks gated on ``expect_merge_commit``:
+    a leftover mid-merge state is rejected, and the new commit (if any)
+    must have exactly two parents.
 
     Returns ``(ran_cleanly, new_sha, transcript)``:
     - ``ran_cleanly`` is False if claude exited non-zero, left a dirty
-      working tree, made multiple commits, or violated the commit-message
-      contract -- the harness should halt in any of those cases.
-    - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if claude made
-      one, else None. ``(True, None, ...)`` means "claude judged it
-      spurious; advance the PR".
-    - ``transcript`` is the streamed event lines (same as the log) so the
-      shepherd can include claude's reasoning in a handoff comment.
+      working tree (or unfinished merge), made multiple commits, or
+      violated the commit-message contract -- the harness should halt
+      in any of those cases.
+    - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if claude
+      made one, else None. ``(True, None, ...)`` means "claude judged
+      it a no-op" (spurious failures, or merge aborted).
+    - ``transcript`` is the streamed event lines (same as the log) so
+      the shepherd can include claude's reasoning in a handoff comment.
     """
     before = head_sha(worktree)
     name, email = repo_mod.get_mergedog_identity()
-    log("invoking claude (fix-CI mode)...")
+    log(f"invoking claude ({mode} mode)...")
     rc, transcript = _run_claude_streaming(
         prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email)
     )
@@ -205,50 +217,7 @@ def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None, list[st
         log(f"claude exited with code {rc}")
         return False, None, transcript
 
-    if not _is_clean(worktree):
-        log("claude left an uncommitted working tree; refusing to push")
-        return False, None, transcript
-
-    after = head_sha(worktree)
-    if after == before:
-        log("claude made no commit (treating as: failures are spurious / no-op)")
-        return True, None, transcript
-
-    n = _commits_between(worktree, before, after)
-    if n != 1:
-        log(f"claude produced {n} commits but mergedog only allows one per pass")
-        return False, None, transcript
-
-    subject = head_subject(worktree)
-    if not subject.startswith(MERGEDOG_PREFIX):
-        log(
-            f"claude produced a commit ({after[:12]}) but the subject does "
-            f"not start with {MERGEDOG_PREFIX!r}: {subject!r}"
-        )
-        return False, None, transcript
-
-    log(f"claude produced fix commit {after[:12]}: {subject}")
-    return True, after, transcript
-
-
-def invoke_merge_resolver(
-    worktree: Path, prompt: str
-) -> tuple[bool, str | None, list[str]]:
-    """Run claude in a mid-merge worktree to resolve conflicts.
-
-    Returns ``(ran_cleanly, new_sha, transcript)``: see ``invoke_fixer``.
-    """
-    before = head_sha(worktree)
-    name, email = repo_mod.get_mergedog_identity()
-    log("invoking claude (merge-resolver mode)...")
-    rc, transcript = _run_claude_streaming(
-        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email)
-    )
-    if rc != 0:
-        log(f"claude exited with code {rc}")
-        return False, None, transcript
-
-    if repo_mod.is_merge_in_progress(worktree):
+    if expect_merge_commit and repo_mod.is_merge_in_progress(worktree):
         log("claude exited but the merge is still in progress; refusing to push")
         return False, None, transcript
 
@@ -258,16 +227,23 @@ def invoke_merge_resolver(
 
     after = head_sha(worktree)
     if after == before:
-        # Claude aborted the merge.
-        log("claude aborted the merge without committing")
+        if expect_merge_commit:
+            log("claude aborted the merge without committing")
+        else:
+            log("claude made no commit (treating as: failures are spurious / no-op)")
         return True, None, transcript
 
     n = _commits_between(worktree, before, after)
     if n != 1:
-        log(f"claude produced {n} commits but a merge resolution should be exactly one")
+        expected = (
+            "a merge resolution should be exactly one"
+            if expect_merge_commit
+            else "mergedog only allows one per pass"
+        )
+        log(f"claude produced {n} commits but {expected}")
         return False, None, transcript
 
-    if repo_mod.parent_count(worktree, after) != 2:
+    if expect_merge_commit and repo_mod.parent_count(worktree, after) != 2:
         log(
             f"claude's commit {after[:12]} is not a merge commit "
             f"(expected 2 parents)"
@@ -277,10 +253,25 @@ def invoke_merge_resolver(
     subject = head_subject(worktree)
     if not subject.startswith(MERGEDOG_PREFIX):
         log(
-            f"claude's merge commit {after[:12]} subject does not start "
+            f"claude's commit {after[:12]} subject does not start "
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
         )
         return False, None, transcript
 
-    log(f"claude resolved the merge: {after[:12]}: {subject}")
+    if expect_merge_commit:
+        log(f"claude resolved the merge: {after[:12]}: {subject}")
+    else:
+        log(f"claude produced fix commit {after[:12]}: {subject}")
     return True, after, transcript
+
+
+def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None, list[str]]:
+    """Run claude in the worktree to fix CI failures."""
+    return _invoke(worktree, prompt, mode="fix-CI", expect_merge_commit=False)
+
+
+def invoke_merge_resolver(
+    worktree: Path, prompt: str
+) -> tuple[bool, str | None, list[str]]:
+    """Run claude in a mid-merge worktree to resolve conflicts."""
+    return _invoke(worktree, prompt, mode="merge-resolver", expect_merge_commit=True)

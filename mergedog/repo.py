@@ -5,10 +5,12 @@ Per-PR work happens in disposable worktrees under ``~/.mergedog/worktrees/<pr>``
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import shutil
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from mergedog.log import die, log
 from mergedog.paths import REPO_DIR, REPO_SSH_URL, ensure_dirs, worktree_dir
@@ -118,8 +120,32 @@ def ensure_clone() -> None:
         )
 
 
+@contextlib.contextmanager
+def _fetch_lock() -> Iterator[None]:
+    """Serialize fetches across concurrent shepherds.
+
+    The mux launches shepherds in parallel and they all hit ``fetch_origin``
+    on the same ``~/.mergedog/repo`` near-simultaneously. ``git fetch`` takes
+    per-ref locks (``refs/.../X.lock``) and a colliding fetch fails outright
+    with exit 1 rather than waiting -- which we then surface as a halt.
+    A coarse OS-level file lock here makes the second-and-Nth shepherds
+    queue up; once the first fetch lands the rest are near-no-ops.
+    """
+    REPO_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = REPO_DIR / ".mergedog-fetch.lock"
+    with open(lock_path, "w") as fp:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+
+
 def fetch_origin() -> None:
-    run(["git", "fetch", "--prune", "origin"], cwd=REPO_DIR, capture=False, loud=True)
+    # ``capture=True`` (the default) so any future failure surfaces git's
+    # stderr through ``process.run``'s error path instead of bare ``rc=1``.
+    with _fetch_lock():
+        run(["git", "fetch", "--prune", "origin"], cwd=REPO_DIR, loud=True)
 
 
 def add_fork_remote(name: str, ssh_url: str) -> None:
@@ -175,7 +201,12 @@ def wipe_worktree(pr: int) -> None:
     run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
 
 
-def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Path:
+def ensure_worktree(
+    pr: int,
+    sha: str,
+    fork_remote: str | None = None,
+    fork_branch: str | None = None,
+) -> Path:
     """Get a worktree for ``pr`` at ``sha`` -- reusing the existing one when possible.
 
     Decision tree:
@@ -185,6 +216,11 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
       - Worktree exists but is dirty / mid-merge / on a different SHA: abort
         any merge and ``git reset --hard <sha>`` rather than re-checking out
         the entire 22k-file tree.
+
+    When ``fork_remote`` and ``fork_branch`` are given, the local branch is
+    set to track them so a bare ``git push`` from the worktree Just Works.
+    For ghstack PRs we leave the upstream unset -- ``ghstack submit`` works
+    from commit metadata, not from a tracked branch.
     """
     wt = worktree_dir(pr)
     wt.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +238,7 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
     else:
         head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         merge_in_progress = is_merge_in_progress(wt)
+        rebase_in_progress = is_rebase_in_progress(wt)
         clean = run(["git", "status", "--porcelain"], cwd=wt).stdout.strip() == ""
         current_branch = run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt
@@ -209,6 +246,7 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
         if (
             head == sha
             and not merge_in_progress
+            and not rebase_in_progress
             and clean
             and current_branch == local_branch
         ):
@@ -217,10 +255,13 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
             log(
                 f"resetting worktree at {wt} -> {sha[:12]} "
                 f"(was {head[:12]} on {current_branch!r}, "
-                f"clean={clean}, merge_in_progress={merge_in_progress})"
+                f"clean={clean}, merge_in_progress={merge_in_progress}, "
+                f"rebase_in_progress={rebase_in_progress})"
             )
             if merge_in_progress:
                 run(["git", "merge", "--abort"], cwd=wt, check=False, loud=True)
+            if rebase_in_progress:
+                run(["git", "rebase", "--abort"], cwd=wt, check=False, loud=True)
             if current_branch != local_branch:
                 run(
                     ["git", "checkout", "-B", local_branch],
@@ -229,19 +270,20 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
                 )
             run(["git", "reset", "--hard", sha], cwd=wt, loud=True)
 
-    # Idempotent; safe even when reusing. Goes through the retry helper
-    # because ``--set-upstream-to`` writes to ``.git/config`` and races
-    # with concurrent shepherds spawned by the mux.
-    _git_write_with_retry(
-        [
-            "git",
-            "branch",
-            f"--set-upstream-to={fork_remote}/{fork_branch}",
-            local_branch,
-        ],
-        cwd=wt,
-        loud=True,
-    )
+    if fork_remote and fork_branch:
+        # Idempotent; safe even when reusing. Goes through the retry helper
+        # because ``--set-upstream-to`` writes to ``.git/config`` and races
+        # with concurrent shepherds spawned by the mux.
+        _git_write_with_retry(
+            [
+                "git",
+                "branch",
+                f"--set-upstream-to={fork_remote}/{fork_branch}",
+                local_branch,
+            ],
+            cwd=wt,
+            loud=True,
+        )
     return wt
 
 
@@ -272,6 +314,13 @@ def head_subject(worktree: Path) -> str:
     return run(["git", "log", "-1", "--pretty=%s"], cwd=worktree).stdout.strip()
 
 
+def commit_message(worktree: Path, ref: str = "HEAD") -> str:
+    """Return the full commit message (subject + body) of ``ref``."""
+    return run(
+        ["git", "log", "-1", "--pretty=%B", ref], cwd=worktree
+    ).stdout.rstrip("\n")
+
+
 def merge_base_age_seconds(worktree: Path, ref: str = "origin/main") -> int:
     """Return the age in seconds of the merge-base between HEAD and ``ref``.
 
@@ -282,9 +331,7 @@ def merge_base_age_seconds(worktree: Path, ref: str = "origin/main") -> int:
     """
     base = run(["git", "merge-base", "HEAD", ref], cwd=worktree).stdout.strip()
     ts = run(["git", "show", "-s", "--format=%ct", base], cwd=worktree).stdout.strip()
-    import time as _time
-
-    return int(_time.time()) - int(ts)
+    return int(time.time()) - int(ts)
 
 
 MERGE_COMMIT_SUBJECT = "[MERGEDOG] Merge main into PR branch"
@@ -369,3 +416,128 @@ def parent_count(worktree: Path, sha: str) -> int:
     ).stdout.strip()
     # "<sha> <parent1> [<parent2> ...]"
     return max(0, len(out.split()) - 1)
+
+
+def head_orig_ref(head_ref: str) -> str:
+    """Map a ghstack head ref to its companion orig ref.
+
+    Mirrors what ``ghstack checkout`` does. ``gh/foo/123/head`` → ``gh/foo/123/orig``.
+    """
+    if not head_ref.endswith("/head"):
+        die(f"head ref {head_ref!r} doesn't look like a ghstack ref")
+    return head_ref[: -len("/head")] + "/orig"
+
+
+def fetch_ghstack_orig(head_ref: str) -> str:
+    """Fetch the orig branch for a ghstack PR; return its SHA.
+
+    The orig branch (``gh/<user>/<n>/orig``) lives in the base repo (origin)
+    next to the synthetic ``/head``. It's the "real" commit ghstack manages;
+    we modify and re-submit it.
+    """
+    orig_ref = head_orig_ref(head_ref)
+    run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"+refs/heads/{orig_ref}:refs/remotes/origin/{orig_ref}",
+        ],
+        cwd=REPO_DIR,
+        capture=False,
+        loud=True,
+    )
+    return run(
+        ["git", "rev-parse", f"refs/remotes/origin/{orig_ref}"],
+        cwd=REPO_DIR,
+    ).stdout.strip()
+
+
+def squash_into_parent(worktree: Path) -> str:
+    """Fold HEAD into HEAD~1 in-place.
+
+    The parent's commit message is preserved; the tree becomes HEAD's tree.
+    Returns the SHA of the new amended commit. Used by the ghstack fix-CI
+    flow so claude's ``[MERGEDOG]`` fix becomes part of the contributor's
+    original commit (which ghstack then re-uploads as a synthetic head).
+    """
+    name, email = get_mergedog_identity()
+    run(["git", "reset", "--soft", "HEAD~1"], cwd=worktree, capture=False, loud=True)
+    run(
+        ["git", "commit", "--amend", "--no-edit"],
+        cwd=worktree,
+        env_extra=author_env(name, email),
+        capture=False,
+        loud=True,
+    )
+    return head_sha(worktree)
+
+
+def ghstack_submit(worktree: Path, message: str) -> None:
+    """Run ``ghstack submit --no-stack -m <message> HEAD`` in the worktree.
+
+    ``--no-stack`` so we re-upload only this PR's commit; if it's part of a
+    larger stack the other commits are unchanged and shouldn't be touched.
+    """
+    run(
+        ["ghstack", "submit", "--no-stack", "-m", message, "HEAD"],
+        cwd=worktree,
+        capture=False,
+        loud=True,
+    )
+
+
+REBASE_BODY_HINT = "Rebase onto origin/main to refresh stale base."
+
+
+def attempt_rebase_main(worktree: Path, ref: str = "origin/main") -> tuple[str, str | None]:
+    """Try to rebase HEAD onto ``ref``.
+
+    Returns ``(status, sha)`` where status is one of:
+      - ``"noop"``    : already on top of ``ref``; HEAD unchanged.
+      - ``"ok"``      : rebase succeeded cleanly; ``sha`` is the new HEAD.
+      - ``"conflict"``: rebase is in progress with conflicts. The worktree
+                        is left in that state for claude to resolve.
+    """
+    name, email = get_mergedog_identity()
+    before = head_sha(worktree)
+    proc = run(
+        ["git", "rebase", ref],
+        cwd=worktree,
+        check=False,
+        env_extra=author_env(name, email),
+        loud=True,
+    )
+    if proc.returncode == 0:
+        after = head_sha(worktree)
+        if after == before:
+            return "noop", None
+        return "ok", after
+    if is_rebase_in_progress(worktree):
+        return "conflict", None
+    raise RuntimeError(
+        f"git rebase {ref} failed for a non-conflict reason:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def is_rebase_in_progress(worktree: Path) -> bool:
+    """True if a rebase is mid-flight in this worktree.
+
+    git stores rebase state in either ``rebase-merge`` (interactive / merge
+    backend) or ``rebase-apply`` (am backend) under ``.git`` — we have to
+    ask git for the directory rather than guess at the layout.
+    """
+    git_dir = run(
+        ["git", "rev-parse", "--git-dir"], cwd=worktree
+    ).stdout.strip()
+    git_dir_path = Path(git_dir)
+    if not git_dir_path.is_absolute():
+        git_dir_path = worktree / git_dir_path
+    return (git_dir_path / "rebase-merge").exists() or (
+        git_dir_path / "rebase-apply"
+    ).exists()
+
+
+def abort_rebase(worktree: Path) -> None:
+    run(["git", "rebase", "--abort"], cwd=worktree, check=False, loud=True)

@@ -72,7 +72,7 @@ Hard constraints:
     re-invoke you on the next CI cycle.
   - Stay inside this checkout for any modifications. You may *read* the \
     sidecar file referenced below, but do not modify anything outside the \
-    checkout.
+    checkout.{ghstack_hint}
 
 PR context:
 
@@ -91,12 +91,23 @@ only looks at ``git log``.
 """
 
 
+_GHSTACK_HINT = """
+
+  - This is a ghstack PR. Ignore any ``CLAUDE.md`` guidance about using \
+    ``ghstack``, ``ghstack submit``, ``ghstack land``, or ``arc`` to land \
+    or update the change -- the harness handles all ghstack mechanics for \
+    you. Make a plain ``git commit`` (with the ``[MERGEDOG]`` subject \
+    described above) on the current branch and stop. Do NOT run \
+    ``ghstack`` or any of its subcommands."""
+
+
 def render_fix_prompt(
     *,
     url: str,
     branch: str,
     context_path: str,
     failed_jobs: list[tuple[str, str]],
+    is_ghstack: bool = False,
 ) -> str:
     sections = []
     for name, log_text in failed_jobs:
@@ -106,6 +117,7 @@ def render_fix_prompt(
         branch=branch,
         untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
         failed_jobs="\n".join(sections) if sections else "(no logs available)",
+        ghstack_hint=_GHSTACK_HINT if is_ghstack else "",
     )
 
 

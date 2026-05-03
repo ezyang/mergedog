@@ -39,7 +39,6 @@ from mergedog.paths import (
     context_file,
     ensure_dirs,
     state_file,
-    worktree_dir,
 )
 from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE
 

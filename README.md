@@ -39,7 +39,10 @@ Here is the workflow we implemetn:
 
 3. We wait for a human to review the mergedog and manually trigger a pytorchbot merge.
 
-mergedog does NOT work on ghstack diff stacks.
+mergedog supports both regular fork PRs and ghstack PRs. For ghstack, fixes
+are amended into the contributor's orig commit and re-uploaded with
+`ghstack submit -m`; staleness is resolved by rebasing onto origin/main
+rather than by merging.
 
 mergedog is implemented as a traditional software harness that shells into Claude/Codex to
 actually issue the fixes.

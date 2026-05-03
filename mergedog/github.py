@@ -188,6 +188,19 @@ def has_label(pr_data: dict, label: str) -> bool:
     return any(l.get("name") == label for l in pr_data.get("labels", []))
 
 
+def has_mergedog_handoff_comment(pr: int) -> bool:
+    """True if any existing PR comment carries the mergedog handoff marker.
+
+    Lets the shepherd be restart-safe: after a ctrl-c & rerun, we won't
+    re-post the same handoff. The marker is the ``<!-- mergedog:handoff ...``
+    HTML comment embedded by ``_format_handoff_comment``.
+    """
+    for c in get_pr_comments(pr):
+        if "<!-- mergedog:handoff" in (c.get("body") or ""):
+            return True
+    return False
+
+
 def get_commit_subject(sha: str) -> str:
     data = _gh_json(["api", f"repos/{REPO}/commits/{sha}"])
     msg = data.get("commit", {}).get("message", "")

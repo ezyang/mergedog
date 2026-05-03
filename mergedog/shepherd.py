@@ -99,6 +99,9 @@ def _format_handoff_comment(pr_data: dict, sessions: list["_ClaudeSession"]) -> 
 def _post_handoff_comment(
     pr: int, pr_data: dict, sessions: list["_ClaudeSession"]
 ) -> None:
+    if github.has_mergedog_handoff_comment(pr):
+        log(f"handoff comment already present on PR #{pr}; not re-posting")
+        return
     body = _format_handoff_comment(pr_data, sessions)
     try:
         github.post_pr_comment(pr, body)
