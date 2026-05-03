@@ -159,7 +159,7 @@ class MuxApp(App):
         for pr in list(self.procs):
             p = self.procs[pr][0]
             if p.poll() == EXIT_PR_NOT_ACTIONABLE:
-                self._prune(pr)
+                self._prune_pr(pr)
 
         table = self.query_one(DataTable)
         table.clear()
@@ -183,7 +183,7 @@ class MuxApp(App):
             wt_cell = Text(str(wt_path), style=f"link file://{wt_path}")
             table.add_row(pr_cell, state, wt_cell, last)
 
-    def _prune(self, pr: int) -> None:
+    def _prune_pr(self, pr: int) -> None:
         """Forget a shepherd and clean up its on-disk state.
 
         Used when the shepherd exits with ``EXIT_PR_NOT_ACTIONABLE`` (PR
