@@ -25,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Input
 
@@ -132,8 +133,15 @@ class MuxApp(App):
             else:
                 state = f"HALTED rc={rc}"
             last = _last_log_line(log_path)[:200]
-            wt = str(worktree_dir(pr))
-            table.add_row(str(pr), state, wt, last)
+            wt_path = worktree_dir(pr)
+            # OSC-8 hyperlinks: most modern terminals (iTerm2, kitty,
+            # vscode, ghostty, …) make these cmd/ctrl-clickable.
+            pr_cell = Text(
+                str(pr),
+                style=f"link https://github.com/pytorch/pytorch/pull/{pr}",
+            )
+            wt_cell = Text(str(wt_path), style=f"link file://{wt_path}")
+            table.add_row(pr_cell, state, wt_cell, last)
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         line = message.value.strip()
