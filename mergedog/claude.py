@@ -17,8 +17,15 @@ def _is_clean(worktree: Path) -> bool:
 
 
 def _commits_between(worktree: Path, before: str, after: str) -> int:
+    """How many commits did claude add on top of ``before`` to reach ``after``?
+
+    Uses ``--first-parent`` so that a merge commit counts as a single
+    commit (the merge itself), rather than ``1 + everything brought in
+    from the merged side``. Without this a merge resolution that pulls
+    in months of main reads as thousands of commits.
+    """
     proc = run(
-        ["git", "rev-list", "--count", f"{before}..{after}"],
+        ["git", "rev-list", "--count", "--first-parent", f"{before}..{after}"],
         cwd=worktree,
     )
     return int(proc.stdout.strip() or "0")
