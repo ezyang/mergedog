@@ -678,12 +678,6 @@ def shepherd(
                         f"commits and CI is still failing; halting for human "
                         f"intervention"
                     )
-                # If trunk is in a SEV, the failures are almost certainly
-                # not the PR's fault. Wait it out before burning claude
-                # budget on red herrings (and potentially pushing a "fix").
-                _wait_for_no_active_sev(
-                    "invoking claude on CI failures", ignore_sev=ignore_sev
-                )
                 failed = github.get_failed_job_logs(pr)
                 ctx_path = _refresh_context_file(pr_data)
                 prompt = render_fix_prompt(
