@@ -19,6 +19,12 @@ from mergedog.state import TrustDB
 POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
 PUSH_VISIBILITY_TIMEOUT_SEC = 90
+# How long ``(status, check_count)`` must hold steady before we trust a
+# "passed" verdict. Right after a push, GitHub registers the workflow runs
+# over a span of seconds; without this window we'd see "1/1 done -> passed"
+# before the other 10+ required workflows even exist, and slap the trunk
+# label on prematurely.
+CI_STABILITY_WINDOW_SEC = 60
 TRUNK_LABEL = "ciflow/trunk"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
 DEFAULT_MAX_BASE_AGE_DAYS = 7
@@ -368,6 +374,11 @@ def shepherd(
     fix_commits_pushed = 0
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
     last_status: str | None = None
+    # (status, check_count) we last observed. Becomes the anchor for the
+    # stability window: when it changes (new check arrives, status flips),
+    # we reset the timer.
+    stable_observation: tuple[str, int] | None = None
+    stable_since: float = 0.0
 
     while True:
         # 1. Verify the PR head is still trusted.
@@ -382,6 +393,7 @@ def shepherd(
         # 2. Approve any approval-pending workflow runs.
         approved = _approve_pending_runs(current, run_state_cache)
         if approved:
+            stable_observation = None  # newly-approved runs invalidate stability
             time.sleep(APPROVAL_SETTLE_SEC)
             continue
 
@@ -395,6 +407,14 @@ def shepherd(
         if summary != last_status:
             log(f"CI status -> {summary}")
             last_status = summary
+
+        # Track stability: any change in (status, check_count) restarts the
+        # quiescence timer. We only gate on it for the "passed" verdict, so
+        # genuine pending/failed states proceed without artificial delay.
+        observation = (status, len(checks))
+        if stable_observation != observation:
+            stable_observation = observation
+            stable_since = time.time()
 
         if status == "pending":
             time.sleep(POLL_INTERVAL_SEC)
@@ -436,7 +456,22 @@ def shepherd(
                 last_status = None
                 continue
 
-        # Either CI passed, or claude said "spurious". Advance.
+        # CI is "passed". Require it to have been passed continuously for
+        # CI_STABILITY_WINDOW_SEC before we act, so that a freshly-pushed
+        # commit can't trick us by reporting "1/1 done" while the rest of
+        # the required workflows are still being created.
+        if status == "passed":
+            elapsed = time.time() - stable_since
+            if elapsed < CI_STABILITY_WINDOW_SEC:
+                remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
+                log(
+                    f"CI passed; waiting {remaining}s for stability "
+                    f"(no new checks should appear)"
+                )
+                time.sleep(min(POLL_INTERVAL_SEC, remaining))
+                continue
+
+        # Either CI passed (and is stable), or claude said "spurious". Advance.
         if not main_merged:
             new_sha = _maybe_merge_main(
                 worktree,
