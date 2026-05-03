@@ -161,7 +161,7 @@ def _worktree_alive(wt: Path) -> bool:
     return proc.returncode == 0
 
 
-def _wipe_worktree(pr: int) -> None:
+def wipe_worktree(pr: int) -> None:
     wt = worktree_dir(pr)
     if wt.exists():
         run(
@@ -191,7 +191,7 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
     local_branch = f"mergedog/{pr}"
 
     if not _worktree_alive(wt):
-        _wipe_worktree(pr)
+        wipe_worktree(pr)
         run(["git", "branch", "-D", local_branch], cwd=REPO_DIR, check=False)
         run(
             ["git", "worktree", "add", "-B", local_branch, str(wt), sha],

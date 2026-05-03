@@ -110,6 +110,10 @@ def _post_handoff_comment(
 POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
 PUSH_VISIBILITY_TIMEOUT_SEC = 90
+# Distinct exit code shepherds use when the PR is no longer actionable
+# (closed, merged, etc.). The mux watches for this and auto-prunes the
+# session and on-disk state -- there's no point retrying.
+EXIT_PR_NOT_ACTIONABLE = 42
 # How long ``(status, check_count)`` must hold steady before we trust a
 # "passed" verdict. Right after a push, GitHub registers the workflow runs
 # over a span of seconds; without this window we'd see "1/1 done -> passed"
@@ -132,8 +136,14 @@ def _is_ghstack(pr_data: dict) -> bool:
 
 
 def _validate_pr(pr_data: dict) -> None:
-    if pr_data.get("state") != "OPEN":
-        die(f"PR is not open (state={pr_data.get('state')})")
+    state = pr_data.get("state")
+    if state != "OPEN":
+        # Closed or merged: nothing to do here ever again. Use the prune
+        # exit code so the mux removes us automatically.
+        die(
+            f"PR is not open (state={state}); pruning local shepherd state",
+            code=EXIT_PR_NOT_ACTIONABLE,
+        )
     if pr_data.get("isDraft"):
         die("PR is a draft")
     if _is_ghstack(pr_data):

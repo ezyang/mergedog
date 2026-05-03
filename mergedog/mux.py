@@ -31,8 +31,17 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Input
 
+from mergedog import repo as repo_mod
 from mergedog.cli import _parse_pr
-from mergedog.paths import ROOT, STATE_DIR, ensure_dirs, worktree_dir
+from mergedog.paths import (
+    ROOT,
+    STATE_DIR,
+    context_file,
+    ensure_dirs,
+    state_file,
+    worktree_dir,
+)
+from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE
 
 LOG_DIR = ROOT / "logs"
 
@@ -143,6 +152,15 @@ class MuxApp(App):
         self.notify(f"[{pr}] terminated")
 
     def _refresh(self) -> None:
+        # Detect any shepherds that exited with the "PR not actionable"
+        # code and prune them before redrawing the table. We do this here
+        # (in the periodic refresh) rather than only on user input so the
+        # auto-prune happens even if the operator is just watching.
+        for pr in list(self.procs):
+            p = self.procs[pr][0]
+            if p.poll() == EXIT_PR_NOT_ACTIONABLE:
+                self._prune(pr)
+
         table = self.query_one(DataTable)
         table.clear()
         for pr in sorted(self.procs):
@@ -164,6 +182,31 @@ class MuxApp(App):
             )
             wt_cell = Text(str(wt_path), style=f"link file://{wt_path}")
             table.add_row(pr_cell, state, wt_cell, last)
+
+    def _prune(self, pr: int) -> None:
+        """Forget a shepherd and clean up its on-disk state.
+
+        Used when the shepherd exits with ``EXIT_PR_NOT_ACTIONABLE`` (PR
+        closed/merged) -- there's no recovery, no reason to keep the
+        worktree, trust DB, or context file around. The log file is kept
+        so the operator can audit why the shepherd quit.
+        """
+        entry = self.procs.pop(pr, None)
+        if entry is not None:
+            try:
+                entry[1].close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        for path in (state_file(pr), context_file(pr)):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            repo_mod.wipe_worktree(pr)
+        except Exception:
+            pass
+        self.notify(f"[{pr}] pruned (PR no longer open)")
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         line = message.value.strip()
