@@ -201,8 +201,8 @@ def _watch_post_handoff(pr: int, handoff_iso: str) -> str:
                 log("pytorchmergebot picked up the merge; waiting for outcome")
             else:
                 log(
-                    "watching for the PR to be merged or closed; the "
-                    "shepherd will auto-prune once it's no longer open."
+                    "handed off; awaiting `@pytorchbot merge`. Will recover "
+                    "on a Merge failed reply, or auto-prune on close/merge."
                 )
             last_state = new_state
         time.sleep(POLL_INTERVAL_SEC)
@@ -795,10 +795,13 @@ def shepherd(
             log("ALL CI GREEN.")
             break  # leave the inner loop, post handoff and watch
 
-        handoff_iso = _utc_now_iso()
         # Recovery cycles re-post so the new session blocks (merge-main
         # commit, follow-up claude judgments) are visible on the PR.
         _post_handoff_comment(pr, pr_data, sessions, force=cycle > 1)
+        # Anchor the watch loop on the actual handoff comment timestamp,
+        # not "now": on restart this lets us notice a "Merge failed" that
+        # already happened between the last handoff and our restart.
+        handoff_iso = github.latest_mergedog_handoff_iso(pr) or _utc_now_iso()
         log(
             f"Hand off to a human reviewer; have them comment "
             f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."

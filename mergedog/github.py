@@ -224,10 +224,24 @@ def has_mergedog_handoff_comment(pr: int) -> bool:
     re-post the same handoff. The marker is the ``<!-- mergedog:handoff ...``
     HTML comment embedded by ``_format_handoff_comment``.
     """
-    for c in get_pr_comments(pr):
-        if "<!-- mergedog:handoff" in (c.get("body") or ""):
-            return True
-    return False
+    return latest_mergedog_handoff_iso(pr) is not None
+
+
+def latest_mergedog_handoff_iso(pr: int) -> str | None:
+    """``created_at`` of the most recent mergedog handoff comment, or None.
+
+    Used so that a restart picks up where the previous shepherd left off:
+    the post-handoff watch loop scopes "what counts as new pytorchmergebot
+    activity" to comments newer than this timestamp, instead of newer than
+    ``now`` (which would miss a merge-failed reply that happened before
+    we restarted).
+    """
+    matches = [
+        c.get("created_at") or ""
+        for c in get_pr_comments(pr)
+        if "<!-- mergedog:handoff" in (c.get("body") or "")
+    ]
+    return max(matches) if matches else None
 
 
 def get_commit_subject(sha: str) -> str:
