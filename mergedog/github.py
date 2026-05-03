@@ -85,6 +85,29 @@ def get_pr(pr: int) -> dict:
     )
 
 
+def get_pr_comments(pr: int) -> list[dict]:
+    """Return issue-tab comments on the PR, oldest first.
+
+    Each dict has ``author`` (login string), ``body``, ``created_at``.
+    Review comments (per-line on the diff) are intentionally not included
+    -- they're tied to specific commits and don't fit the sidecar format.
+    """
+    data = _gh_json(
+        ["pr", "view", str(pr), "--repo", REPO, "--json", "comments"]
+    )
+    out: list[dict] = []
+    for c in data.get("comments", []) or []:
+        author = (c.get("author") or {}).get("login") or "?"
+        out.append(
+            {
+                "author": author,
+                "body": c.get("body", "") or "",
+                "created_at": c.get("createdAt", "") or "",
+            }
+        )
+    return out
+
+
 def get_pr_head_sha(pr: int) -> str:
     data = _gh_json(
         ["pr", "view", str(pr), "--repo", REPO, "--json", "headRefOid"]

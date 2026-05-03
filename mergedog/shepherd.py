@@ -8,8 +8,10 @@ import time
 from pathlib import Path
 
 from mergedog import claude as claude_mod
+from mergedog import context as context_mod
 from mergedog import github, repo
 from mergedog.log import die, log
+from mergedog.paths import context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_COMMIT_SUBJECT
 from mergedog.state import TrustDB
@@ -64,6 +66,26 @@ def _fork_ssh_url(pr_data: dict) -> str:
     if not owner or not name:
         die("PR head repository information is missing; can't push fixes")
     return f"git@github.com:{owner}/{name}.git"
+
+
+def _refresh_context_file(pr_data: dict) -> Path:
+    """Rebuild the per-PR sidecar from the latest title/body/comments.
+
+    Refreshed before each claude invocation so that comments added partway
+    through a shepherd run show up in the agent's context.
+    """
+    pr = pr_data["number"]
+    comments = github.get_pr_comments(pr)
+    text = context_mod.render_context(
+        pr=pr,
+        url=pr_data.get("url", ""),
+        title=pr_data.get("title", ""),
+        body=pr_data.get("body", "") or "",
+        comments=comments,
+    )
+    path = context_file(pr)
+    context_mod.write_context_file(path, text)
+    return path
 
 
 _APPROVAL_PENDING_STATUSES = {"action_required", "waiting"}
@@ -280,10 +302,11 @@ def _maybe_merge_main(
 
     if status == "conflict":
         log("merge produced conflicts; asking claude to resolve")
+        ctx_path = _refresh_context_file(pr_data)
         prompt = render_merge_conflict_prompt(
-            title=pr_data.get("title", ""),
             url=pr_data.get("url", ""),
             branch=branch,
+            context_path=str(ctx_path),
             merge_subject=MERGE_COMMIT_SUBJECT,
         )
         ran_cleanly, new_sha = claude_mod.invoke_merge_resolver(worktree, prompt)
@@ -383,10 +406,11 @@ def shepherd(
                     f"intervention"
                 )
             failed = github.get_failed_job_logs(pr)
+            ctx_path = _refresh_context_file(pr_data)
             prompt = render_fix_prompt(
-                title=pr_data.get("title", ""),
                 url=pr_data.get("url", ""),
                 branch=pr_data["headRefName"],
+                context_path=str(ctx_path),
                 failed_jobs=failed,
             )
             ran_cleanly, new_sha = claude_mod.invoke_fixer(worktree, prompt)
