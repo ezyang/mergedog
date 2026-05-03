@@ -127,7 +127,7 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "State", "Worktree", "Last")
+        table.add_columns("PR", "State", "Last")
         for pr in self._initial:
             self._do_add(pr, [])
         self._refresh()
@@ -172,16 +172,16 @@ class MuxApp(App):
                 state = "DONE"
             else:
                 state = f"HALTED rc={rc}"
-            last = _last_log_line(log_path)[:200]
-            wt_path = worktree_dir(pr)
-            # OSC-8 hyperlinks: most modern terminals (iTerm2, kitty,
-            # vscode, ghostty, …) make these cmd/ctrl-clickable.
+            last = _last_log_line(log_path)
+            # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
+            # the worktree path is omitted from the table entirely now,
+            # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
+            # it from the shell.
             pr_cell = Text(
                 str(pr),
                 style=f"link https://github.com/pytorch/pytorch/pull/{pr}",
             )
-            wt_cell = Text(str(wt_path), style=f"link file://{wt_path}")
-            table.add_row(pr_cell, state, wt_cell, last)
+            table.add_row(pr_cell, state, last)
 
     def _prune_pr(self, pr: int) -> None:
         """Forget a shepherd and clean up its on-disk state.
