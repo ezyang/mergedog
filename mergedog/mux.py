@@ -19,6 +19,7 @@ Commands:
 """
 from __future__ import annotations
 
+import argparse
 import shlex
 import subprocess
 import sys
@@ -26,7 +27,7 @@ import time
 from pathlib import Path
 
 from mergedog.cli import _parse_pr
-from mergedog.paths import ROOT, ensure_dirs, worktree_dir
+from mergedog.paths import ROOT, STATE_DIR, ensure_dirs, worktree_dir
 
 LOG_DIR = ROOT / "logs"
 
@@ -87,9 +88,65 @@ def _status(procs: dict) -> None:
         print(f"[{pr:>7}] {state:>9}  wt={worktree_dir(pr)}  :: {last}")
 
 
+def _known_prs() -> list[int]:
+    """Every PR that has a persisted trust DB on disk, sorted."""
+    if not STATE_DIR.exists():
+        return []
+    out = []
+    for p in STATE_DIR.glob("*.json"):
+        try:
+            out.append(int(p.stem))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="mergedog.mux",
+        description="Supervise multiple mergedog shepherds in one process.",
+    )
+    parser.add_argument(
+        "prs",
+        nargs="*",
+        help=(
+            "PR numbers (or URLs) to start shepherding immediately. "
+            "Pass --resume-known to start every PR with state on disk."
+        ),
+    )
+    parser.add_argument(
+        "--resume-known",
+        action="store_true",
+        help=(
+            "Start a shepherd for every PR with a state file in "
+            "~/.mergedog/state/. Useful after ctrl-c'ing a batch of "
+            "old-style ``mergedog <pr>`` sessions."
+        ),
+    )
+    args = parser.parse_args()
+
     ensure_dirs()
     procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
+
+    initial: list[int] = []
+    if args.resume_known:
+        initial.extend(_known_prs())
+    for raw in args.prs:
+        try:
+            initial.append(_parse_pr(raw))
+        except argparse.ArgumentTypeError as e:
+            print(f"skipping {raw!r}: {e}")
+    # Dedup, preserve order.
+    seen = set()
+    for pr in initial:
+        if pr in seen:
+            continue
+        seen.add(pr)
+        try:
+            _add(procs, str(pr), [])
+        except Exception as e:
+            print(f"[{pr}] failed to start: {e}")
+
     print("mergedog mux. commands: add <pr>, status, cancel <pr>, log <pr>, quit")
     while True:
         try:
