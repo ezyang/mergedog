@@ -15,6 +15,11 @@ from mergedog.repo import head_sha, head_subject
 
 MERGEDOG_PREFIX = "[MERGEDOG]"
 
+# Pin the model so an operator's local default (or "fast mode" on an older
+# Opus) can't downgrade us. mergedog runs async; slow is fine, capable is
+# not optional.
+_CLAUDE_MODEL = "opus"
+
 
 def _summarize_tool_input(tool: str, inp: dict) -> str:
     """Compress a tool's ``input`` blob into one informative line."""
@@ -86,17 +91,18 @@ def _run_claude_streaming(
         "claude",
         "-p",
         prompt,
+        "--model",
+        _CLAUDE_MODEL,
         "--permission-mode",
         "bypassPermissions",
         "--output-format",
         "stream-json",
         "--verbose",
     ]
-    log(
-        "$ "
-        + " ".join(shlex.quote(c) for c in cmd[:6])
-        + " <prompt> --output-format stream-json --verbose"
-    )
+    # Quote everything except the prompt itself, which is huge and would
+    # bury the rest of the line.
+    redacted = [c if c is not prompt else "<prompt>" for c in cmd]
+    log("$ " + " ".join(shlex.quote(c) for c in redacted))
     env = os.environ.copy()
     env.update(env_extra)
     proc = subprocess.Popen(
