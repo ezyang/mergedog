@@ -75,6 +75,8 @@ class MuxApp(App):
     Input { dock: bottom; }
     """
 
+    BINDINGS = [("ctrl+c", "quit", "Quit")]
+
     def __init__(self, initial: list[int]) -> None:
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
