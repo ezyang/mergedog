@@ -229,8 +229,10 @@ def ensure_worktree(pr: int, sha: str, fork_remote: str, fork_branch: str) -> Pa
                 )
             run(["git", "reset", "--hard", sha], cwd=wt, loud=True)
 
-    # Idempotent; safe even when reusing.
-    run(
+    # Idempotent; safe even when reusing. Goes through the retry helper
+    # because ``--set-upstream-to`` writes to ``.git/config`` and races
+    # with concurrent shepherds spawned by the mux.
+    _git_write_with_retry(
         [
             "git",
             "branch",

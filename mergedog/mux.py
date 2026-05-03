@@ -288,7 +288,9 @@ def main() -> int:
     seen: set[int] = set()
     initial = [pr for pr in initial if not (pr in seen or seen.add(pr))]
 
-    MuxApp(initial).run()
+    # ``mouse=False`` keeps the terminal's native selection / right-click
+    # paste working. We don't actually click anything in the table.
+    MuxApp(initial).run(mouse=False)
     return 0
 
 
