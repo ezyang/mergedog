@@ -21,24 +21,59 @@ MERGEDOG_PREFIX = "[MERGEDOG]"
 _CLAUDE_MODEL = "opus"
 
 
-def _summarize_tool_input(tool: str, inp: dict) -> str:
-    """Compress a tool's ``input`` blob into one informative line."""
+def _relativize(text: str, worktree: Path | None) -> str:
+    """Replace the worktree absolute path with ``./`` so log lines aren't
+    dominated by the same 50-char prefix on every entry."""
+    if not worktree or not text:
+        return text
+    s = str(worktree)
+    return text.replace(s + "/", "./").replace(s, ".")
+
+
+def _yield_multiline(prefix: str, text: str, *, max_chars: int = 800) -> Iterator[str]:
+    """Yield log lines for a possibly-multi-line value.
+
+    The first line carries ``prefix``; continuation lines are indented to
+    line up under the content (so ``claude → Bash: foo`` is followed by
+    space-aligned continuations rather than being mashed onto one line
+    with ⏎ separators).
+    """
+    if not text:
+        return
+    if len(text) > max_chars:
+        text = text[:max_chars] + " …"
+    lines = text.splitlines() or [""]
+    yield prefix + lines[0]
+    pad = " " * len(prefix)
+    for line in lines[1:]:
+        yield pad + line
+
+
+def _summarize_tool_input(tool: str, inp: dict, worktree: Path | None) -> str:
+    """Render a tool's ``input`` blob, with paths relativized to the worktree."""
     if tool == "Bash":
-        return (inp.get("command") or "?")[:300]
+        return _relativize(inp.get("command") or "?", worktree)
     if tool in ("Read", "Edit", "Write", "NotebookEdit"):
-        return str(inp.get("file_path") or inp.get("notebook_path") or "?")
+        path = str(inp.get("file_path") or inp.get("notebook_path") or "?")
+        return _relativize(path, worktree)
     if tool == "Grep":
         bits = [f"pattern={inp.get('pattern')!r}"]
         if inp.get("path"):
-            bits.append(f"path={inp['path']}")
+            bits.append(f"path={_relativize(str(inp['path']), worktree)}")
         return " ".join(bits)
     if tool == "Glob":
-        return str(inp.get("pattern") or "?")
-    return json.dumps(inp, default=str)[:300]
+        return _relativize(str(inp.get("pattern") or "?"), worktree)
+    return _relativize(json.dumps(inp, default=str), worktree)
 
 
-def _summarize_event(ev: dict) -> Iterator[str]:
-    """Render a stream-json event into zero or more human-readable log lines."""
+def _summarize_event(ev: dict, worktree: Path | None = None) -> Iterator[str]:
+    """Render a stream-json event into zero or more human-readable log lines.
+
+    Tool-result events are intentionally dropped: the operator can read the
+    actual result by looking at what claude does next (or by checking out
+    the worktree). The intermediate dump was almost always either too short
+    to be useful or too long to read.
+    """
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
         sid = (ev.get("session_id") or "")[:8]
@@ -56,23 +91,14 @@ def _summarize_event(ev: dict) -> Iterator[str]:
                         yield f"claude: {line}"
             elif kind == "tool_use":
                 tool = block.get("name") or "?"
-                yield f"claude → {tool}: {_summarize_tool_input(tool, block.get('input') or {})}"
+                summary = _summarize_tool_input(
+                    tool, block.get("input") or {}, worktree
+                )
+                yield from _yield_multiline(f"claude → {tool}: ", summary)
             elif kind == "thinking":
                 txt = (block.get("thinking") or "").strip()
                 if txt:
-                    yield f"claude 💭 {txt[:300]}"
-        return
-    if t == "user":
-        msg = ev.get("message") or {}
-        for block in msg.get("content") or []:
-            if block.get("type") == "tool_result":
-                content = block.get("content", "")
-                if isinstance(content, list):
-                    content = "".join(
-                        c.get("text", "") for c in content if isinstance(c, dict)
-                    )
-                text = str(content).replace("\n", " ⏎ ")[:200]
-                yield f"claude ← {text}"
+                    yield from _yield_multiline("claude 💭 ", txt)
         return
     if t == "result":
         cost = ev.get("total_cost_usd")
@@ -130,7 +156,7 @@ def _run_claude_streaming(
         except json.JSONDecodeError:
             log(f"claude (raw): {line[:300]}")
             continue
-        for summary in _summarize_event(ev):
+        for summary in _summarize_event(ev, worktree=cwd):
             log(summary)
             transcript.append(summary)
     return proc.wait(), transcript
