@@ -27,7 +27,7 @@ from mergedog.trust_seed import seed_trust_from_reviews
 SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
 
 
-def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> None:
+def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> bool:
     """If pytorch CI has an open SEV, block until it clears.
 
     A CI SEV here is any open issue on pytorch/pytorch tagged
@@ -36,16 +36,21 @@ def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> None:
     new pushes; ``ignore_sev`` (operator override via ``--ignore-sev``)
     skips the wait. Called only at "would trigger CI" critical spots,
     not in the inner poll, to keep the GH API call rate low.
+
+    Returns True if it actually had to wait (i.e. a SEV was open at entry
+    and has now cleared) -- callers can use this to discard work prepared
+    against a stale view of trunk.
     """
     if ignore_sev:
-        return
+        return False
     last_ids: tuple[int, ...] | None = None
     while True:
         sevs = github.list_active_ci_sevs()
         if not sevs:
             if last_ids is not None:
                 log("CI SEV cleared; resuming")
-            return
+                return True
+            return False
         ids = tuple(sorted(s.get("number") for s in sevs if s.get("number")))
         if ids != last_ids:
             head = sevs[0]
@@ -338,6 +343,18 @@ def _maybe_merge_main(
         log("PR is fresh enough; not merging main")
         return None
     log(f"merge-base older than {max_base_age_days} days; merging origin/main")
+
+    # Park on a CI SEV BEFORE merging, not before pushing. If we merged
+    # first and parked second, the merge's base would be hours stale when
+    # the SEV finally clears -- and likely *missing* the very fix that
+    # let trunk recover. Refetch origin if we waited so the merge picks
+    # up everything that landed during the SEV.
+    if _wait_for_no_active_sev("merging origin/main", ignore_sev=ignore_sev):
+        repo.fetch_origin()
+        age_sec = repo.merge_base_age_seconds(worktree)
+        if age_sec / 86400.0 <= max_base_age_days:
+            log("merge-base became fresh while parked; not merging main")
+            return None
 
     try:
         status, new_sha = repo.attempt_merge_main(worktree)
