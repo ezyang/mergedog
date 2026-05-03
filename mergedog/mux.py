@@ -102,7 +102,6 @@ class MuxApp(App):
             return
         try:
             self.procs[pr] = _spawn(pr, extra)
-            self.notify(f"[{pr}] started")
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
 

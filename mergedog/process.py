@@ -44,15 +44,26 @@ def run(
     """
     if loud:
         log(f"$ {_format_cmd(cmd, cwd)}")
-    return subprocess.run(
+    proc = subprocess.run(
         list(cmd),
         cwd=str(cwd) if cwd is not None else None,
-        check=check,
+        check=False,  # we do our own check below to print stderr first
         capture_output=capture,
         text=True,
         input=input_text,
         env=_build_env(env_extra),
     )
+    if check and proc.returncode != 0:
+        # Surface stderr before raising; the default ``CalledProcessError``
+        # only prints the exit code, which is useless for diagnosing
+        # things like ``git branch --set-upstream-to`` rejections.
+        err = (proc.stderr or "").rstrip()
+        if err:
+            log(f"  ! {_format_cmd(cmd, cwd)}")
+            for line in err.splitlines():
+                log(f"    stderr: {line}")
+        proc.check_returncode()
+    return proc
 
 
 def run_streamed(
