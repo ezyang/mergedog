@@ -15,7 +15,7 @@ from mergedog import github, repo
 from mergedog.log import die, log
 from mergedog.paths import context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
-from mergedog.repo import MERGE_COMMIT_SUBJECT
+from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
 
 
@@ -406,7 +406,7 @@ def _maybe_merge_main(
             url=pr_data.get("url", ""),
             branch=branch,
             context_path=str(ctx_path),
-            merge_subject=MERGE_COMMIT_SUBJECT,
+            merge_subject=MERGE_RESOLVED_SUBJECT,
         )
         sha_before = repo.head_sha(worktree)
         started_at = _utc_now_iso()

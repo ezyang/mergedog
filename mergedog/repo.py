@@ -286,6 +286,12 @@ def merge_base_age_seconds(worktree: Path, ref: str = "origin/main") -> int:
 
 
 MERGE_COMMIT_SUBJECT = "[MERGEDOG] Merge main into PR branch"
+# Used by claude when it had to resolve conflicts; the suffix is what we
+# tell claude to put on the commit. The harness only validates the
+# ``[MERGEDOG]`` prefix, but a distinct subject makes ``git log`` and the
+# handoff comment immediately show whether human-style judgment was
+# applied during the merge.
+MERGE_RESOLVED_SUBJECT = "[MERGEDOG] Merge main into PR branch (resolved conflicts)"
 CLEAN_MERGE_BODY = "Clean merge with origin/main; no conflicts."
 
 
