@@ -1,21 +1,20 @@
-"""Tiny multi-PR supervisor.
+"""Tiny multi-PR supervisor with a Textual TUI.
 
-Runs each shepherd as a separate ``python -m mergedog <pr>`` subprocess
-with its stdout/stderr piped to ``~/.mergedog/logs/<pr>.log``. The mux
-process itself is a single-line REPL that knows which subprocesses it
-spawned.
+Top: a DataTable with one row per active shepherd subprocess.
+Bottom: an Input field that takes commands.
 
-Run via:
+Run via::
 
-    python -m mergedog.mux
+    python -m mergedog.mux [<pr>...] [--resume-known]
 
-Commands:
+Commands typed at the bottom (enter to submit):
 
     add <pr> [extra mergedog flags]   start a shepherd
-    status                            list active shepherds + last log line
     cancel <pr>                       SIGTERM a shepherd
-    log <pr>                          print path to its log file
+    log <pr>                          show the path to its log file
     quit                              terminate everything and exit
+
+Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
 """
 from __future__ import annotations
 
@@ -26,45 +25,13 @@ import sys
 import time
 from pathlib import Path
 
+from textual.app import App, ComposeResult
+from textual.widgets import DataTable, Input
+
 from mergedog.cli import _parse_pr
 from mergedog.paths import ROOT, STATE_DIR, ensure_dirs, worktree_dir
 
 LOG_DIR = ROOT / "logs"
-
-
-def _add(procs: dict, pr_arg: str, extra: list[str]) -> None:
-    pr = _parse_pr(pr_arg)
-    if pr in procs and procs[pr][0].poll() is None:
-        print(f"[{pr}] already running")
-        return
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"{pr}.log"
-    f = open(log_path, "a", buffering=1, encoding="utf-8")
-    f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-    p = subprocess.Popen(
-        [sys.executable, "-m", "mergedog", str(pr), *extra],
-        stdout=f,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-    )
-    procs[pr] = (p, f, log_path)
-    print(f"[{pr}] started (log: {log_path})")
-
-
-def _cancel(procs: dict, pr_arg: str) -> None:
-    pr = _parse_pr(pr_arg)
-    entry = procs.get(pr)
-    if entry is None:
-        print(f"[{pr}] unknown")
-        return
-    p = entry[0]
-    if p.poll() is None:
-        p.terminate()
-        try:
-            p.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    print(f"[{pr}] terminated")
 
 
 def _last_log_line(path: Path) -> str:
@@ -76,23 +43,10 @@ def _last_log_line(path: Path) -> str:
     return tail.rstrip()
 
 
-def _status(procs: dict) -> None:
-    if not procs:
-        print("(no shepherds)")
-        return
-    for pr in sorted(procs):
-        p, _, log_path = procs[pr]
-        rc = p.poll()
-        state = "RUNNING" if rc is None else f"EXIT={rc}"
-        last = _last_log_line(log_path)[:120]
-        print(f"[{pr:>7}] {state:>9}  wt={worktree_dir(pr)}  :: {last}")
-
-
 def _known_prs() -> list[int]:
-    """Every PR that has a persisted trust DB on disk, sorted."""
     if not STATE_DIR.exists():
         return []
-    out = []
+    out: list[int] = []
     for p in STATE_DIR.glob("*.json"):
         try:
             out.append(int(p.stem))
@@ -101,32 +55,153 @@ def _known_prs() -> list[int]:
     return sorted(out)
 
 
+def _spawn(pr: int, extra: list[str]) -> tuple[subprocess.Popen, object, Path]:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"{pr}.log"
+    f = open(log_path, "a", buffering=1, encoding="utf-8")
+    f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    p = subprocess.Popen(
+        [sys.executable, "-m", "mergedog", str(pr), *extra],
+        stdout=f,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+    )
+    return (p, f, log_path)
+
+
+class MuxApp(App):
+    CSS = """
+    DataTable { height: 1fr; }
+    Input { dock: bottom; }
+    """
+
+    def __init__(self, initial: list[int]) -> None:
+        super().__init__()
+        self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
+        self._initial = initial
+
+    def compose(self) -> ComposeResult:
+        yield DataTable()
+        yield Input(placeholder="add <pr> | cancel <pr> | log <pr> | quit")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("PR", "State", "Worktree", "Last")
+        for pr in self._initial:
+            self._do_add(pr, [])
+        self._refresh()
+        self.set_interval(2.0, self._refresh)
+        self.query_one(Input).focus()
+
+    def _do_add(self, pr: int, extra: list[str]) -> None:
+        if pr in self.procs and self.procs[pr][0].poll() is None:
+            self.notify(f"[{pr}] already running", severity="warning")
+            return
+        try:
+            self.procs[pr] = _spawn(pr, extra)
+            self.notify(f"[{pr}] started")
+        except Exception as e:
+            self.notify(f"[{pr}] failed: {e}", severity="error")
+
+    def _do_cancel(self, pr: int) -> None:
+        entry = self.procs.get(pr)
+        if entry is None:
+            self.notify(f"[{pr}] unknown", severity="warning")
+            return
+        p = entry[0]
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        self.notify(f"[{pr}] terminated")
+
+    def _refresh(self) -> None:
+        table = self.query_one(DataTable)
+        table.clear()
+        for pr in sorted(self.procs):
+            p, _, log_path = self.procs[pr]
+            rc = p.poll()
+            if rc is None:
+                state = "RUNNING"
+            elif rc == 0:
+                state = "DONE"
+            else:
+                state = f"HALTED rc={rc}"
+            last = _last_log_line(log_path)[:200]
+            wt = str(worktree_dir(pr))
+            table.add_row(str(pr), state, wt, last)
+
+    def on_input_submitted(self, message: Input.Submitted) -> None:
+        line = message.value.strip()
+        message.input.value = ""
+        if not line:
+            return
+        try:
+            args = shlex.split(line)
+        except ValueError as e:
+            self.notify(f"parse error: {e}", severity="error")
+            return
+        cmd, rest = args[0], args[1:]
+        try:
+            if cmd in ("add", "a"):
+                if not rest:
+                    self.notify("usage: add <pr> [flags]", severity="warning")
+                else:
+                    self._do_add(_parse_pr(rest[0]), rest[1:])
+            elif cmd in ("cancel", "c", "kill", "rm"):
+                if not rest:
+                    self.notify("usage: cancel <pr>", severity="warning")
+                else:
+                    self._do_cancel(_parse_pr(rest[0]))
+            elif cmd == "log":
+                if not rest:
+                    self.notify("usage: log <pr>", severity="warning")
+                else:
+                    pr = _parse_pr(rest[0])
+                    entry = self.procs.get(pr)
+                    if entry is not None:
+                        self.notify(str(entry[2]))
+                    else:
+                        self.notify(f"[{pr}] unknown", severity="warning")
+            elif cmd in ("quit", "q", "exit"):
+                self.exit()
+                return
+            else:
+                self.notify(f"unknown command: {cmd!r}", severity="warning")
+        except Exception as e:
+            self.notify(f"error: {e}", severity="error")
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        for _pr, (p, f, _) in self.procs.items():
+            if p.poll() is None:
+                p.terminate()
+            try:
+                f.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="mergedog.mux",
-        description="Supervise multiple mergedog shepherds in one process.",
+        description="Supervise multiple mergedog shepherds in one TUI process.",
     )
     parser.add_argument(
         "prs",
         nargs="*",
-        help=(
-            "PR numbers (or URLs) to start shepherding immediately. "
-            "Pass --resume-known to start every PR with state on disk."
-        ),
+        help="PR numbers or URLs to start shepherding immediately.",
     )
     parser.add_argument(
         "--resume-known",
         action="store_true",
-        help=(
-            "Start a shepherd for every PR with a state file in "
-            "~/.mergedog/state/. Useful after ctrl-c'ing a batch of "
-            "old-style ``mergedog <pr>`` sessions."
-        ),
+        help="Start a shepherd for every PR with state on disk.",
     )
     args = parser.parse_args()
 
     ensure_dirs()
-    procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
 
     initial: list[int] = []
     if args.resume_known:
@@ -135,67 +210,11 @@ def main() -> int:
         try:
             initial.append(_parse_pr(raw))
         except argparse.ArgumentTypeError as e:
-            print(f"skipping {raw!r}: {e}")
-    # Dedup, preserve order.
-    seen = set()
-    for pr in initial:
-        if pr in seen:
-            continue
-        seen.add(pr)
-        try:
-            _add(procs, str(pr), [])
-        except Exception as e:
-            print(f"[{pr}] failed to start: {e}")
+            print(f"skipping {raw!r}: {e}", file=sys.stderr)
+    seen: set[int] = set()
+    initial = [pr for pr in initial if not (pr in seen or seen.add(pr))]
 
-    print("mergedog mux. commands: add <pr>, status, cancel <pr>, log <pr>, quit")
-    while True:
-        try:
-            line = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line:
-            _status(procs)
-            continue
-        try:
-            args = shlex.split(line)
-        except ValueError as e:
-            print(f"parse error: {e}")
-            continue
-        cmd, rest = args[0], args[1:]
-        try:
-            if cmd in ("add", "a"):
-                if not rest:
-                    print("usage: add <pr> [mergedog flags]")
-                else:
-                    _add(procs, rest[0], rest[1:])
-            elif cmd in ("status", "s", "ls"):
-                _status(procs)
-            elif cmd in ("cancel", "c", "rm", "kill"):
-                if not rest:
-                    print("usage: cancel <pr>")
-                else:
-                    _cancel(procs, rest[0])
-            elif cmd == "log":
-                if not rest:
-                    print("usage: log <pr>")
-                elif (entry := procs.get(_parse_pr(rest[0]))):
-                    print(entry[2])
-                else:
-                    print("unknown PR")
-            elif cmd in ("quit", "q", "exit"):
-                break
-            else:
-                print(f"unknown command: {cmd!r}")
-        except Exception as e:
-            print(f"error: {e}")
-    for pr, (p, f, _) in procs.items():
-        if p.poll() is None:
-            p.terminate()
-        try:
-            f.close()
-        except Exception:
-            pass
+    MuxApp(initial).run()
     return 0
 
 
