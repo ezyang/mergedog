@@ -1,14 +1,126 @@
 """Invoke claude as a subprocess to investigate and (maybe) fix CI failures."""
 from __future__ import annotations
 
+import json
+import os
+import shlex
+import subprocess
 from pathlib import Path
+from typing import Iterator, Mapping
 
 from mergedog.log import log
-from mergedog.process import run, run_streamed
+from mergedog.process import run
 from mergedog import repo as repo_mod
 from mergedog.repo import head_sha, head_subject
 
 MERGEDOG_PREFIX = "[MERGEDOG]"
+
+
+def _summarize_tool_input(tool: str, inp: dict) -> str:
+    """Compress a tool's ``input`` blob into one informative line."""
+    if tool == "Bash":
+        return (inp.get("command") or "?")[:300]
+    if tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        return str(inp.get("file_path") or inp.get("notebook_path") or "?")
+    if tool == "Grep":
+        bits = [f"pattern={inp.get('pattern')!r}"]
+        if inp.get("path"):
+            bits.append(f"path={inp['path']}")
+        return " ".join(bits)
+    if tool == "Glob":
+        return str(inp.get("pattern") or "?")
+    return json.dumps(inp, default=str)[:300]
+
+
+def _summarize_event(ev: dict) -> Iterator[str]:
+    """Render a stream-json event into zero or more human-readable log lines."""
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        sid = (ev.get("session_id") or "")[:8]
+        if sid:
+            yield f"claude session {sid}"
+        return
+    if t == "assistant":
+        msg = ev.get("message") or {}
+        for block in msg.get("content") or []:
+            kind = block.get("type")
+            if kind == "text":
+                txt = (block.get("text") or "").strip()
+                for line in txt.splitlines():
+                    if line.strip():
+                        yield f"claude: {line}"
+            elif kind == "tool_use":
+                tool = block.get("name") or "?"
+                yield f"claude → {tool}: {_summarize_tool_input(tool, block.get('input') or {})}"
+            elif kind == "thinking":
+                txt = (block.get("thinking") or "").strip()
+                if txt:
+                    yield f"claude 💭 {txt[:300]}"
+        return
+    if t == "user":
+        msg = ev.get("message") or {}
+        for block in msg.get("content") or []:
+            if block.get("type") == "tool_result":
+                content = block.get("content", "")
+                if isinstance(content, list):
+                    content = "".join(
+                        c.get("text", "") for c in content if isinstance(c, dict)
+                    )
+                text = str(content).replace("\n", " ⏎ ")[:200]
+                yield f"claude ← {text}"
+        return
+    if t == "result":
+        cost = ev.get("total_cost_usd")
+        sub = ev.get("subtype") or "?"
+        if isinstance(cost, (int, float)):
+            yield f"claude finished: {sub} (cost ${cost:.4f})"
+        else:
+            yield f"claude finished: {sub}"
+
+
+def _run_claude_streaming(
+    prompt: str, cwd: Path, env_extra: Mapping[str, str]
+) -> int:
+    """Run claude in stream-json mode and pretty-print events as they arrive."""
+    cmd = [
+        "claude",
+        "-p",
+        prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    log(
+        "$ "
+        + " ".join(shlex.quote(c) for c in cmd[:6])
+        + " <prompt> --output-format stream-json --verbose"
+    )
+    env = os.environ.copy()
+    env.update(env_extra)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            log(f"claude (raw): {line[:300]}")
+            continue
+        for summary in _summarize_event(ev):
+            log(summary)
+    return proc.wait()
 
 
 def _is_clean(worktree: Path) -> bool:
@@ -43,16 +155,11 @@ def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None]:
       advance the PR".
     """
     before = head_sha(worktree)
-    cmd = [
-        "claude",
-        "-p",
-        prompt,
-        "--permission-mode",
-        "bypassPermissions",
-    ]
     name, email = repo_mod.get_mergedog_identity()
-    log("invoking claude...")
-    rc = run_streamed(cmd, cwd=worktree, env_extra=repo_mod.author_env(name, email))
+    log("invoking claude (fix-CI mode)...")
+    rc = _run_claude_streaming(
+        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email)
+    )
     if rc != 0:
         log(f"claude exited with code {rc}")
         return False, None
@@ -94,16 +201,11 @@ def invoke_merge_resolver(worktree: Path, prompt: str) -> tuple[bool, str | None
       merge cleanly and chose to give up -- caller should also halt.
     """
     before = head_sha(worktree)
-    cmd = [
-        "claude",
-        "-p",
-        prompt,
-        "--permission-mode",
-        "bypassPermissions",
-    ]
     name, email = repo_mod.get_mergedog_identity()
-    log("invoking claude to resolve merge conflicts...")
-    rc = run_streamed(cmd, cwd=worktree, env_extra=repo_mod.author_env(name, email))
+    log("invoking claude (merge-resolver mode)...")
+    rc = _run_claude_streaming(
+        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email)
+    )
     if rc != 0:
         log(f"claude exited with code {rc}")
         return False, None
