@@ -13,7 +13,7 @@ from mergedog import claude as claude_mod
 from mergedog import context as context_mod
 from mergedog import github, repo
 from mergedog.log import die, log
-from mergedog.paths import context_file
+from mergedog.paths import REPO_SLUG, context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
@@ -235,6 +235,20 @@ def _is_ghstack(pr_data: dict) -> bool:
     return False
 
 
+def _is_fork_pr(pr_data: dict) -> bool:
+    """True iff the PR head lives in a different repo than the base.
+
+    GitHub only exposes a meaningful ``maintainerCanModify`` for fork PRs;
+    for in-repo branches the flag is always false, but anyone with write
+    access to the base repo can push to the branch directly.
+    """
+    owner = (pr_data.get("headRepositoryOwner") or {}).get("login")
+    name = (pr_data.get("headRepository") or {}).get("name")
+    if not owner or not name:
+        return True  # be conservative if metadata is missing
+    return f"{owner}/{name}" != REPO_SLUG
+
+
 def _validate_pr(pr_data: dict) -> None:
     state = pr_data.get("state")
     if state != "OPEN":
@@ -248,7 +262,7 @@ def _validate_pr(pr_data: dict) -> None:
         die("PR is a draft")
     if _is_ghstack(pr_data):
         die("ghstack PRs are not supported")
-    if not pr_data.get("maintainerCanModify"):
+    if _is_fork_pr(pr_data) and not pr_data.get("maintainerCanModify"):
         die(
             "'Allow edits by maintainers' is not enabled on this PR; "
             "mergedog cannot push fixes"
