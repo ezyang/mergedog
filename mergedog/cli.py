@@ -55,6 +55,16 @@ def main(argv: list[str] | None = None) -> int:
             "additional commits yourself."
         ),
     )
+    parser.add_argument(
+        "--ignore-sev",
+        action="store_true",
+        help=(
+            "Don't park on open ``ci: sev`` issues. By default mergedog "
+            "waits before any action that would trigger fresh CI (claude "
+            "fix invocations, pushes, ciflow/trunk label) so we don't "
+            "stampede already-broken trunk."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -62,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             args.pr,
             max_base_age_days=args.max_base_age,
             accept_divergence=args.accept_divergence,
+            ignore_sev=args.ignore_sev,
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)

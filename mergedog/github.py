@@ -188,6 +188,35 @@ def has_label(pr_data: dict, label: str) -> bool:
     return any(l.get("name") == label for l in pr_data.get("labels", []))
 
 
+CI_SEV_LABEL = "ci: sev"
+
+
+def list_active_ci_sevs() -> list[dict]:
+    """Return open GitHub issues tagged ``ci: sev``.
+
+    pytorch/pytorch's dev-infra team puts this label on an issue when
+    trunk CI is broken in a way that affects everyone. mergedog parks
+    itself on the presence of any such issue so we don't pile new
+    pushes onto already-broken CI.
+    """
+    return _gh_json(
+        [
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--state",
+            "open",
+            "--label",
+            CI_SEV_LABEL,
+            "--json",
+            "number,title,url",
+            "--limit",
+            "10",
+        ]
+    )
+
+
 def has_mergedog_handoff_comment(pr: int) -> bool:
     """True if any existing PR comment carries the mergedog handoff marker.
 

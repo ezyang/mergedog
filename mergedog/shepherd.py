@@ -142,6 +142,41 @@ def _latest_mergebot_event(pr: int, since_iso: str) -> str | None:
     return None
 
 
+SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
+
+
+def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> None:
+    """If pytorch CI has an open SEV, block until it clears.
+
+    A CI SEV here is any open issue on pytorch/pytorch tagged
+    ``ci: sev`` -- dev-infra's signal that trunk is degraded. Default
+    behavior is to wait it out so we don't stampede broken CI with
+    new pushes; ``ignore_sev`` (operator override via ``--ignore-sev``)
+    skips the wait. Called only at "would trigger CI" critical spots,
+    not in the inner poll, to keep the GH API call rate low.
+    """
+    if ignore_sev:
+        return
+    last_ids: tuple[int, ...] | None = None
+    while True:
+        sevs = github.list_active_ci_sevs()
+        if not sevs:
+            if last_ids is not None:
+                log("CI SEV cleared; resuming")
+            return
+        ids = tuple(sorted(s.get("number") for s in sevs if s.get("number")))
+        if ids != last_ids:
+            head = sevs[0]
+            others = f" (+{len(sevs) - 1} more)" if len(sevs) > 1 else ""
+            log(
+                f"parked on ci: sev #{head.get('number')} "
+                f"{head.get('title', '?')!r}{others}; "
+                f"waiting before {reason}"
+            )
+            last_ids = ids
+        time.sleep(SEV_POLL_INTERVAL_SEC)
+
+
 def _watch_post_handoff(pr: int, handoff_iso: str) -> str:
     """Block after handoff, returning when there's something to react to.
 
@@ -450,6 +485,8 @@ def _maybe_merge_main(
     max_base_age_days: int,
     pr_data: dict,
     sessions: list[_ClaudeSession],
+    *,
+    ignore_sev: bool,
 ) -> str | None:
     """If the PR's merge-base is older than the threshold, merge origin/main.
 
@@ -514,6 +551,7 @@ def _maybe_merge_main(
 
     assert new_sha is not None
     trust.trust(new_sha)
+    _wait_for_no_active_sev("pushing merge-main commit", ignore_sev=ignore_sev)
     log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
     repo.push_to_fork(worktree, fork_remote, branch)
     _wait_for_pr_head(pr_data["number"], new_sha)
@@ -524,6 +562,7 @@ def shepherd(
     pr: int,
     max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS,
     accept_divergence: bool = False,
+    ignore_sev: bool = False,
 ) -> None:
     repo.ensure_clone()
     repo.fetch_origin()
@@ -639,6 +678,12 @@ def shepherd(
                         f"commits and CI is still failing; halting for human "
                         f"intervention"
                     )
+                # If trunk is in a SEV, the failures are almost certainly
+                # not the PR's fault. Wait it out before burning claude
+                # budget on red herrings (and potentially pushing a "fix").
+                _wait_for_no_active_sev(
+                    "invoking claude on CI failures", ignore_sev=ignore_sev
+                )
                 failed = github.get_failed_job_logs(pr)
                 ctx_path = _refresh_context_file(pr_data)
                 prompt = render_fix_prompt(
@@ -682,6 +727,9 @@ def shepherd(
                     # fall through to advance below
                 else:
                     trust.trust(new_sha)
+                    _wait_for_no_active_sev(
+                        "pushing claude fix commit", ignore_sev=ignore_sev
+                    )
                     log(
                         f"pushing {new_sha[:12]} to "
                         f"{fork_remote}/{pr_data['headRefName']}"
@@ -717,6 +765,7 @@ def shepherd(
                     effective_max_base_age,
                     pr_data,
                     sessions,
+                    ignore_sev=ignore_sev,
                 )
                 main_merged = True
                 if new_sha is not None:
@@ -724,6 +773,11 @@ def shepherd(
                     last_status = None
                     continue
             if not trunk_applied:
+                # Adding ciflow/trunk kicks off a fresh wave of trunk
+                # workflows; gate on SEV so we don't pile on broken trunk.
+                _wait_for_no_active_sev(
+                    f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
+                )
                 log(f"required CI green; applying {TRUNK_LABEL} label")
                 github.add_label(pr, TRUNK_LABEL)
                 trunk_applied = True
