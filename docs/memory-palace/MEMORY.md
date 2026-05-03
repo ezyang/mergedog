@@ -1,0 +1,11 @@
+- [Memory palace meta log](_meta_log.md) — When this palace was last refreshed and which transcripts were ingested.
+- [User profile: ezyang, PyTorch core](user.md) — Author identity, write access, and what that implies for behavior.
+- [Design pillars of mergedog](project_design_pillars.md) — Adoption / Security / Autonomous / Synchronous / smallest-impl, and how they constrain choices.
+- [Trust + prompt-injection model](project_security_trust_model.md) — Approval-by-SHA, sanitizer, sidecar comments, no peeking at history.
+- [Idempotency / restart-safety contract](project_idempotency.md) — Ctrl-C any time and resume cleanly; no double-effects.
+- [PyTorch CI specifics](project_pytorch_ci.md) — `ciflow/trunk`, action_required gates, race after push, pytorchbot merge handoff, Edits-by-maintainers exception.
+- [Mux / TUI UX preferences](project_mux_ux.md) — Textual, ctrl-c quits, no mouse capture, layout/columns, auto-prune.
+- [Claude runtime preferences](project_claude_runtime.md) — Not fast mode, stream tools, log filtering, log rendering rules.
+- [Smallest implementation preference](feedback_smallest_implementation.md) — Bare bones over complete, no gratuitous timeouts/abstractions.
+- [Commit cadence](feedback_commit_cadence.md) — ezyang asks "did you commit your stuff"; commit frequently.
+- [Handoff comment requirements](project_handoff_comment.md) — Bot-authored, commit hash, claude session summary, bot metadata.
