@@ -176,6 +176,87 @@ def get_commit_subject(sha: str) -> str:
     return msg.splitlines()[0] if msg else ""
 
 
+# Author associations that we treat as "real maintainer" for review-approval
+# trust. Anyone outside this set can leave an APPROVED review on GitHub but
+# their approval does not seed our trust DB. See:
+# https://docs.github.com/en/graphql/reference/enums#commentauthorassociation
+_TRUSTED_ASSOCIATIONS = {"MEMBER", "COLLABORATOR", "OWNER"}
+
+
+def get_pr_review_audit(pr: int) -> dict:
+    """Return enough review state to decide who, if anyone, approved this PR.
+
+    Uses GraphQL because:
+    - ``reviewDecision`` is the authoritative aggregate (APPROVED /
+      CHANGES_REQUESTED / REVIEW_REQUIRED) and already accounts for
+      dismissals and per-user supersession.
+    - ``latestOpinionatedReviews`` collapses each reviewer's history to
+      their single most recent non-comment review, which is the only one
+      that "counts" for that user.
+
+    Returns ``{"decision": str | None, "reviews": list[dict]}``. Each review
+    dict has: ``login``, ``association``, ``state``, ``commit_id``,
+    ``submitted_at``.
+    """
+    owner, name = REPO.split("/", 1)
+    query = (
+        "query($owner:String!, $name:String!, $pr:Int!) {"
+        "  repository(owner:$owner, name:$name) {"
+        "    pullRequest(number:$pr) {"
+        "      reviewDecision"
+        "      latestOpinionatedReviews(first:50) {"
+        "        nodes {"
+        "          author { login }"
+        "          authorAssociation"
+        "          state"
+        "          commit { oid }"
+        "          submittedAt"
+        "        }"
+        "      }"
+        "    }"
+        "  }"
+        "}"
+    )
+    proc = _gh(
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"pr={pr}",
+        ]
+    )
+    data = json.loads(proc.stdout)
+    pr_node = (
+        data.get("data", {}).get("repository", {}).get("pullRequest", {}) or {}
+    )
+    nodes = (pr_node.get("latestOpinionatedReviews") or {}).get("nodes") or []
+    reviews = []
+    for n in nodes:
+        author = (n.get("author") or {}).get("login")
+        if not author:
+            continue  # ghost / deleted user; skip
+        reviews.append(
+            {
+                "login": author,
+                "association": n.get("authorAssociation"),
+                "state": n.get("state"),
+                "commit_id": ((n.get("commit") or {}).get("oid")),
+                "submitted_at": n.get("submittedAt"),
+            }
+        )
+    return {"decision": pr_node.get("reviewDecision"), "reviews": reviews}
+
+
+def is_trusted_association(association: str | None) -> bool:
+    return (association or "").upper() in _TRUSTED_ASSOCIATIONS
+
+
 def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> list[tuple[str, str]]:
     """Return ``(name, log_excerpt)`` pairs for failing jobs on the PR head."""
     checks = get_pr_checks_all(pr)

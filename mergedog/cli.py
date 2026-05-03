@@ -46,10 +46,23 @@ def main(argv: list[str] | None = None) -> int:
             f"(default: {shepherd.DEFAULT_MAX_BASE_AGE_DAYS})."
         ),
     )
+    parser.add_argument(
+        "--accept-divergence",
+        action="store_true",
+        help=(
+            "Proceed even if the PR head differs from the latest maintainer "
+            "approval's commit. Use this only after re-reviewing the "
+            "additional commits yourself."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
-        shepherd.shepherd(args.pr, max_base_age_days=args.max_base_age)
+        shepherd.shepherd(
+            args.pr,
+            max_base_age_days=args.max_base_age,
+            accept_divergence=args.accept_divergence,
+        )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
         return 130

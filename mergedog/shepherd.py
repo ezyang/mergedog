@@ -16,6 +16,7 @@ from mergedog.state import TrustDB
 
 POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
+PUSH_VISIBILITY_TIMEOUT_SEC = 90
 TRUNK_LABEL = "ciflow/trunk"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
 DEFAULT_MAX_BASE_AGE_DAYS = 7
@@ -85,23 +86,165 @@ def _needs_approval(run: dict) -> bool:
     return False
 
 
-def _approve_pending_runs(sha: str) -> int:
+def _wait_for_pr_head(pr: int, expected_sha: str) -> None:
+    """Block until ``gh pr view`` reports ``expected_sha`` as PR head.
+
+    GitHub's PR-head ref and its derived APIs (``gh pr checks``,
+    ``actions/runs?head_sha=``) lag a push by a few seconds. If we plough
+    straight into the polling loop we end up querying the *old* SHA --
+    which already has settled CI -- and miss any new approvals/checks
+    triggered by the push.
+    """
+    start = time.time()
+    while True:
+        current = github.get_pr_head_sha(pr)
+        if current == expected_sha:
+            log(f"PR head is now {expected_sha[:12]} on GitHub")
+            return
+        if time.time() - start >= PUSH_VISIBILITY_TIMEOUT_SEC:
+            log(
+                f"WARNING: timed out waiting for PR head to become "
+                f"{expected_sha[:12]} (still reads as {current[:12]}); "
+                f"continuing anyway"
+            )
+            return
+        log(f"waiting for PR head {expected_sha[:12]} (still {current[:12]})...")
+        time.sleep(3)
+
+
+def _seed_trust_from_reviews(
+    trust: TrustDB, pr: int, pr_data: dict, accept_divergence: bool
+) -> None:
+    """Establish the initial trusted SHA from GitHub PR reviews.
+
+    Queries the PR's reviews via GraphQL and finds the most recent
+    APPROVED review by an author with a *trusted* association
+    (MEMBER / COLLABORATOR / OWNER -- i.e. someone with push access,
+    not a drive-by approval from any GitHub user). The ``commit_id`` of
+    that approval is the trust seed.
+
+    If the PR's current head differs from the approval SHA and the
+    head isn't already in the trust DB (e.g. from a previous mergedog
+    run that pushed [MERGEDOG] commits), we halt -- the contributor has
+    pushed unblessed work after the approval. ``--accept-divergence``
+    overrides this for cases where the operator has personally
+    re-reviewed the new commits.
+    """
+    audit = github.get_pr_review_audit(pr)
+    decision = audit.get("decision")
+    log(f"PR review decision: {decision}")
+
+    untrusted_approvals = [
+        r for r in audit["reviews"]
+        if r.get("state") == "APPROVED"
+        and not github.is_trusted_association(r.get("association"))
+    ]
+    for r in untrusted_approvals:
+        log(
+            f"  ignoring APPROVED review by {r.get('login')!r} "
+            f"(association={r.get('association')!r}, not a maintainer)"
+        )
+
+    trusted_approvals = [
+        r for r in audit["reviews"]
+        if r.get("state") == "APPROVED"
+        and github.is_trusted_association(r.get("association"))
+        and r.get("commit_id")
+    ]
+    if not trusted_approvals:
+        die(
+            "no APPROVED review from a maintainer "
+            "(MEMBER/COLLABORATOR/OWNER) was found on this PR; "
+            "halting. Get a real approval before running mergedog."
+        )
+
+    trusted_approvals.sort(key=lambda r: r.get("submitted_at") or "")
+    latest = trusted_approvals[-1]
+    approval_sha: str = latest["commit_id"]
+    log(
+        f"latest maintainer approval: {latest['login']} "
+        f"({latest['association']}) at {approval_sha[:12]} "
+        f"on {latest.get('submitted_at')}"
+    )
+
+    if decision != "APPROVED":
+        die(
+            f"PR review decision is {decision!r}, not APPROVED "
+            f"(another reviewer may have requested changes after the "
+            f"latest approval). Halting."
+        )
+
+    trust.trust(approval_sha)
+
+    head_sha = pr_data["headRefOid"]
+    if head_sha == approval_sha:
+        log(f"current PR head matches the approval SHA")
+    elif trust.is_trusted(head_sha):
+        log(
+            f"current PR head {head_sha[:12]} is already in our trust DB "
+            f"(presumably a [MERGEDOG] commit from a previous run); "
+            f"approval seed at {approval_sha[:12]}"
+        )
+    elif accept_divergence:
+        log(
+            f"WARNING: current PR head {head_sha[:12]} differs from the "
+            f"latest maintainer approval at {approval_sha[:12]}. "
+            f"--accept-divergence given; trusting head as well."
+        )
+        trust.trust(head_sha)
+    else:
+        die(
+            f"current PR head {head_sha[:12]} differs from the latest "
+            f"maintainer approval at {approval_sha[:12]} (by "
+            f"{latest['login']}). The contributor pushed unreviewed "
+            f"commits after approval. Rerun with --accept-divergence "
+            f"after re-reviewing, or get a fresh approval."
+        )
+
+
+def _approve_pending_runs(
+    sha: str, run_state_cache: dict[int, tuple[str | None, str | None]]
+) -> int:
+    """Approve any approval-pending workflow runs.
+
+    ``run_state_cache`` is mutated: it tracks per-run ``(status,
+    conclusion)`` from the previous call, so we only log new runs and
+    state transitions instead of dumping the full list every poll.
+    """
     runs = github.list_workflow_runs_for_sha(sha)
-    log(f"workflow runs for {sha[:12]}: {len(runs)}")
+    seen: set[int] = set()
     approved = 0
     for r in runs:
         run_id = r.get("id")
+        if run_id is None:
+            continue
+        seen.add(run_id)
         name = r.get("name") or "?"
         status = r.get("status")
         conclusion = r.get("conclusion")
-        log(f"  run {run_id} {name!r} status={status} conclusion={conclusion}")
-        if _needs_approval(r) and run_id is not None:
+        prev = run_state_cache.get(run_id)
+        cur = (status, conclusion)
+        if prev is None:
+            log(
+                f"workflow run {run_id} {name!r}: status={status} "
+                f"conclusion={conclusion}"
+            )
+        elif prev != cur:
+            log(
+                f"workflow run {run_id} {name!r}: "
+                f"{prev[0]}/{prev[1]} -> {status}/{conclusion}"
+            )
+        run_state_cache[run_id] = cur
+        if _needs_approval(r):
             ok, msg = github.approve_workflow_run(run_id)
             if ok:
                 approved += 1
-                log(f"    -> approved")
+                log(f"  -> approved {run_id} {name!r}")
             else:
-                log(f"    -> approve failed: {msg}")
+                log(f"  -> approve failed for {run_id} {name!r}: {msg}")
+    # Forget runs that GitHub no longer reports (e.g. cancelled and dropped).
+    for stale in [k for k in run_state_cache if k not in seen]:
+        run_state_cache.pop(stale, None)
     return approved
 
 
@@ -153,10 +296,15 @@ def _maybe_merge_main(
     trust.trust(new_sha)
     log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
     repo.push_to_fork(worktree, fork_remote, branch)
+    _wait_for_pr_head(pr_data["number"], new_sha)
     return new_sha
 
 
-def shepherd(pr: int, max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS) -> None:
+def shepherd(
+    pr: int,
+    max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS,
+    accept_divergence: bool = False,
+) -> None:
     repo.ensure_clone()
     repo.fetch_origin()
 
@@ -172,8 +320,8 @@ def shepherd(pr: int, max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS) -> Non
     fork_remote = _fork_remote_name(pr_data)
     repo.add_fork_remote(fork_remote, fork_url)
 
+    _seed_trust_from_reviews(trust, pr, pr_data, accept_divergence)
     head_sha = pr_data["headRefOid"]
-    trust.trust(head_sha)
 
     fork_sha = repo.fetch_pr_branch(fork_remote, pr_data["headRefName"])
     if fork_sha != head_sha:
@@ -187,23 +335,16 @@ def shepherd(pr: int, max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS) -> Non
     )
 
     log(f"shepherding PR #{pr}: {pr_data.get('title', '')}")
-    log(f"  url:           {pr_data.get('url', '')}")
-    log(f"  approval SHA:  {head_sha}")
-    log(f"  branch:        {pr_data['headRefName']}")
-    log(f"  fork remote:   {fork_remote} -> {fork_url}")
-    log(f"  worktree:      {worktree}")
-
-    _maybe_merge_main(
-        worktree,
-        trust,
-        fork_remote,
-        pr_data["headRefName"],
-        max_base_age_days,
-        pr_data,
-    )
+    log(f"  url:        {pr_data.get('url', '')}")
+    log(f"  branch:     {pr_data['headRefName']}")
+    log(f"  fork:       {fork_remote} -> {fork_url}")
+    log(f"  worktree:   {worktree}")
 
     trunk_applied = github.has_label(pr_data, TRUNK_LABEL)
+    main_merged = False
     fix_commits_pushed = 0
+    run_state_cache: dict[int, tuple[str | None, str | None]] = {}
+    last_status: str | None = None
 
     while True:
         # 1. Verify the PR head is still trusted.
@@ -215,76 +356,83 @@ def shepherd(pr: int, max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS) -> Non
                 f"{subject!r}. Manual intervention required."
             )
 
-        # 2. Approve any first-time-contributor workflow runs.
-        approved = _approve_pending_runs(current)
+        # 2. Approve any approval-pending workflow runs.
+        approved = _approve_pending_runs(current, run_state_cache)
         if approved:
             time.sleep(APPROVAL_SETTLE_SEC)
             continue
 
-        # 3. Read CI status (required checks only).
+        # 3. Read required-check status.
         checks = github.get_pr_checks(pr)
         status = github.evaluate_checks(checks)
-        log(f"CI status: {status} ({len(checks)} required checks)")
+        if status != last_status:
+            log(f"CI status -> {status} ({len(checks)} required checks)")
+            last_status = status
 
         if status == "pending":
             time.sleep(POLL_INTERVAL_SEC)
             continue
 
-        if status == "passed":
-            if not trunk_applied:
-                log(f"required CI green; applying {TRUNK_LABEL} label")
-                github.add_label(pr, TRUNK_LABEL)
-                trunk_applied = True
-                time.sleep(APPROVAL_SETTLE_SEC)
-                continue
-            log("ALL CI GREEN.")
-            log(
-                f"Hand off to a human reviewer; have them comment "
-                f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
-            )
-            return
-
-        # status == "failed": invoke claude.
-        if fix_commits_pushed >= MAX_FIX_COMMITS:
-            die(
-                f"already pushed {fix_commits_pushed} [MERGEDOG] fix commits "
-                f"and CI is still failing; halting for human intervention"
-            )
-
-        failed = github.get_failed_job_logs(pr)
-        prompt = render_fix_prompt(
-            title=pr_data.get("title", ""),
-            url=pr_data.get("url", ""),
-            branch=pr_data["headRefName"],
-            failed_jobs=failed,
-        )
-        ran_cleanly, new_sha = claude_mod.invoke_fixer(worktree, prompt)
-        if not ran_cleanly:
-            die("claude exited abnormally or produced an invalid commit")
-
-        if new_sha is None:
-            # Claude judged the failures spurious. Advance: either apply
-            # ciflow/trunk if we haven't yet, or declare done.
-            if not trunk_applied:
-                log(
-                    f"claude judged failures spurious; applying {TRUNK_LABEL} "
-                    f"to advance"
+        if status == "failed":
+            # Hand the failures to claude; only advance once claude is OK
+            # with the situation (either pushed a fix or judged spurious).
+            if fix_commits_pushed >= MAX_FIX_COMMITS:
+                die(
+                    f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
+                    f"commits and CI is still failing; halting for human "
+                    f"intervention"
                 )
-                github.add_label(pr, TRUNK_LABEL)
-                trunk_applied = True
-                time.sleep(APPROVAL_SETTLE_SEC)
-                continue
-            log("ALL CI EFFECTIVELY GREEN (claude judged remaining failures spurious).")
-            log(
-                f"Hand off to a human reviewer; have them comment "
-                f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
+            failed = github.get_failed_job_logs(pr)
+            prompt = render_fix_prompt(
+                title=pr_data.get("title", ""),
+                url=pr_data.get("url", ""),
+                branch=pr_data["headRefName"],
+                failed_jobs=failed,
             )
-            return
+            ran_cleanly, new_sha = claude_mod.invoke_fixer(worktree, prompt)
+            if not ran_cleanly:
+                die("claude exited abnormally or produced an invalid commit")
+            if new_sha is None:
+                log("claude judged failures spurious; advancing")
+                last_status = None  # force re-log on next pass
+                # fall through to advance below
+            else:
+                trust.trust(new_sha)
+                log(
+                    f"pushing {new_sha[:12]} to "
+                    f"{fork_remote}/{pr_data['headRefName']}"
+                )
+                repo.push_to_fork(worktree, fork_remote, pr_data["headRefName"])
+                fix_commits_pushed += 1
+                _wait_for_pr_head(pr, new_sha)
+                last_status = None
+                continue
 
-        # Claude made a fix commit; trust it and push.
-        trust.trust(new_sha)
-        log(f"pushing {new_sha[:12]} to {fork_remote}/{pr_data['headRefName']}")
-        repo.push_to_fork(worktree, fork_remote, pr_data["headRefName"])
-        fix_commits_pushed += 1
-        # New CI runs will fire on the next iteration.
-        time.sleep(APPROVAL_SETTLE_SEC)
+        # Either CI passed, or claude said "spurious". Advance.
+        if not main_merged:
+            new_sha = _maybe_merge_main(
+                worktree,
+                trust,
+                fork_remote,
+                pr_data["headRefName"],
+                max_base_age_days,
+                pr_data,
+            )
+            main_merged = True
+            if new_sha is not None:
+                # New CI will run on the merged commit; back to polling.
+                last_status = None
+                continue
+        if not trunk_applied:
+            log(f"required CI green; applying {TRUNK_LABEL} label")
+            github.add_label(pr, TRUNK_LABEL)
+            trunk_applied = True
+            last_status = None
+            time.sleep(APPROVAL_SETTLE_SEC)
+            continue
+        log("ALL CI GREEN.")
+        log(
+            f"Hand off to a human reviewer; have them comment "
+            f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
+        )
+        return
