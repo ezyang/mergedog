@@ -149,26 +149,11 @@ def approve_workflow_run(run_id: int | str) -> tuple[bool, str]:
     return False, msg
 
 
-def get_pr_checks(pr: int) -> list[dict]:
+def get_pr_checks_all(pr: int) -> list[dict]:
     """Return the latest-commit checks for a PR.
 
     ``gh pr checks --json`` already filters to the head commit.
     """
-    return _gh_pr_checks_json(
-        [
-            "pr",
-            "checks",
-            str(pr),
-            "--repo",
-            REPO,
-            "--json",
-            "name,state,workflow,link,bucket",
-            "--required",  # avoid drowning in optional informational checks
-        ]
-    )
-
-
-def get_pr_checks_all(pr: int) -> list[dict]:
     return _gh_pr_checks_json(
         [
             "pr",

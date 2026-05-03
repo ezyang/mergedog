@@ -385,12 +385,16 @@ def shepherd(
             time.sleep(APPROVAL_SETTLE_SEC)
             continue
 
-        # 3. Read required-check status.
-        checks = github.get_pr_checks(pr)
+        # 3. Read check status.
+        checks = github.get_pr_checks_all(pr)
         status = github.evaluate_checks(checks)
-        if status != last_status:
-            log(f"CI status -> {status} ({len(checks)} required checks)")
-            last_status = status
+        done = sum(
+            1 for c in checks if c.get("bucket") not in {"pending", None}
+        )
+        summary = f"{status} ({done}/{len(checks)} done)"
+        if summary != last_status:
+            log(f"CI status -> {summary}")
+            last_status = summary
 
         if status == "pending":
             time.sleep(POLL_INTERVAL_SEC)
