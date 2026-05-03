@@ -174,6 +174,16 @@ def add_label(pr: int, label: str) -> None:
     )
 
 
+def post_pr_comment(pr: int, body: str) -> None:
+    """Post a comment on the PR. Body is passed via stdin to dodge argv limits."""
+    subprocess.run(
+        ["gh", "pr", "comment", str(pr), "--repo", REPO, "--body-file", "-"],
+        input=body,
+        text=True,
+        check=True,
+    )
+
+
 def has_label(pr_data: dict, label: str) -> bool:
     return any(l.get("name") == label for l in pr_data.get("labels", []))
 

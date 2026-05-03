@@ -5,6 +5,8 @@ One process per PR. Synchronous. Halts on any sign of an untrusted change.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mergedog import claude as claude_mod
@@ -15,6 +17,95 @@ from mergedog.paths import context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_COMMIT_SUBJECT
 from mergedog.state import TrustDB
+
+
+@dataclass
+class _ClaudeSession:
+    """One claude invocation, captured for the handoff comment."""
+
+    mode: str  # "fix-CI" or "merge-resolver"
+    started_at: str  # UTC ISO 8601
+    sha_before: str
+    sha_after: str | None  # ``None`` when claude judged the situation a no-op
+    verdict: str  # human-readable summary
+    transcript: list[str] = field(default_factory=list)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# GitHub PR comments cap out at 65,536 characters. We leave headroom for
+# our own framing and a "[truncated]" tail.
+_MAX_COMMENT_LEN = 60000
+
+
+def _format_handoff_comment(pr_data: dict, sessions: list["_ClaudeSession"]) -> str:
+    """Build the markdown body posted on the PR at handoff."""
+    n = len(sessions)
+    head: list[str] = [
+        "## mergedog handoff",
+        "",
+        "All required CI is green. Ready for human review and "
+        "`@pytorchbot merge`.",
+        "",
+    ]
+    if n == 0:
+        head.append(
+            "claude was not invoked during this run (CI was green from the "
+            "start; no merge or fix needed)."
+        )
+        return "\n".join(head) + "\n"
+
+    head.append(
+        f"During shepherding, claude was invoked **{n}** time"
+        f"{'' if n == 1 else 's'}. If any required CI shows red, claude "
+        "judged that failure unrelated to this PR's changes — please verify "
+        "below before merging."
+    )
+    head.append("")
+    body = "\n".join(head)
+
+    for i, s in enumerate(sessions, 1):
+        section = [
+            f"### Session {i} — {s.mode} ({s.started_at})",
+            "",
+            f"- **Before:** `{s.sha_before[:12]}`",
+        ]
+        if s.sha_after:
+            section.append(f"- **After:** `{s.sha_after[:12]}`")
+        section.append(f"- **Verdict:** {s.verdict}")
+        section.append("")
+        section.append("<details><summary>claude transcript</summary>")
+        section.append("")
+        section.append("```")
+        section.extend(s.transcript)
+        section.append("```")
+        section.append("")
+        section.append("</details>")
+        section.append("")
+        body += "\n" + "\n".join(section)
+
+    if len(body) > _MAX_COMMENT_LEN:
+        body = (
+            body[:_MAX_COMMENT_LEN]
+            + "\n\n_[truncated to fit GitHub's comment limit; full transcripts "
+            "live in `~/.mergedog/logs/" + str(pr_data.get("number")) + ".log` "
+            "on the operator's machine]_"
+        )
+    return body
+
+
+def _post_handoff_comment(
+    pr: int, pr_data: dict, sessions: list["_ClaudeSession"]
+) -> None:
+    body = _format_handoff_comment(pr_data, sessions)
+    try:
+        github.post_pr_comment(pr, body)
+        log(f"posted handoff summary to PR #{pr}")
+    except Exception as e:
+        # Don't halt on comment failure -- shepherding is otherwise complete.
+        log(f"WARNING: failed to post handoff comment: {e}")
 
 POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
@@ -283,11 +374,13 @@ def _maybe_merge_main(
     branch: str,
     max_base_age_days: int,
     pr_data: dict,
+    sessions: list[_ClaudeSession],
 ) -> str | None:
     """If the PR's merge-base is older than the threshold, merge origin/main.
 
     On a clean merge, push it. On a conflict, hand off to claude to resolve;
     if claude can't, halt. Returns the new head SHA if a merge happened.
+    Records any claude invocation into ``sessions`` for the handoff comment.
     """
     age_sec = repo.merge_base_age_seconds(worktree)
     age_days = age_sec / 86400.0
@@ -315,7 +408,30 @@ def _maybe_merge_main(
             context_path=str(ctx_path),
             merge_subject=MERGE_COMMIT_SUBJECT,
         )
-        ran_cleanly, new_sha = claude_mod.invoke_merge_resolver(worktree, prompt)
+        sha_before = repo.head_sha(worktree)
+        started_at = _utc_now_iso()
+        ran_cleanly, new_sha, transcript = claude_mod.invoke_merge_resolver(
+            worktree, prompt
+        )
+        verdict = (
+            f"resolved conflicts in commit {new_sha[:12]}"
+            if new_sha
+            else (
+                "aborted the merge"
+                if ran_cleanly
+                else "exited with a contract violation"
+            )
+        )
+        sessions.append(
+            _ClaudeSession(
+                mode="merge-resolver",
+                started_at=started_at,
+                sha_before=sha_before,
+                sha_after=new_sha,
+                verdict=verdict,
+                transcript=transcript,
+            )
+        )
         if not ran_cleanly:
             die("claude failed to resolve the merge conflict cleanly")
         if new_sha is None:
@@ -379,6 +495,7 @@ def shepherd(
     # we reset the timer.
     stable_observation: tuple[str, int] | None = None
     stable_since: float = 0.0
+    sessions: list[_ClaudeSession] = []
 
     while True:
         # 1. Verify the PR head is still trusted.
@@ -437,7 +554,33 @@ def shepherd(
                 context_path=str(ctx_path),
                 failed_jobs=failed,
             )
-            ran_cleanly, new_sha = claude_mod.invoke_fixer(worktree, prompt)
+            session_failed_jobs = [name for name, _ in failed]
+            sha_before = current
+            started_at = _utc_now_iso()
+            ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(
+                worktree, prompt
+            )
+            verdict = (
+                f"pushed fix commit {new_sha[:12]}"
+                if new_sha
+                else (
+                    "judged failures spurious (no commit)"
+                    if ran_cleanly
+                    else "exited with a contract violation"
+                )
+            )
+            if session_failed_jobs:
+                verdict += f" — failing jobs: {', '.join(session_failed_jobs)}"
+            sessions.append(
+                _ClaudeSession(
+                    mode="fix-CI",
+                    started_at=started_at,
+                    sha_before=sha_before,
+                    sha_after=new_sha,
+                    verdict=verdict,
+                    transcript=transcript,
+                )
+            )
             if not ran_cleanly:
                 die("claude exited abnormally or produced an invalid commit")
             if new_sha is None:
@@ -480,6 +623,7 @@ def shepherd(
                 pr_data["headRefName"],
                 max_base_age_days,
                 pr_data,
+                sessions,
             )
             main_merged = True
             if new_sha is not None:
@@ -494,6 +638,7 @@ def shepherd(
             time.sleep(APPROVAL_SETTLE_SEC)
             continue
         log("ALL CI GREEN.")
+        _post_handoff_comment(pr, pr_data, sessions)
         log(
             f"Hand off to a human reviewer; have them comment "
             f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
