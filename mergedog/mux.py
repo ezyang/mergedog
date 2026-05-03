@@ -19,7 +19,9 @@ Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -66,8 +68,35 @@ def _spawn(pr: int, extra: list[str]) -> tuple[subprocess.Popen, object, Path]:
         stdout=f,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        # Make each shepherd its own session/process-group leader. Without
+        # this, ``cancel`` would SIGTERM only the python interpreter and
+        # leave any in-flight ``claude`` / ``gh`` / ``git`` subprocess
+        # running orphaned -- claude in particular can keep editing the
+        # worktree after we thought the shepherd was dead.
+        start_new_session=True,
     )
     return (p, f, log_path)
+
+
+def _terminate_group(p: subprocess.Popen, *, grace: float = 5.0) -> None:
+    """SIGTERM the process group; SIGKILL it after ``grace`` seconds if needed."""
+    if p.poll() is not None:
+        return
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        p.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            p.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 class MuxApp(App):
@@ -110,13 +139,7 @@ class MuxApp(App):
         if entry is None:
             self.notify(f"[{pr}] unknown", severity="warning")
             return
-        p = entry[0]
-        if p.poll() is None:
-            p.terminate()
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.kill()
+        _terminate_group(entry[0])
         self.notify(f"[{pr}] terminated")
 
     def _refresh(self) -> None:
@@ -185,8 +208,7 @@ class MuxApp(App):
 
     def on_unmount(self) -> None:
         for _pr, (p, f, _) in self.procs.items():
-            if p.poll() is None:
-                p.terminate()
+            _terminate_group(p, grace=2.0)
             try:
                 f.close()  # type: ignore[attr-defined]
             except Exception:

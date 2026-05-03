@@ -13,6 +13,7 @@ the PR has been touched by someone other than mergedog after approval.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,17 +45,23 @@ class TrustDB:
     def save(self) -> None:
         assert self.path is not None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(
-                {
-                    "pr": self.pr,
-                    "trusted_shas": self.trusted_shas,
-                    "head_branch": self.head_branch,
-                    "head_repo_clone_url": self.head_repo_clone_url,
-                },
-                indent=2,
-            )
+        # Atomic write: ``write_text`` is open->write->close, which can leave
+        # a half-written or empty file if we're SIGKILL'd mid-write. The
+        # trust DB is the only piece of state mergedog itself authors that
+        # can't be regenerated on restart, so we go through a tempfile +
+        # rename instead.
+        data = json.dumps(
+            {
+                "pr": self.pr,
+                "trusted_shas": self.trusted_shas,
+                "head_branch": self.head_branch,
+                "head_repo_clone_url": self.head_repo_clone_url,
+            },
+            indent=2,
         )
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(data)
+        os.replace(tmp, self.path)
 
     def trust(self, sha: str) -> None:
         if sha and sha not in self.trusted_shas:
