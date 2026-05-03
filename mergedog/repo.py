@@ -6,11 +6,59 @@ Per-PR work happens in disposable worktrees under ``~/.mergedog/worktrees/<pr>``
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
+from typing import Sequence
 
 from mergedog.log import die, log
 from mergedog.paths import REPO_DIR, REPO_SSH_URL, ensure_dirs, worktree_dir
 from mergedog.process import run, run_streamed
+
+
+_GIT_LOCK_TIMEOUT_SEC = 2.0
+_GIT_LOCK_MAX_BACKOFF_SEC = 0.5
+
+
+def _git_write_with_retry(
+    args: Sequence[str],
+    *,
+    cwd: Path,
+    loud: bool = False,
+):
+    """Run a git command that mutates ``.git/config`` or refs, retrying on lock contention.
+
+    When the mux launches several shepherd subprocesses at once, they all
+    hammer the same ``~/.mergedog/repo/.git/config`` and a few collide on
+    git's coarse "could not lock config file" error (exit 255). The
+    operations are idempotent, so we back off and retry.
+
+    Hard time budget: ``_GIT_LOCK_TIMEOUT_SEC`` total wall-clock. Anything
+    longer is not lock contention -- something is broken (stale lock file,
+    permission issue) and we should surface the original error rather than
+    sit silently for minutes.
+    """
+    deadline = time.monotonic() + _GIT_LOCK_TIMEOUT_SEC
+    sleep = 0.05
+    attempts = 0
+    while True:
+        attempts += 1
+        proc = run(list(args), cwd=cwd, check=False, loud=loud)
+        if proc.returncode == 0:
+            if attempts > 1:
+                log(f"  (recovered after {attempts} attempts)")
+            return proc
+        stderr = (proc.stderr or "").lower()
+        is_lock_error = proc.returncode in (255, 128) and (
+            "could not lock" in stderr
+            or "unable to create" in stderr
+            or "another git process seems to be running" in stderr
+        )
+        remaining = deadline - time.monotonic()
+        if not is_lock_error or remaining <= 0:
+            proc.check_returncode()
+        log(f"  git lock contention; retrying in {sleep:.2f}s")
+        time.sleep(min(sleep, remaining))
+        sleep = min(sleep * 1.5, _GIT_LOCK_MAX_BACKOFF_SEC)
 
 
 _AUTHOR_SUFFIX = " via mergedog"
@@ -59,8 +107,15 @@ def ensure_clone() -> None:
             die(f"git clone failed (exit {rc})")
     # Make ``git push`` (no args) follow each branch's configured upstream.
     # That's how we make per-worktree manual pushes Just Work without the
-    # operator having to remember a fork remote name.
-    run(["git", "config", "push.default", "upstream"], cwd=REPO_DIR)
+    # operator having to remember a fork remote name. Read first to skip
+    # the contended write in steady state.
+    current = run(
+        ["git", "config", "--get", "push.default"], cwd=REPO_DIR, check=False
+    ).stdout.strip()
+    if current != "upstream":
+        _git_write_with_retry(
+            ["git", "config", "push.default", "upstream"], cwd=REPO_DIR
+        )
 
 
 def fetch_origin() -> None:
@@ -73,9 +128,15 @@ def add_fork_remote(name: str, ssh_url: str) -> None:
     if proc.returncode == 0:
         existing = proc.stdout.strip()
         if existing != ssh_url:
-            run(["git", "remote", "set-url", name, ssh_url], cwd=REPO_DIR, loud=True)
+            _git_write_with_retry(
+                ["git", "remote", "set-url", name, ssh_url],
+                cwd=REPO_DIR,
+                loud=True,
+            )
     else:
-        run(["git", "remote", "add", name, ssh_url], cwd=REPO_DIR, loud=True)
+        _git_write_with_retry(
+            ["git", "remote", "add", name, ssh_url], cwd=REPO_DIR, loud=True
+        )
 
 
 def fetch_pr_branch(remote: str, branch: str) -> str:
