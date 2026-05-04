@@ -359,6 +359,99 @@ def is_trusted_association(association: str | None) -> bool:
     return (association or "").upper() in _TRUSTED_ASSOCIATIONS
 
 
+# Tokens that mark "the actual failure is somewhere around here" in CI logs.
+# Order doesn't matter -- we pick the *last* occurrence across all of them.
+# Add new ones here as they show up in HALTed runs; tweaks are cheap.
+_LOG_FAILURE_MARKERS = (
+    "error:",                   # compiler/linker, plus most lower-level tools
+    "FAILED:",                  # ninja
+    "ninja: build stopped",     # ninja's terminal line
+    "##[error]",                # GitHub Actions error annotation
+    "fatal error",              # clang/gcc fatal
+    "Traceback (most recent",   # Python tracebacks
+    "AssertionError",
+    "RuntimeError:",
+    "Segmentation fault",
+    "FATAL:",
+    "Test Failed",
+    "FAILED test",              # pytest summary lines
+)
+
+
+def _strip_gh_log_prefix(line: str) -> str:
+    """Strip the ``<job>\\tSTEP\\t<timestamp> `` prefix from a ``gh run view --log`` line.
+
+    ``gh`` prefixes every line with the same job name, step name (often
+    ``UNKNOWN STEP``), and an RFC3339 timestamp. The prefix is the same on
+    every line and eats ~70 chars; stripping it ~doubles the useful content
+    that fits in our character budget.
+    """
+    parts = line.split("\t", 2)
+    if len(parts) != 3:
+        return line
+    rest = parts[2]
+    sp = rest.find(" ")
+    if sp <= 0:
+        return rest
+    head = rest[:sp]
+    # RFC3339-ish timestamp: contains 'T' and ends with 'Z' (or has a '+' offset).
+    if "T" in head and (head.endswith("Z") or "+" in head):
+        return rest[sp + 1:]
+    return rest
+
+
+def _trim_log_for_prompt(text: str, max_chars: int) -> str:
+    """Trim a CI log to ~``max_chars``, biased toward the actual failure line.
+
+    Strategy:
+      1. Strip per-line ``gh`` prefixes (saves ~40-50% of bytes).
+      2. If still over budget, find the *last* occurrence of any
+         ``_LOG_FAILURE_MARKERS`` token and keep a window around it
+         (most chars before, fewer after) plus a small tail.
+      3. If no marker is found, fall back to head+tail so the agent
+         at least sees both ends rather than just post-job cleanup.
+
+    Why bias *before* the marker: compiler errors typically print the error
+    line, then the source location, then a caret pointing at the column.
+    Walking back from the marker reaches the entire diagnostic; walking
+    forward mostly reaches "ninja: build stopped" and shutdown noise.
+    """
+    cleaned = "\n".join(_strip_gh_log_prefix(l) for l in text.splitlines())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    best = -1
+    for m in _LOG_FAILURE_MARKERS:
+        i = cleaned.rfind(m)
+        if i > best:
+            best = i
+    if best < 0:
+        # No marker; fall back to head+tail so the agent sees both ends.
+        half = max_chars // 2
+        return (
+            cleaned[: max_chars - half]
+            + "\n... [middle truncated] ...\n"
+            + cleaned[-half:]
+        )
+    head_marker = "... [head truncated] ...\n"
+    tail_marker = "\n... [tail truncated] ...\n"
+    tail_budget = min(2000, max_chars // 8)
+    body_budget = max_chars - tail_budget - len(head_marker) - len(tail_marker)
+    before = int(body_budget * 0.8)
+    after = body_budget - before
+    start = max(0, best - before)
+    end = min(len(cleaned), best + after)
+    pieces: list[str] = []
+    if start > 0:
+        pieces.append(head_marker)
+    pieces.append(cleaned[start:end])
+    if end < len(cleaned) - tail_budget:
+        pieces.append(tail_marker)
+        pieces.append(cleaned[-tail_budget:])
+    elif end < len(cleaned):
+        pieces.append(cleaned[end:])
+    return "".join(pieces)
+
+
 def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> list[tuple[str, str]]:
     """Return ``(name, log_excerpt)`` pairs for failing jobs on the PR head."""
     checks = get_pr_checks_all(pr)
@@ -379,8 +472,7 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
             args += ["--job", str(job_id)]
         proc = _gh(args, check=False)
         text = proc.stdout or proc.stderr or "<no log available>"
-        if len(text) > max_chars:
-            text = text[-max_chars:]
+        text = _trim_log_for_prompt(text, max_chars)
         out.append((c.get("name", "<unknown>"), text))
     return out
 

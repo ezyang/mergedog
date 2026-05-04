@@ -1,0 +1,81 @@
+import unittest
+
+from mergedog.github import _strip_gh_log_prefix, _trim_log_for_prompt
+
+
+class TestStripPrefix(unittest.TestCase):
+    def test_strips_job_step_timestamp(self):
+        line = (
+            "linux-jammy-py3.10-clang18-asan / build\tUNKNOWN STEP\t"
+            "2026-05-04T18:20:18.5493257Z FAILED: foo.o"
+        )
+        self.assertEqual(_strip_gh_log_prefix(line), "FAILED: foo.o")
+
+    def test_no_prefix_passthrough(self):
+        self.assertEqual(_strip_gh_log_prefix("plain line"), "plain line")
+
+    def test_no_timestamp_keeps_content(self):
+        line = "job\tstep\tno timestamp here"
+        self.assertEqual(_strip_gh_log_prefix(line), "no timestamp here")
+
+    def test_two_tabs_only(self):
+        # Only two tabs (job + content, no step) — shouldn't crash.
+        self.assertEqual(_strip_gh_log_prefix("a\tb"), "a\tb")
+
+
+def _make_log(prefix_lines: int, error_block: str, tail_lines: int) -> str:
+    """Build a synthetic ``gh run view --log`` shaped string."""
+    job_prefix = "job-x / build\tUNKNOWN STEP\t2026-05-04T18:00:00.0000000Z "
+    head = "\n".join(
+        f"{job_prefix}preamble line {i}" for i in range(prefix_lines)
+    )
+    err = "\n".join(f"{job_prefix}{line}" for line in error_block.splitlines())
+    tail = "\n".join(
+        f"{job_prefix}post-job cleanup noise {i}" for i in range(tail_lines)
+    )
+    return "\n".join([head, err, tail])
+
+
+class TestTrimLog(unittest.TestCase):
+    def test_short_log_passthrough_minus_prefix(self):
+        text = "job\tstep\t2026-05-04T18:20:18Z FAILED: build broken\n"
+        out = _trim_log_for_prompt(text, max_chars=10_000)
+        self.assertIn("FAILED: build broken", out)
+        # The job/step/timestamp prefix should be gone.
+        self.assertNotIn("UNKNOWN STEP", out)
+        self.assertNotIn("2026-05-04T18:20:18Z", out)
+
+    def test_window_around_late_marker(self):
+        # Mimics the 182115 shape: real error well before tons of cleanup.
+        # Preamble has to be big enough to push the marker past the
+        # before-the-marker budget so we see head_truncated.
+        log = _make_log(
+            prefix_lines=10_000,
+            error_block=(
+                "FAILED: caffe2/init.cpp.o\n"
+                "init.cpp:4046:40: error: 'c10d::ProcessGroupNCCL' has not been declared\n"
+                "ninja: build stopped: subcommand failed."
+            ),
+            tail_lines=40_000,
+        )
+        out = _trim_log_for_prompt(log, max_chars=4_000)
+        self.assertLessEqual(len(out), 4_500)
+        self.assertIn("error:", out)
+        self.assertIn("ProcessGroupNCCL", out)
+        # We skipped the bulk of both preamble and tail.
+        self.assertIn("[head truncated]", out)
+        self.assertIn("[tail truncated]", out)
+
+    def test_no_marker_falls_back_to_head_and_tail(self):
+        # No failure markers at all — just lots of unrelated lines.
+        prefix = "job\tstep\t2026-05-04T18:00:00Z "
+        body = "\n".join(f"{prefix}line {i}" for i in range(20_000))
+        out = _trim_log_for_prompt(body, max_chars=2_000)
+        self.assertIn("[middle truncated]", out)
+        # Should contain both an early line and a late line.
+        self.assertIn("line 0", out)
+        self.assertIn("line 19999", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
