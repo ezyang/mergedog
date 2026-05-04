@@ -497,8 +497,13 @@ def shepherd(
 
     # Past validation: we're committed to running. Tag the PR so other
     # operators / mergedogs see it's already being handled, and arrange for
-    # the tag to come off no matter how we exit.
-    github.add_label(pr, MERGEDOG_LABEL)
+    # the tag to come off no matter how we exit. The label is purely a
+    # coordination signal -- if GitHub returns a transient 5xx (we've seen
+    # 502s here), shepherd anyway rather than aborting before any real work.
+    try:
+        github.add_label(pr, MERGEDOG_LABEL)
+    except Exception as e:
+        log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     try:
         _shepherd_body(pr, pr_data, rebase, accept_divergence, ignore_sev)
