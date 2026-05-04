@@ -144,7 +144,7 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "State", "Last")
+        table.add_columns("PR", "", "Last")
         for pr in self._initial:
             self._do_add(pr, [])
         self._refresh()
