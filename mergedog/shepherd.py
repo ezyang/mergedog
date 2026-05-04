@@ -17,7 +17,7 @@ from mergedog.handoff import (
     watch_post_handoff,
 )
 from mergedog.log import die, log
-from mergedog.paths import REPO_SLUG, context_file
+from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
@@ -116,8 +116,6 @@ def _validate_pr(pr_data: dict) -> None:
         )
     if pr_data.get("isDraft"):
         die("PR is a draft")
-    if _is_ghstack(pr_data):
-        die("ghstack PRs are not supported")
     if _is_fork_pr(pr_data) and not pr_data.get("maintainerCanModify"):
         die(
             "'Allow edits by maintainers' is not enabled on this PR; "
@@ -229,6 +227,38 @@ def _safe_push(
     _wait_for_no_active_sev(reason, ignore_sev=ignore_sev)
     repo.push_to_fork(worktree, fork_remote, branch)
     _wait_for_pr_head(pr, new_sha)
+
+
+def _publish_ghstack_fix(
+    pr: int,
+    worktree: Path,
+    head_ref: str,
+    fix_sha: str,
+    trust: TrustDB,
+    *,
+    ignore_sev: bool,
+) -> None:
+    """Fold claude's [MERGEDOG] commit into /orig and re-publish via ghstack.
+
+    Fixup (not squash): claude's commit message is dropped from the resulting
+    /orig commit -- /orig keeps the contributor's original message -- and is
+    instead passed to ``ghstack submit -m`` so it lands as the submit's audit
+    message. After ghstack pushes, fetch the new synthetic /head SHA from
+    origin and trust it before the polling loop sees it on GitHub's side.
+    """
+    # Capture claude's full [MERGEDOG] message before fixup discards it.
+    fix_message = repo.commit_message(worktree, fix_sha)
+    repo.fixup_into_parent(worktree)
+    _wait_for_no_active_sev(
+        "re-publishing via ghstack submit", ignore_sev=ignore_sev
+    )
+    repo.ghstack_submit(worktree, fix_message)
+    new_head_sha = repo.fetch_ghstack_head(head_ref)
+    trust.trust(new_head_sha)
+    log(
+        f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}"
+    )
+    _wait_for_pr_head(pr, new_head_sha)
 
 
 def _record_claude_session(
@@ -397,15 +427,28 @@ def shepherd(
 
     pr_data = github.get_pr(pr)
     _validate_pr(pr_data)
+    is_ghstack = _is_ghstack(pr_data)
+    branch = pr_data["headRefName"]
 
     trust = TrustDB.load_or_create(pr)
-    trust.head_branch = pr_data["headRefName"]
-    fork_url = _fork_ssh_url(pr_data)
-    trust.head_repo_clone_url = fork_url
+    trust.head_branch = branch
+    if is_ghstack:
+        # ghstack PRs live in origin (pytorch/pytorch). The /head ref is the
+        # synthetic GitHub-PR commit; the contributor's actual single-commit
+        # change lives at the matching /orig ref. We work locally on /orig
+        # and re-publish via ``ghstack submit --no-stack``.
+        fork_url: str | None = None
+        fork_remote: str | None = None
+        trust.head_repo_clone_url = REPO_SSH_URL
+    else:
+        fork_url = _fork_ssh_url(pr_data)
+        fork_remote = _fork_remote_name(pr_data)
+        trust.head_repo_clone_url = fork_url
     trust.save()
 
-    fork_remote = _fork_remote_name(pr_data)
-    repo.add_fork_remote(fork_remote, fork_url)
+    if not is_ghstack:
+        assert fork_remote is not None and fork_url is not None
+        repo.add_fork_remote(fork_remote, fork_url)
 
     viewer = github.viewer_login()
     self_pr = github.is_self_pr(pr_data, viewer)
@@ -416,42 +459,62 @@ def shepherd(
     )
     head_sha = pr_data["headRefOid"]
 
-    fork_sha = repo.fetch_pr_branch(fork_remote, pr_data["headRefName"])
-    if fork_sha != head_sha:
-        die(
-            f"contributor's fork HEAD ({fork_sha[:12]}) differs from the SHA "
-            f"GitHub reports for the PR ({head_sha[:12]}); refusing to act"
-        )
-
-    worktree = repo.ensure_worktree(
-        pr, head_sha, fork_remote, pr_data["headRefName"]
-    )
+    if is_ghstack:
+        # Verify origin's view of /head agrees with what gh reports for the
+        # PR -- a sanity check analogous to the fork_sha != head_sha check
+        # below. /orig is the actual checkout target.
+        origin_head_sha = repo.fetch_ghstack_head(branch)
+        if origin_head_sha != head_sha:
+            die(
+                f"origin's {branch} ({origin_head_sha[:12]}) differs from "
+                f"the SHA GitHub reports for the PR ({head_sha[:12]}); "
+                f"refusing to act"
+            )
+        orig_sha = repo.fetch_ghstack_orig(branch)
+        worktree = repo.ensure_worktree(pr, orig_sha)
+    else:
+        assert fork_remote is not None
+        fork_sha = repo.fetch_pr_branch(fork_remote, branch)
+        if fork_sha != head_sha:
+            die(
+                f"contributor's fork HEAD ({fork_sha[:12]}) differs from the SHA "
+                f"GitHub reports for the PR ({head_sha[:12]}); refusing to act"
+            )
+        worktree = repo.ensure_worktree(pr, head_sha, fork_remote, branch)
 
     log(f"shepherding PR #{pr}: {pr_data.get('title', '')}")
     log(f"  url:        {pr_data.get('url', '')}")
-    log(f"  branch:     {pr_data['headRefName']}")
-    log(f"  fork:       {fork_remote} -> {fork_url}")
+    log(f"  branch:     {branch}")
+    if is_ghstack:
+        log(f"  ghstack:    /head {head_sha[:12]} -> /orig {orig_sha[:12]}")
+    else:
+        log(f"  fork:       {fork_remote} -> {fork_url}")
     log(f"  worktree:   {worktree}")
 
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
-    branch = pr_data["headRefName"]
 
     # User-requested upfront merge of origin/main. Default behavior
     # otherwise is to never auto-rebase based on age -- mergedog only
     # merges main when piggybacking on a fix push it was going to do
     # anyway, or when the operator explicitly asks via ``--rebase``.
     if rebase:
-        log("user requested upfront rebase onto origin/main")
-        new_sha = _merge_main_resolving_conflicts(
-            worktree, trust, branch, pr_data, sessions, ignore_sev=ignore_sev
-        )
-        if new_sha is not None:
-            log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
-            _safe_push(
-                pr, worktree, fork_remote, branch, new_sha,
-                reason="pushing merge-main commit", ignore_sev=ignore_sev,
+        if is_ghstack:
+            # Auto-rebase for ghstack would mean rebasing /orig onto
+            # origin/main and re-submitting. Not yet wired; for now the
+            # operator handles base management with ``ghstack`` directly.
+            log("--rebase ignored for ghstack PRs (not yet wired)")
+        else:
+            log("user requested upfront rebase onto origin/main")
+            new_sha = _merge_main_resolving_conflicts(
+                worktree, trust, branch, pr_data, sessions, ignore_sev=ignore_sev
             )
+            if new_sha is not None:
+                log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
+                _safe_push(
+                    pr, worktree, fork_remote, branch, new_sha,
+                    reason="pushing merge-main commit", ignore_sev=ignore_sev,
+                )
 
     trunk_applied = github.has_label(pr_data, TRUNK_LABEL)
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
@@ -524,6 +587,7 @@ def shepherd(
                 branch=branch,
                 context_path=str(ctx_path),
                 failed_jobs=failed,
+                is_ghstack=is_ghstack,
             )
             session_failed_jobs = [name for name, _ in failed]
             sha_before = current
@@ -553,7 +617,16 @@ def shepherd(
                 log("claude judged failures spurious; advancing")
                 last_status = None  # force re-log on next pass
                 # fall through to advance below
+            elif is_ghstack:
+                _publish_ghstack_fix(
+                    pr, worktree, branch, new_sha, trust,
+                    ignore_sev=ignore_sev,
+                )
+                fix_commits_pushed += 1
+                last_status = None
+                continue
             else:
+                assert fork_remote is not None
                 trust.trust(new_sha)
                 # Piggyback: we're going to push and trigger fresh CI
                 # anyway, so merge origin/main while we're at it. CI then
