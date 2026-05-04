@@ -20,6 +20,11 @@ MERGEDOG_PREFIX = "[MERGEDOG]"
 # not optional.
 _CLAUDE_MODEL = "opus"
 
+# pytorch-flavored lintrunner lives in the user's pytorch venv. We borrow
+# it instead of asking mergedog to maintain its own toolchain. Override
+# with ``MERGEDOG_LINTRUNNER=/path/to/lintrunner`` if your layout differs.
+_DEFAULT_LINTRUNNER = Path.home() / "Dev" / "pytorch" / ".venv" / "bin" / "lintrunner"
+
 
 def _relativize(text: str, worktree: Path | None) -> str:
     """Replace the worktree absolute path with ``./`` so log lines aren't
@@ -167,6 +172,106 @@ def _is_clean(worktree: Path) -> bool:
     return proc.stdout.strip() == ""
 
 
+def _resolve_lintrunner() -> Path | None:
+    """Return the lintrunner binary to use, or None if it's unavailable.
+
+    ``MERGEDOG_LINTRUNNER`` env override wins; otherwise we fall back to
+    the user's pytorch venv. A missing lintrunner is a warning, not a
+    failure -- formatting drift will still be caught by CI; we'd just
+    have wasted a fix-CI cycle on it.
+    """
+    override = os.environ.get("MERGEDOG_LINTRUNNER")
+    if override:
+        p = Path(override).expanduser()
+        if p.exists():
+            return p
+        log(f"WARNING: MERGEDOG_LINTRUNNER={override} not found; skipping lintrunner")
+        return None
+    if _DEFAULT_LINTRUNNER.exists():
+        return _DEFAULT_LINTRUNNER
+    log(
+        f"WARNING: lintrunner not found at {_DEFAULT_LINTRUNNER}; "
+        "skipping (set MERGEDOG_LINTRUNNER to override)"
+    )
+    return None
+
+
+def _run_lintrunner_amend(worktree: Path) -> str | None:
+    """Run ``lintrunner -a`` in ``worktree``; amend any auto-fixes into HEAD.
+
+    Run after every claude commit so an autoformat miss (clang-format,
+    ruff format, ...) gets folded into the same ``[MERGEDOG]`` commit
+    instead of triggering a second fix-CI cycle. Returns the new HEAD
+    SHA if the amend changed anything, else None.
+
+    A non-zero exit from lintrunner is fine: it just means there are
+    still unfixable lints on top of whatever it auto-applied. We fold in
+    the auto-fixes regardless, and CI will surface anything else.
+
+    Scope: only the files claude changed in HEAD (``-r HEAD~1``). The
+    rest of the PR was lint-clean before we started shepherding; running
+    lintrunner across the whole diff against main would slow us down
+    without finding anything new.
+    """
+    lintrunner = _resolve_lintrunner()
+    if lintrunner is None:
+        return None
+    # lintrunner shells out to its sibling tools (clang-format, ruff, ...);
+    # they live next to lintrunner inside the venv, so put that bin dir at
+    # the front of PATH.
+    venv_bin = lintrunner.parent
+    env = os.environ.copy()
+    env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
+    # pytorch's ``.lintrunner.toml`` references native lint binaries by
+    # the relative path ``.lintbin/<tool>`` (clang-format, clang-tidy,
+    # actionlint, ...). The donor pytorch checkout already ran
+    # ``lintrunner init`` once and has them populated; symlink that dir
+    # into the worktree so lintrunner finds them without us having to
+    # re-init per worktree.
+    donor_lintbin = venv_bin.parent.parent / ".lintbin"
+    worktree_lintbin = worktree / ".lintbin"
+    if donor_lintbin.is_dir() and not worktree_lintbin.exists():
+        try:
+            worktree_lintbin.symlink_to(donor_lintbin)
+        except OSError as e:
+            log(f"WARNING: could not symlink .lintbin into worktree: {e}")
+    # CLANGTIDY (and the EXECUTORCH variant) want a populated ``build/``
+    # directory -- we don't build PyTorch, so skip them. CI runs clang-tidy
+    # itself; we only care about auto-fixable lints here.
+    skip = "CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY"
+    log(f"$ {lintrunner} -a -r HEAD~1 --skip {skip}  (post-claude autoformat)")
+    proc = subprocess.run(
+        [str(lintrunner), "-a", "-r", "HEAD~1", "--skip", skip],
+        cwd=str(worktree),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    out = (proc.stdout or "").rstrip()
+    err = (proc.stderr or "").rstrip()
+    # Tail-bias the log: lintrunner's full output is verbose per-file
+    # status, but the summary at the end carries the actionable bits.
+    for line in out.splitlines()[-20:]:
+        log(f"  lintrunner: {line}")
+    if proc.returncode != 0 and err:
+        for line in err.splitlines()[-10:]:
+            log(f"  lintrunner stderr: {line}")
+    if _is_clean(worktree):
+        log("lintrunner: no auto-fixes applied")
+        return None
+    name, email = repo_mod.get_mergedog_identity()
+    run(["git", "add", "-A"], cwd=worktree, loud=True)
+    run(
+        ["git", "commit", "--amend", "--no-edit"],
+        cwd=worktree,
+        env_extra=repo_mod.author_env(name, email),
+        loud=True,
+    )
+    new_sha = head_sha(worktree)
+    log(f"lintrunner: amended auto-fixes into {new_sha[:12]}")
+    return new_sha
+
+
 def _commits_between(worktree: Path, before: str, after: str) -> int:
     """How many commits did claude add on top of ``before`` to reach ``after``?
 
@@ -257,6 +362,18 @@ def _invoke(
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
         )
         return False, None, transcript
+
+    # Run lintrunner -a and fold any auto-fixes into claude's commit.
+    # Catches autoformat misses (clang-format, ruff format, ...) before
+    # they'd cause a wasted fix-CI cycle on a follow-up lint failure.
+    # Skipped for merge resolver: HEAD~1 there is just one parent of the
+    # merge, so lintrunner's "what changed" view would include everything
+    # brought in from main -- too broad and too slow to be useful.
+    if not expect_merge_commit:
+        amended = _run_lintrunner_amend(worktree)
+        if amended is not None:
+            after = amended
+            subject = head_subject(worktree)
 
     if expect_merge_commit:
         log(f"claude resolved the merge: {after[:12]}: {subject}")
