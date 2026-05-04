@@ -4,6 +4,8 @@ One process per PR. Synchronous. Halts on any sign of an untrusted change.
 """
 from __future__ import annotations
 
+import signal
+import sys
 import time
 from pathlib import Path
 
@@ -78,6 +80,11 @@ EXIT_PR_NOT_ACTIONABLE = 42
 # label on prematurely.
 CI_STABILITY_WINDOW_SEC = 60
 TRUNK_LABEL = "ciflow/trunk"
+# Marker label so humans can see at a glance which PRs already have a live
+# mergedog shepherding them -- keeps two operators (or two mergedogs) from
+# fighting over the same PR. Added after validation passes; removed on every
+# exit path (success, HALT, SIGTERM from ``mux cancel``, ctrl-c).
+MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
 
 
@@ -416,6 +423,16 @@ def _merge_main_resolving_conflicts(
     return new_sha
 
 
+def _sigterm_to_systemexit(signum, frame) -> None:  # type: ignore[no-untyped-def]
+    """Turn SIGTERM into SystemExit so the label-cleanup ``finally`` runs.
+
+    ``mux cancel`` sends SIGTERM to the shepherd's process group; without a
+    handler Python exits abruptly and the ``mergedog`` label sticks on the
+    PR forever. Raising SystemExit lets the wrapper in ``shepherd`` clean up.
+    """
+    sys.exit(128 + signum)
+
+
 def shepherd(
     pr: int,
     rebase: bool = False,
@@ -427,6 +444,28 @@ def shepherd(
 
     pr_data = github.get_pr(pr)
     _validate_pr(pr_data)
+
+    # Past validation: we're committed to running. Tag the PR so other
+    # operators / mergedogs see it's already being handled, and arrange for
+    # the tag to come off no matter how we exit.
+    github.add_label(pr, MERGEDOG_LABEL)
+    signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
+    try:
+        _shepherd_body(pr, pr_data, rebase, accept_divergence, ignore_sev)
+    finally:
+        try:
+            github.remove_label(pr, MERGEDOG_LABEL)
+        except Exception as e:
+            log(f"WARNING: failed to remove {MERGEDOG_LABEL} label: {e}")
+
+
+def _shepherd_body(
+    pr: int,
+    pr_data: dict,
+    rebase: bool,
+    accept_divergence: bool,
+    ignore_sev: bool,
+) -> None:
     is_ghstack = _is_ghstack(pr_data)
     branch = pr_data["headRefName"]
 

@@ -195,6 +195,13 @@ def add_label(pr: int, label: str) -> None:
     )
 
 
+def remove_label(pr: int, label: str) -> None:
+    _gh(
+        ["pr", "edit", str(pr), "--repo", REPO, "--remove-label", label],
+        loud=True,
+    )
+
+
 def post_pr_comment(pr: int, body: str) -> None:
     """Post a comment on the PR. Body is passed via stdin to dodge argv limits."""
     subprocess.run(
