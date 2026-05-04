@@ -407,7 +407,13 @@ def shepherd(
     fork_remote = _fork_remote_name(pr_data)
     repo.add_fork_remote(fork_remote, fork_url)
 
-    seed_trust_from_reviews(trust, pr, pr_data, accept_divergence)
+    viewer = github.viewer_login()
+    self_pr = github.is_self_pr(pr_data, viewer)
+    if self_pr:
+        log(f"PR authored by current user ({viewer}); skipping approval gate")
+    seed_trust_from_reviews(
+        trust, pr, pr_data, accept_divergence, self_pr=self_pr
+    )
     head_sha = pr_data["headRefOid"]
 
     fork_sha = repo.fetch_pr_branch(fork_remote, pr_data["headRefName"])
@@ -461,6 +467,10 @@ def shepherd(
     while True:
         # 1. Verify the PR head is still trusted.
         current = github.get_pr_head_sha(pr)
+        if self_pr:
+            # On a self-authored PR, every push is implicitly approved by
+            # the operator -- roll the trust forward instead of halting.
+            trust.trust(current)
         if not trust.is_trusted(current):
             subject = github.get_commit_subject(current)
             die(

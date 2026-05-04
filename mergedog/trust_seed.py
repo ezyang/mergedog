@@ -13,7 +13,11 @@ from mergedog.state import TrustDB
 
 
 def seed_trust_from_reviews(
-    trust: TrustDB, pr: int, pr_data: dict, accept_divergence: bool
+    trust: TrustDB,
+    pr: int,
+    pr_data: dict,
+    accept_divergence: bool,
+    self_pr: bool = False,
 ) -> None:
     """Establish the initial trusted SHA from GitHub PR reviews.
 
@@ -29,7 +33,18 @@ def seed_trust_from_reviews(
     pushed unblessed work after the approval. ``--accept-divergence``
     overrides this for cases where the operator has personally
     re-reviewed the new commits.
+
+    When ``self_pr`` is set, the operator is the PR author. We skip the
+    maintainer-approval gate entirely (you're allowed to iterate on your
+    own CI before review) and trust the current head directly; the main
+    loop continues to roll the trust forward as the author pushes.
     """
+    if self_pr:
+        head_sha = pr_data["headRefOid"]
+        log(f"self-authored PR; trusting current head {head_sha[:12]} directly")
+        trust.trust(head_sha)
+        return
+
     audit = github.get_pr_review_audit(pr)
     decision = audit.get("decision")
     log(f"PR review decision: {decision}")

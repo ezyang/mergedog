@@ -72,6 +72,7 @@ def get_pr(pr: int) -> dict:
                     "body",
                     "state",
                     "isDraft",
+                    "author",
                     "headRefName",
                     "headRefOid",
                     "headRepository",
@@ -83,6 +84,26 @@ def get_pr(pr: int) -> dict:
             ),
         ]
     )
+
+
+def viewer_login() -> str:
+    """The GitHub login of the user the local ``gh`` CLI is authenticated as."""
+    return _gh(["api", "user", "--jq", ".login"]).stdout.strip()
+
+
+def is_self_pr(pr_data: dict, viewer: str) -> bool:
+    """True if ``viewer`` authored ``pr_data``.
+
+    Author lookup tolerates both ``{"login": "..."}`` (REST/gh shape) and
+    raw-string authors; we lowercase to match GitHub's case-insensitive
+    login semantics.
+    """
+    author = pr_data.get("author") or {}
+    if isinstance(author, dict):
+        login = author.get("login") or ""
+    else:
+        login = str(author)
+    return bool(login) and login.lower() == viewer.lower()
 
 
 def get_pr_comments(pr: int) -> list[dict]:
