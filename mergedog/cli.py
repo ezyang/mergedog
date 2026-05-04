@@ -39,11 +39,14 @@ def main(argv: list[str] | None = None) -> int:
         "--rebase",
         action="store_true",
         help=(
-            "Before polling CI, merge origin/main into the PR branch and "
-            "push. Default behavior is to never auto-rebase based on "
-            "merge-base age -- mergedog only merges main as a piggyback "
-            "on a fix commit it was going to push anyway. Use --rebase "
-            "when you want a one-shot upfront refresh on this run."
+            "Before polling CI, refresh the PR's view of origin/main: for "
+            "regular fork PRs this is a merge of origin/main into the PR "
+            "branch (and a push); for ghstack PRs it's a ``git rebase`` of "
+            "/orig followed by ``ghstack submit``. Default behavior is to "
+            "never auto-refresh based on merge-base age -- mergedog only "
+            "refreshes against main as a piggyback on a fix commit it was "
+            "going to push anyway. Use --rebase when you want a one-shot "
+            "upfront refresh on this run."
         ),
     )
     parser.add_argument(

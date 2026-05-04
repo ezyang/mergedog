@@ -268,6 +268,56 @@ def _publish_ghstack_fix(
     _wait_for_pr_head(pr, new_head_sha)
 
 
+def _rebase_ghstack_onto_main(
+    pr: int,
+    worktree: Path,
+    head_ref: str,
+    trust: TrustDB,
+    *,
+    ignore_sev: bool,
+) -> None:
+    """Rebase /orig onto origin/main and re-publish via ghstack.
+
+    The ghstack analogue of ``_merge_main_resolving_conflicts``: for ghstack
+    PRs we can't make a merge commit on /orig (it's a single-commit branch
+    by construction), so refreshing the base means rewriting the commit via
+    ``git rebase`` and letting ``ghstack submit`` rebuild /head with the new
+    base. Conflict resolution isn't wired here yet -- if the rebase hits one,
+    we abort and halt for human intervention.
+    """
+    if _wait_for_no_active_sev(
+        "rebasing /orig onto origin/main", ignore_sev=ignore_sev
+    ):
+        repo.fetch_origin()
+
+    try:
+        status, new_orig_sha = repo.attempt_rebase_main(worktree)
+    except RuntimeError as e:
+        die(str(e))
+
+    if status == "noop":
+        log("rebase produced no new commit (already on top of origin/main)")
+        return
+
+    if status == "conflict":
+        repo.abort_rebase(worktree)
+        die(
+            "rebase produced conflicts; halting for human intervention "
+            "(claude-assisted rebase resolution is not yet wired for ghstack)"
+        )
+
+    assert new_orig_sha is not None
+    log(f"rebased /orig to {new_orig_sha[:12]}; re-publishing via ghstack")
+    _wait_for_no_active_sev(
+        "re-publishing rebased /orig via ghstack submit", ignore_sev=ignore_sev
+    )
+    repo.ghstack_submit(worktree, "Rebase onto origin/main")
+    new_head_sha = repo.fetch_ghstack_head(head_ref)
+    trust.trust(new_head_sha)
+    log(f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}")
+    _wait_for_pr_head(pr, new_head_sha)
+
+
 def _record_claude_session(
     sessions: list[ClaudeSession],
     *,
@@ -539,10 +589,10 @@ def _shepherd_body(
     # anyway, or when the operator explicitly asks via ``--rebase``.
     if rebase:
         if is_ghstack:
-            # Auto-rebase for ghstack would mean rebasing /orig onto
-            # origin/main and re-submitting. Not yet wired; for now the
-            # operator handles base management with ``ghstack`` directly.
-            log("--rebase ignored for ghstack PRs (not yet wired)")
+            log("user requested upfront rebase of /orig onto origin/main")
+            _rebase_ghstack_onto_main(
+                pr, worktree, branch, trust, ignore_sev=ignore_sev
+            )
         else:
             log("user requested upfront rebase onto origin/main")
             new_sha = _merge_main_resolving_conflicts(
