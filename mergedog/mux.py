@@ -245,11 +245,11 @@ class MuxApp(App):
             p, _, log_path = self.procs[pr]
             rc = p.poll()
             if rc is None:
-                state = "RUNNING"
+                state = "🟢"
             elif rc == 0:
-                state = "DONE"
+                state = "✅"
             else:
-                state = f"HALTED rc={rc}"
+                state = "🔴"
             last = _last_log_line(log_path)
             # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
             # the worktree path is omitted from the table entirely now,
