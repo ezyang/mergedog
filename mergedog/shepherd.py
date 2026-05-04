@@ -18,7 +18,7 @@ from mergedog.handoff import (
     utc_now_iso,
     watch_post_handoff,
 )
-from mergedog.log import die, log, set_merging
+from mergedog.log import die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
@@ -88,22 +88,24 @@ MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
 
 
-def _refresh_merging_state(pr: int) -> None:
-    """Toggle the [MERGING] log prefix based on the PR's current labels.
+def _refresh_status_prefix(pr: int) -> None:
+    """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
-    Called once per main-poll iteration. ``[MERGING]`` is the only signal
+    Called once per main-poll iteration. The prefix is the only signal
     the mux has back from each shepherd that pytorchmergebot is actively
-    merging the PR -- the mux only reads the last log line per shepherd,
-    so we have to thread the state through the log itself.
+    merging the PR (or that the PR is approved and waiting) -- the mux
+    only reads the last log line per shepherd, so we have to thread the
+    state through the log itself.
 
     Failures are silently swallowed: a bad ``gh`` call here shouldn't HALT
     over a UI nicety.
     """
     try:
-        labels = github.get_pr_labels(pr)
+        labels, decision = github.get_pr_status_fields(pr)
     except Exception:
         return
     set_merging(github.MERGING_LABEL in labels)
+    set_approved((decision or "").upper() == "APPROVED")
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -657,7 +659,7 @@ def _shepherd_body(
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            _refresh_merging_state(pr)
+            _refresh_status_prefix(pr)
             # 1. Verify the PR head is still trusted.
             current = github.get_pr_head_sha(pr)
             if self_pr:

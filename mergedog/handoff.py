@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from mergedog import github
-from mergedog.log import log, set_merging
+from mergedog.log import log, set_approved, set_merging
 
 
 @dataclass
@@ -219,6 +219,7 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
         pr_data = github.get_pr(pr)
         merging = github.has_label(pr_data, github.MERGING_LABEL)
         set_merging(merging)
+        set_approved((pr_data.get("reviewDecision") or "").upper() == "APPROVED")
         if pr_data.get("state") != "OPEN":
             return "closed", None
         event = _latest_mergebot_event(pr, since_iso)

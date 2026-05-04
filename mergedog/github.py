@@ -79,6 +79,7 @@ def get_pr(pr: int) -> dict:
                     "headRepositoryOwner",
                     "labels",
                     "maintainerCanModify",
+                    "reviewDecision",
                     "url",
                 ]
             ),
@@ -170,6 +171,28 @@ def get_pr_labels(pr: int) -> list[str]:
         ["pr", "view", str(pr), "--repo", REPO, "--json", "labels"]
     )
     return [l.get("name", "") for l in data.get("labels", []) or []]
+
+
+def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
+    """Return ``(labels, reviewDecision)`` in a single ``gh pr view`` call.
+
+    Used by the shepherd's per-iteration log-prefix refresh, where we
+    need both pieces (labels for [MERGING], reviewDecision for [APPROVED])
+    and don't want to pay for two separate round trips.
+    """
+    data = _gh_json(
+        [
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            REPO,
+            "--json",
+            "labels,reviewDecision",
+        ]
+    )
+    labels = [l.get("name", "") for l in data.get("labels", []) or []]
+    return labels, data.get("reviewDecision") or None
 
 
 def list_workflow_runs_for_sha(sha: str) -> list[dict]:
