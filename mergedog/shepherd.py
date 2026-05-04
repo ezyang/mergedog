@@ -88,6 +88,28 @@ MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
 
 
+def _apply_spurious_overrides(
+    checks: list[dict], spurious_names: set[str]
+) -> list[dict]:
+    """Flip checks whose names claude already judged spurious to ``skipping``.
+
+    Used so the next status evaluation sees a green-on-the-non-spurious
+    set without ignoring the rest. If any genuinely-pending checks are
+    still outstanding, we keep waiting on them instead of handing off.
+    """
+    if not spurious_names:
+        return checks
+    out: list[dict] = []
+    for c in checks:
+        if (
+            c.get("name") in spurious_names
+            and c.get("bucket") in {"fail", "cancel"}
+        ):
+            c = {**c, "bucket": "skipping"}
+        out.append(c)
+    return out
+
+
 def _refresh_status_prefix(pr: int) -> None:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
@@ -654,6 +676,13 @@ def _shepherd_body(
         # status flips), we reset the timer.
         stable_observation: tuple[str, int] | None = None
         stable_since: float = 0.0
+        # Names of failed checks that claude already judged spurious. We
+        # keep these from re-triggering the fix loop and -- more
+        # importantly -- treat them as if they were skipped so we keep
+        # waiting for any *other* still-pending checks before handing
+        # off. Cleared whenever we push a fix (fresh CI invalidates the
+        # judgments).
+        spurious_check_names: set[str] = set()
 
         # Poll CI, fix or judge spurious until ready for handoff. Breaks
         # out (via the handoff path) when CI is green and the trunk
@@ -681,9 +710,15 @@ def _shepherd_body(
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
 
-            # 3. Read check status.
+            # 3. Read check status. Failures claude already judged
+            # spurious are flipped to "skipping" so we don't re-judge
+            # them, and so the overall verdict reflects what's still
+            # genuinely outstanding.
             checks = github.get_pr_checks_all(pr)
-            status = github.evaluate_checks(checks)
+            effective_checks = _apply_spurious_overrides(
+                checks, spurious_check_names
+            )
+            status = github.evaluate_checks(effective_checks)
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}
             )
@@ -750,10 +785,27 @@ def _shepherd_body(
                 if not ran_cleanly:
                     die("claude exited abnormally or produced an invalid commit")
                 if new_sha is None:
-                    log("claude judged failures spurious; advancing")
+                    # Mark the failed checks as spurious so we treat
+                    # them as skipping in subsequent iterations. We
+                    # still wait out any other pending checks before
+                    # handing off -- a green-on-the-non-spurious-set
+                    # verdict isn't a green-on-everything verdict.
+                    newly_spurious = {
+                        c.get("name")
+                        for c in checks
+                        if c.get("bucket") in {"fail", "cancel"}
+                        and c.get("name")
+                    }
+                    spurious_check_names |= newly_spurious
+                    log(
+                        f"claude judged {len(newly_spurious)} failure"
+                        f"{'' if len(newly_spurious) == 1 else 's'} spurious; "
+                        "continuing to wait on remaining CI"
+                    )
                     last_status = None  # force re-log on next pass
-                    # fall through to advance below
+                    continue
                 elif is_ghstack:
+                    spurious_check_names.clear()
                     _publish_ghstack_fix(
                         pr, worktree, branch, new_sha, trust,
                         ignore_sev=ignore_sev,
@@ -763,6 +815,7 @@ def _shepherd_body(
                     continue
                 else:
                     assert fork_remote is not None
+                    spurious_check_names.clear()
                     trust.trust(new_sha)
                     # Piggyback: we're going to push and trigger fresh CI
                     # anyway, so merge origin/main while we're at it. CI
@@ -788,8 +841,7 @@ def _shepherd_body(
             # CI is "passed". Require it to have been passed continuously
             # for CI_STABILITY_WINDOW_SEC before we act, so that a
             # freshly-pushed commit can't trick us by reporting "1/1 done"
-            # while the rest of the required workflows are still being
-            # created.
+            # while the rest of the workflows are still being created.
             if status == "passed":
                 elapsed = time.time() - stable_since
                 if elapsed < CI_STABILITY_WINDOW_SEC:
@@ -809,7 +861,7 @@ def _shepherd_body(
                 _wait_for_no_active_sev(
                     f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
                 )
-                log(f"required CI green; applying {TRUNK_LABEL} label")
+                log(f"CI green; applying {TRUNK_LABEL} label")
                 github.add_label(pr, TRUNK_LABEL)
                 trunk_applied = True
                 last_status = None
