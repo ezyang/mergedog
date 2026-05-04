@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Input
 
@@ -165,14 +166,29 @@ class MuxApp(App):
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
 
+    @work(thread=True, exclusive=True, group="rebase-all")
     def _do_rebase_all(self) -> None:
+        # Runs in a worker thread so the input bar / table stay responsive
+        # while shepherds tear down. ``self.notify`` is thread-safe in
+        # Textual (it posts a message to the app loop).
         prs = sorted(self.procs)
         if not prs:
             self.notify("no PRs to rebase", severity="warning")
             return
-        # Terminate any running shepherds first so the re-spawn isn't
-        # blocked by the "already running" guard in ``_do_add``.
-        # ``_terminate_group`` is a no-op for already-exited processes.
+        # Signal every shepherd up front so they all wind down in
+        # parallel. Without this, each ``_terminate_group`` below would
+        # block up to ``grace`` seconds *per PR* in series before the
+        # next SIGTERM was even sent.
+        for pr in prs:
+            p = self.procs[pr][0]
+            if p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        # Now reap. ``_terminate_group`` is a no-op for already-exited
+        # processes, and the second SIGTERM it sends to stragglers is
+        # harmless.
         for pr in prs:
             _terminate_group(self.procs[pr][0])
         rebase_args = self._shepherd_args(["--rebase"])
