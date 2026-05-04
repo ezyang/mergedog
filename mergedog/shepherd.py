@@ -757,8 +757,16 @@ def _shepherd_body(
                     branch=branch,
                     context_path=str(ctx_path),
                     failed_jobs=failed,
+                    failing_check_names=sorted(
+                        c.get("name", "")
+                        for c in checks
+                        if c.get("bucket") in {"fail", "cancel"}
+                        and c.get("name")
+                    ),
                     is_ghstack=is_ghstack,
-                    drci_summary=github.latest_drci_summary(comments),
+                    drci_summary=github.latest_drci_summary(
+                        comments, head_sha=current
+                    ),
                 )
                 session_failed_jobs = [name for name, _ in failed]
                 sha_before = current

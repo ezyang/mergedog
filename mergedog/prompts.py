@@ -80,7 +80,7 @@ PR context:
   Branch: {branch}
 
 {untrusted_blurb}
-{drci_section}
+{failing_checks_section}{drci_section}
 Failed CI jobs (excerpt, biased toward the last failure marker -- not the \
 literal log tail):
 
@@ -116,12 +116,28 @@ excerpts below.
 """
 
 
+_FAILING_CHECKS_SECTION_TEMPLATE = """
+GitHub reports the following CI checks as failing on the PR's current head \
+commit. This list comes directly from the GitHub checks API and is the \
+authoritative source of truth -- if any other section below (dr. ci summary, \
+log excerpts, sidecar) appears to disagree with this list, trust this list. \
+A check named here may have empty or unavailable logs if it just transitioned \
+to failed seconds ago; in that case prefer to make no commit and let the \
+harness re-invoke you on the next CI cycle once the logs are visible.
+
+--- begin failing checks ---
+{failing_checks_body}
+--- end failing checks ---
+"""
+
+
 def render_fix_prompt(
     *,
     url: str,
     branch: str,
     context_path: str,
     failed_jobs: list[tuple[str, str]],
+    failing_check_names: list[str] | None = None,
     is_ghstack: bool = False,
     drci_summary: str | None = None,
 ) -> str:
@@ -133,10 +149,17 @@ def render_fix_prompt(
         if drci_summary
         else ""
     )
+    failing_checks_section = ""
+    if failing_check_names:
+        body = "\n".join(f"- {n}" for n in failing_check_names)
+        failing_checks_section = _FAILING_CHECKS_SECTION_TEMPLATE.format(
+            failing_checks_body=body
+        )
     return FIX_PROMPT.format(
         url=url,
         branch=branch,
         untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+        failing_checks_section=failing_checks_section,
         drci_section=drci_section,
         failed_jobs="\n".join(sections) if sections else "(no logs available)",
         ghstack_hint=_GHSTACK_HINT if is_ghstack else "",
