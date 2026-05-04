@@ -114,13 +114,19 @@ def post_handoff_comment(
 PYTORCHMERGEBOT_LOGIN = "pytorchmergebot"
 
 
-def _latest_mergebot_event(pr: int, since_iso: str) -> str | None:
+def _latest_mergebot_event(
+    pr: int, since_iso: str
+) -> tuple[str, str] | None:
     """Classify pytorchmergebot's reply to a `@pytorchbot merge` request.
 
-    Looks at pytorchmergebot comments newer than ``since_iso`` and returns:
-      - ``"failed"``  -- the most recent comment carries "Merge failed"
-      - ``"started"`` -- it carries "Merge started" (merge in progress)
-      - ``None``      -- no relevant comment yet
+    Looks at pytorchmergebot comments newer than ``since_iso`` and returns
+    ``(kind, created_at)`` for the most recent relevant comment, where
+    ``kind`` is one of:
+      - ``"failed"``  -- comment carries "Merge failed"
+      - ``"started"`` -- comment carries "Merge started" (merge in progress)
+      - ``"other"``   -- some other pytorchmergebot reply (e.g. rebase)
+    Returns ``None`` if there are no pytorchmergebot comments after
+    ``since_iso``.
     """
     relevant = [
         c
@@ -130,36 +136,44 @@ def _latest_mergebot_event(pr: int, since_iso: str) -> str | None:
     ]
     if not relevant:
         return None
-    body = max(relevant, key=lambda c: c.get("created_at") or "").get("body") or ""
+    latest = max(relevant, key=lambda c: c.get("created_at") or "")
+    body = latest.get("body") or ""
+    iso = latest.get("created_at") or ""
     if "Merge failed" in body:
-        return "failed"
+        return "failed", iso
     if "Merge started" in body:
-        return "started"
-    return None
+        return "started", iso
+    return "other", iso
 
 
 _POLL_INTERVAL_SEC = 60
 
 
-def watch_post_handoff(pr: int, handoff_iso: str) -> str:
+def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
     """Block after handoff, returning when there's something to react to.
 
-    Returns:
-      - ``"closed"`` -- PR is no longer ``OPEN`` (merged or closed by hand);
-        caller should auto-prune.
-      - ``"failed"`` -- pytorchmergebot reported a merge failure; caller
-        should restart the shepherding cycle (rebase main, re-evaluate CI).
+    ``since_iso`` is the floor for "what counts as new pytorchmergebot
+    activity": typically ``max(handoff_comment_iso, last_observed_failure_iso)``
+    so a restart doesn't re-fire on a failure we already halted on.
+
+    Returns ``(kind, event_iso)``:
+      - ``("closed", None)``     -- PR is no longer ``OPEN`` (merged or
+        closed by hand); caller should auto-prune.
+      - ``("failed", event_iso)`` -- pytorchmergebot reported a merge
+        failure; caller should persist ``event_iso`` so a future restart
+        won't re-react to the same comment.
     """
     last_state: str | None = None
     while True:
         pr_data = github.get_pr(pr)
         if pr_data.get("state") != "OPEN":
-            return "closed"
-        event = _latest_mergebot_event(pr, handoff_iso)
-        if event == "failed":
-            log("pytorchmergebot reported merge failure; restarting cycle")
-            return "failed"
-        new_state = event or "watching"
+            return "closed", None
+        event = _latest_mergebot_event(pr, since_iso)
+        kind = event[0] if event else None
+        if kind == "failed":
+            log("pytorchmergebot reported merge failure; halting")
+            return "failed", event[1]
+        new_state = kind or "watching"
         if new_state != last_state:
             if new_state == "started":
                 log("pytorchmergebot picked up the merge; waiting for outcome")

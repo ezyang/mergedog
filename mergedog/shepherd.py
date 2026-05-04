@@ -600,14 +600,17 @@ def shepherd(
     post_handoff_comment(pr, pr_data, sessions)
     # Anchor the watch loop on the actual handoff comment timestamp,
     # not "now": on restart this lets us notice a "Merge failed" that
-    # already happened between the last handoff and our restart.
+    # already happened between the last handoff and our restart. But also
+    # floor on any failure we've already halted on, so the next restart
+    # doesn't re-react to the same stale comment.
     handoff_iso = github.latest_mergedog_handoff_iso(pr) or utc_now_iso()
+    since_iso = max(handoff_iso, trust.last_observed_failure_iso)
     log(
         f"Hand off to a human reviewer; have them comment "
         f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
     )
 
-    result = watch_post_handoff(pr, handoff_iso)
+    result, event_iso = watch_post_handoff(pr, since_iso)
     if result == "closed":
         die(
             "PR is no longer open; pruning local shepherd state",
@@ -616,7 +619,11 @@ def shepherd(
     # result == "failed": pytorchmergebot rejected the merge. We don't
     # auto-remediate -- a merge failure could mean stale base, post-land
     # hooks, conflicts, or anything else, and a rebase is only one
-    # possible response. Halt for human intervention.
+    # possible response. Persist the failure timestamp so a future restart
+    # won't re-fire on this same comment, then halt for human intervention.
+    assert event_iso is not None
+    trust.last_observed_failure_iso = event_iso
+    trust.save()
     die(
         "pytorchmergebot reported merge failure; halting for human "
         "intervention (re-run with --rebase if a stale base is the cause)"

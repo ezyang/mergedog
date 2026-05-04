@@ -26,6 +26,11 @@ class TrustDB:
     trusted_shas: list[str] = field(default_factory=list)
     head_branch: str = ""
     head_repo_clone_url: str = ""
+    # ISO 8601 timestamp of the most recent pytorchmergebot "Merge failed"
+    # comment we already halted on. Acts as a monotonic floor for the
+    # post-handoff watcher so a restart doesn't re-react to a failure we
+    # already saw and exited on.
+    last_observed_failure_iso: str = ""
     path: Path | None = None
 
     @classmethod
@@ -38,6 +43,9 @@ class TrustDB:
                 trusted_shas=list(data.get("trusted_shas", [])),
                 head_branch=data.get("head_branch", ""),
                 head_repo_clone_url=data.get("head_repo_clone_url", ""),
+                last_observed_failure_iso=data.get(
+                    "last_observed_failure_iso", ""
+                ),
                 path=path,
             )
         return cls(pr=pr, path=path)
@@ -56,6 +64,7 @@ class TrustDB:
                 "trusted_shas": self.trusted_shas,
                 "head_branch": self.head_branch,
                 "head_repo_clone_url": self.head_repo_clone_url,
+                "last_observed_failure_iso": self.last_observed_failure_iso,
             },
             indent=2,
         )
