@@ -79,7 +79,6 @@ EXIT_PR_NOT_ACTIONABLE = 42
 CI_STABILITY_WINDOW_SEC = 60
 TRUNK_LABEL = "ciflow/trunk"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
-DEFAULT_MAX_BASE_AGE_DAYS = 7
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -319,42 +318,29 @@ def _approve_pending_runs(
     return approved
 
 
-def _maybe_merge_main(
+def _merge_main_resolving_conflicts(
     worktree: Path,
     trust: TrustDB,
-    fork_remote: str,
     branch: str,
-    max_base_age_days: int,
     pr_data: dict,
     sessions: list[ClaudeSession],
     *,
     ignore_sev: bool,
 ) -> str | None:
-    """If the PR's merge-base is older than the threshold, merge origin/main.
+    """Merge origin/main into HEAD, asking claude to resolve any conflicts.
 
-    On a clean merge, push it. On a conflict, hand off to claude to resolve;
-    if claude can't, halt. Returns the new head SHA if a merge happened.
-    Records any claude invocation into ``sessions`` for the handoff comment.
+    Returns the new head SHA if a merge commit was made, else None
+    (already up to date). Trusts the new SHA. Caller is responsible
+    for pushing.
+
+    Park on a CI SEV BEFORE merging, not after. If we merged first and
+    parked second, the merge's base would be hours stale when the SEV
+    finally clears -- and likely *missing* the very fix that let trunk
+    recover. Refetch origin if we waited so the merge picks up
+    everything that landed during the SEV.
     """
-    age_sec = repo.merge_base_age_seconds(worktree)
-    age_days = age_sec / 86400.0
-    log(f"merge-base with origin/main is {age_days:.1f} days old")
-    if age_days <= max_base_age_days:
-        log("PR is fresh enough; not merging main")
-        return None
-    log(f"merge-base older than {max_base_age_days} days; merging origin/main")
-
-    # Park on a CI SEV BEFORE merging, not before pushing. If we merged
-    # first and parked second, the merge's base would be hours stale when
-    # the SEV finally clears -- and likely *missing* the very fix that
-    # let trunk recover. Refetch origin if we waited so the merge picks
-    # up everything that landed during the SEV.
     if _wait_for_no_active_sev("merging origin/main", ignore_sev=ignore_sev):
         repo.fetch_origin()
-        age_sec = repo.merge_base_age_seconds(worktree)
-        if age_sec / 86400.0 <= max_base_age_days:
-            log("merge-base became fresh while parked; not merging main")
-            return None
 
     try:
         status, new_sha = repo.attempt_merge_main(worktree)
@@ -397,22 +383,12 @@ def _maybe_merge_main(
 
     assert new_sha is not None
     trust.trust(new_sha)
-    log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
-    _safe_push(
-        pr_data["number"],
-        worktree,
-        fork_remote,
-        branch,
-        new_sha,
-        reason="pushing merge-main commit",
-        ignore_sev=ignore_sev,
-    )
     return new_sha
 
 
 def shepherd(
     pr: int,
-    max_base_age_days: int = DEFAULT_MAX_BASE_AGE_DAYS,
+    rebase: bool = False,
     accept_divergence: bool = False,
     ignore_sev: bool = False,
 ) -> None:
@@ -453,204 +429,195 @@ def shepherd(
 
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
-    cycle = 0
-    effective_max_base_age = max_base_age_days
+    branch = pr_data["headRefName"]
 
-    while True:  # outer cycle loop -- restarts after pytorchmergebot failure
-        cycle += 1
-        if cycle > 1:
-            # Recovery cycle: re-fetch origin so the merge picks up any new
-            # main, and re-validate the PR. If the contributor pushed an
-            # untrusted commit during the wait, the head-trust check below
-            # will halt us.
-            repo.fetch_origin()
-            pr_data = github.get_pr(pr)
-            _validate_pr(pr_data)
-            log(f"--- recovery cycle #{cycle} (forcing rebase onto main) ---")
-
-        trunk_applied = github.has_label(pr_data, TRUNK_LABEL)
-        main_merged = False
-        run_state_cache: dict[int, tuple[str | None, str | None]] = {}
-        last_status: str | None = None
-        # (status, check_count) we last observed. Becomes the anchor for the
-        # stability window: when it changes (new check arrives, status flips),
-        # we reset the timer.
-        stable_observation: tuple[str, int] | None = None
-        stable_since: float = 0.0
-
-        # Inner loop: poll CI, fix or judge spurious until ready for handoff.
-        # Breaks out (via the handoff path) when CI is green and labels/merges
-        # are settled.
-        while True:
-            # 1. Verify the PR head is still trusted.
-            current = github.get_pr_head_sha(pr)
-            if not trust.is_trusted(current):
-                subject = github.get_commit_subject(current)
-                die(
-                    f"PR head moved to untrusted commit {current[:12]}: "
-                    f"{subject!r}. Manual intervention required."
-                )
-
-            # 2. Approve any approval-pending workflow runs.
-            approved = _approve_pending_runs(current, run_state_cache)
-            if approved:
-                stable_observation = None  # newly-approved runs invalidate stability
-                time.sleep(APPROVAL_SETTLE_SEC)
-                continue
-
-            # 3. Read check status.
-            checks = github.get_pr_checks_all(pr)
-            status = github.evaluate_checks(checks)
-            done = sum(
-                1 for c in checks if c.get("bucket") not in {"pending", None}
+    # User-requested upfront merge of origin/main. Default behavior
+    # otherwise is to never auto-rebase based on age -- mergedog only
+    # merges main when piggybacking on a fix push it was going to do
+    # anyway, or when the operator explicitly asks via ``--rebase``.
+    if rebase:
+        log("user requested upfront rebase onto origin/main")
+        new_sha = _merge_main_resolving_conflicts(
+            worktree, trust, branch, pr_data, sessions, ignore_sev=ignore_sev
+        )
+        if new_sha is not None:
+            log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
+            _safe_push(
+                pr, worktree, fork_remote, branch, new_sha,
+                reason="pushing merge-main commit", ignore_sev=ignore_sev,
             )
-            summary = f"{status} ({done}/{len(checks)} done)"
-            if summary != last_status:
-                log(f"CI status -> {summary}")
-                last_status = summary
 
-            # Track stability: any change in (status, check_count) restarts the
-            # quiescence timer. We only gate on it for the "passed" verdict, so
-            # genuine pending/failed states proceed without artificial delay.
-            observation = (status, len(checks))
-            if stable_observation != observation:
-                stable_observation = observation
-                stable_since = time.time()
+    trunk_applied = github.has_label(pr_data, TRUNK_LABEL)
+    run_state_cache: dict[int, tuple[str | None, str | None]] = {}
+    last_status: str | None = None
+    # (status, check_count) we last observed. Becomes the anchor for the
+    # stability window: when it changes (new check arrives, status flips),
+    # we reset the timer.
+    stable_observation: tuple[str, int] | None = None
+    stable_since: float = 0.0
 
-            if status == "pending":
-                time.sleep(POLL_INTERVAL_SEC)
-                continue
+    # Poll CI, fix or judge spurious until ready for handoff. Breaks out
+    # (via the handoff path) when CI is green and the trunk label is on.
+    while True:
+        # 1. Verify the PR head is still trusted.
+        current = github.get_pr_head_sha(pr)
+        if not trust.is_trusted(current):
+            subject = github.get_commit_subject(current)
+            die(
+                f"PR head moved to untrusted commit {current[:12]}: "
+                f"{subject!r}. Manual intervention required."
+            )
 
-            if status == "failed":
-                # Hand the failures to claude; only advance once claude is OK
-                # with the situation (either pushed a fix or judged spurious).
-                if fix_commits_pushed >= MAX_FIX_COMMITS:
-                    die(
-                        f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
-                        f"commits and CI is still failing; halting for human "
-                        f"intervention"
-                    )
-                failed = github.get_failed_job_logs(pr)
-                ctx_path = _refresh_context_file(pr_data)
-                prompt = render_fix_prompt(
-                    url=pr_data.get("url", ""),
-                    branch=pr_data["headRefName"],
-                    context_path=str(ctx_path),
-                    failed_jobs=failed,
+        # 2. Approve any approval-pending workflow runs.
+        approved = _approve_pending_runs(current, run_state_cache)
+        if approved:
+            stable_observation = None  # newly-approved runs invalidate stability
+            time.sleep(APPROVAL_SETTLE_SEC)
+            continue
+
+        # 3. Read check status.
+        checks = github.get_pr_checks_all(pr)
+        status = github.evaluate_checks(checks)
+        done = sum(
+            1 for c in checks if c.get("bucket") not in {"pending", None}
+        )
+        summary = f"{status} ({done}/{len(checks)} done)"
+        if summary != last_status:
+            log(f"CI status -> {summary}")
+            last_status = summary
+
+        # Track stability: any change in (status, check_count) restarts the
+        # quiescence timer. We only gate on it for the "passed" verdict, so
+        # genuine pending/failed states proceed without artificial delay.
+        observation = (status, len(checks))
+        if stable_observation != observation:
+            stable_observation = observation
+            stable_since = time.time()
+
+        if status == "pending":
+            time.sleep(POLL_INTERVAL_SEC)
+            continue
+
+        if status == "failed":
+            # Hand the failures to claude; only advance once claude is OK
+            # with the situation (either pushed a fix or judged spurious).
+            if fix_commits_pushed >= MAX_FIX_COMMITS:
+                die(
+                    f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
+                    f"commits and CI is still failing; halting for human "
+                    f"intervention"
                 )
-                session_failed_jobs = [name for name, _ in failed]
-                sha_before = current
-                started_at = utc_now_iso()
-                ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(
-                    worktree, prompt
-                )
-                _record_claude_session(
-                    sessions,
-                    mode="fix-CI",
-                    sha_before=sha_before,
-                    started_at=started_at,
-                    ran_cleanly=ran_cleanly,
-                    new_sha=new_sha,
-                    transcript=transcript,
-                    on_commit="pushed fix commit {sha}",
-                    on_clean_noop="judged failures spurious (no commit)",
-                    extra=(
-                        f" — failing jobs: {', '.join(session_failed_jobs)}"
-                        if session_failed_jobs
-                        else ""
-                    ),
-                )
-                if not ran_cleanly:
-                    die("claude exited abnormally or produced an invalid commit")
-                if new_sha is None:
-                    log("claude judged failures spurious; advancing")
-                    last_status = None  # force re-log on next pass
-                    # fall through to advance below
-                else:
-                    trust.trust(new_sha)
-                    log(
-                        f"pushing {new_sha[:12]} to "
-                        f"{fork_remote}/{pr_data['headRefName']}"
-                    )
-                    _safe_push(
-                        pr,
-                        worktree,
-                        fork_remote,
-                        pr_data["headRefName"],
-                        new_sha,
-                        reason="pushing claude fix commit",
-                        ignore_sev=ignore_sev,
-                    )
-                    fix_commits_pushed += 1
-                    last_status = None
-                    continue
-
-            # CI is "passed". Require it to have been passed continuously for
-            # CI_STABILITY_WINDOW_SEC before we act, so that a freshly-pushed
-            # commit can't trick us by reporting "1/1 done" while the rest of
-            # the required workflows are still being created.
-            if status == "passed":
-                elapsed = time.time() - stable_since
-                if elapsed < CI_STABILITY_WINDOW_SEC:
-                    remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
-                    log(
-                        f"CI passed; waiting {remaining}s for stability "
-                        f"(no new checks should appear)"
-                    )
-                    time.sleep(min(POLL_INTERVAL_SEC, remaining))
-                    continue
-
-            # Either CI passed (and is stable), or claude said "spurious". Advance.
-            if not main_merged:
-                new_sha = _maybe_merge_main(
-                    worktree,
-                    trust,
-                    fork_remote,
-                    pr_data["headRefName"],
-                    effective_max_base_age,
-                    pr_data,
-                    sessions,
+            failed = github.get_failed_job_logs(pr)
+            ctx_path = _refresh_context_file(pr_data)
+            prompt = render_fix_prompt(
+                url=pr_data.get("url", ""),
+                branch=branch,
+                context_path=str(ctx_path),
+                failed_jobs=failed,
+            )
+            session_failed_jobs = [name for name, _ in failed]
+            sha_before = current
+            started_at = utc_now_iso()
+            ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(
+                worktree, prompt
+            )
+            _record_claude_session(
+                sessions,
+                mode="fix-CI",
+                sha_before=sha_before,
+                started_at=started_at,
+                ran_cleanly=ran_cleanly,
+                new_sha=new_sha,
+                transcript=transcript,
+                on_commit="pushed fix commit {sha}",
+                on_clean_noop="judged failures spurious (no commit)",
+                extra=(
+                    f" — failing jobs: {', '.join(session_failed_jobs)}"
+                    if session_failed_jobs
+                    else ""
+                ),
+            )
+            if not ran_cleanly:
+                die("claude exited abnormally or produced an invalid commit")
+            if new_sha is None:
+                log("claude judged failures spurious; advancing")
+                last_status = None  # force re-log on next pass
+                # fall through to advance below
+            else:
+                trust.trust(new_sha)
+                # Piggyback: we're going to push and trigger fresh CI
+                # anyway, so merge origin/main while we're at it. CI then
+                # runs once on (PR + fix + main) instead of testing the
+                # fix against a stale base.
+                merge_sha = _merge_main_resolving_conflicts(
+                    worktree, trust, branch, pr_data, sessions,
                     ignore_sev=ignore_sev,
                 )
-                main_merged = True
-                if new_sha is not None:
-                    # New CI will run on the merged commit; back to polling.
-                    last_status = None
-                    continue
-            if not trunk_applied:
-                # Adding ciflow/trunk kicks off a fresh wave of trunk
-                # workflows; gate on SEV so we don't pile on broken trunk.
-                _wait_for_no_active_sev(
-                    f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
+                final_sha = merge_sha if merge_sha is not None else new_sha
+                log(
+                    f"pushing {final_sha[:12]} to {fork_remote}/{branch}"
                 )
-                log(f"required CI green; applying {TRUNK_LABEL} label")
-                github.add_label(pr, TRUNK_LABEL)
-                trunk_applied = True
+                _safe_push(
+                    pr, worktree, fork_remote, branch, final_sha,
+                    reason="pushing claude fix commit",
+                    ignore_sev=ignore_sev,
+                )
+                fix_commits_pushed += 1
                 last_status = None
-                time.sleep(APPROVAL_SETTLE_SEC)
                 continue
-            log("ALL CI GREEN.")
-            break  # leave the inner loop, post handoff and watch
 
-        # Recovery cycles re-post so the new session blocks (merge-main
-        # commit, follow-up claude judgments) are visible on the PR.
-        post_handoff_comment(pr, pr_data, sessions, force=cycle > 1)
-        # Anchor the watch loop on the actual handoff comment timestamp,
-        # not "now": on restart this lets us notice a "Merge failed" that
-        # already happened between the last handoff and our restart.
-        handoff_iso = github.latest_mergedog_handoff_iso(pr) or utc_now_iso()
-        log(
-            f"Hand off to a human reviewer; have them comment "
-            f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
-        )
+        # CI is "passed". Require it to have been passed continuously for
+        # CI_STABILITY_WINDOW_SEC before we act, so that a freshly-pushed
+        # commit can't trick us by reporting "1/1 done" while the rest of
+        # the required workflows are still being created.
+        if status == "passed":
+            elapsed = time.time() - stable_since
+            if elapsed < CI_STABILITY_WINDOW_SEC:
+                remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
+                log(
+                    f"CI passed; waiting {remaining}s for stability "
+                    f"(no new checks should appear)"
+                )
+                time.sleep(min(POLL_INTERVAL_SEC, remaining))
+                continue
 
-        result = watch_post_handoff(pr, handoff_iso)
-        if result == "closed":
-            die(
-                "PR is no longer open; pruning local shepherd state",
-                code=EXIT_PR_NOT_ACTIONABLE,
+        # Either CI passed (and is stable), or claude said "spurious". Advance.
+        if not trunk_applied:
+            # Adding ciflow/trunk kicks off a fresh wave of trunk
+            # workflows; gate on SEV so we don't pile on broken trunk.
+            _wait_for_no_active_sev(
+                f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
             )
-        # result == "failed": pytorchmergebot rejected the merge. Force a
-        # rebase onto current main (max-base-age 0 makes _maybe_merge_main
-        # always merge) and run the cycle again.
-        effective_max_base_age = 0
+            log(f"required CI green; applying {TRUNK_LABEL} label")
+            github.add_label(pr, TRUNK_LABEL)
+            trunk_applied = True
+            last_status = None
+            time.sleep(APPROVAL_SETTLE_SEC)
+            continue
+        log("ALL CI GREEN.")
+        break
+
+    post_handoff_comment(pr, pr_data, sessions)
+    # Anchor the watch loop on the actual handoff comment timestamp,
+    # not "now": on restart this lets us notice a "Merge failed" that
+    # already happened between the last handoff and our restart.
+    handoff_iso = github.latest_mergedog_handoff_iso(pr) or utc_now_iso()
+    log(
+        f"Hand off to a human reviewer; have them comment "
+        f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
+    )
+
+    result = watch_post_handoff(pr, handoff_iso)
+    if result == "closed":
+        die(
+            "PR is no longer open; pruning local shepherd state",
+            code=EXIT_PR_NOT_ACTIONABLE,
+        )
+    # result == "failed": pytorchmergebot rejected the merge. We don't
+    # auto-remediate -- a merge failure could mean stale base, post-land
+    # hooks, conflicts, or anything else, and a rebase is only one
+    # possible response. Halt for human intervention.
+    die(
+        "pytorchmergebot reported merge failure; halting for human "
+        "intervention (re-run with --rebase if a stale base is the cause)"
+    )

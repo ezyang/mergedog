@@ -36,14 +36,14 @@ def main(argv: list[str] | None = None) -> int:
         help="PR number (or full PR URL) on pytorch/pytorch",
     )
     parser.add_argument(
-        "--max-base-age",
-        type=int,
-        default=shepherd.DEFAULT_MAX_BASE_AGE_DAYS,
-        metavar="DAYS",
+        "--rebase",
+        action="store_true",
         help=(
-            "If the PR's merge-base with origin/main is older than this many "
-            "days, merge origin/main into the PR branch before starting "
-            f"(default: {shepherd.DEFAULT_MAX_BASE_AGE_DAYS})."
+            "Before polling CI, merge origin/main into the PR branch and "
+            "push. Default behavior is to never auto-rebase based on "
+            "merge-base age -- mergedog only merges main as a piggyback "
+            "on a fix commit it was going to push anyway. Use --rebase "
+            "when you want a one-shot upfront refresh on this run."
         ),
     )
     parser.add_argument(
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         shepherd.shepherd(
             args.pr,
-            max_base_age_days=args.max_base_age,
+            rebase=args.rebase,
             accept_divergence=args.accept_divergence,
             ignore_sev=args.ignore_sev,
         )
