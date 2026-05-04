@@ -64,7 +64,7 @@ def _format_handoff_comment(
         head = [
             "## mergedog handoff",
             "",
-            "All required CI is green. Ready for human review and "
+            "All CI is green (or skipped). Ready for human review and "
             "`@pytorchbot merge`.",
             "",
         ]
@@ -77,9 +77,9 @@ def _format_handoff_comment(
 
     head.append(
         f"During shepherding, claude was invoked **{n}** time"
-        f"{'' if n == 1 else 's'}. If any required CI shows red, claude "
-        "judged that failure unrelated to this PR's changes — please verify "
-        "below before merging."
+        f"{'' if n == 1 else 's'}. If any CI shows red, claude judged that "
+        "failure unrelated to this PR's changes — please verify below before "
+        "merging."
     )
     head.append("")
     body = "\n".join(head)
@@ -218,8 +218,9 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
     while True:
         pr_data = github.get_pr(pr)
         merging = github.has_label(pr_data, github.MERGING_LABEL)
+        approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
-        set_approved((pr_data.get("reviewDecision") or "").upper() == "APPROVED")
+        set_approved(approved)
         if pr_data.get("state") != "OPEN":
             return "closed", None
         event = _latest_mergebot_event(pr, since_iso)
@@ -237,13 +238,23 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
             last_state = "merging"
         else:
             last_merging_msg = None
-            new_state = kind or "watching"
+            if kind == "started":
+                new_state = "started"
+            elif approved:
+                new_state = "awaiting_merge"
+            else:
+                new_state = "awaiting_approval"
             if new_state != last_state:
                 if new_state == "started":
                     log("pytorchmergebot picked up the merge; waiting for outcome")
-                else:
+                elif new_state == "awaiting_merge":
                     log(
                         "handed off; awaiting `@pytorchbot merge`. Will recover "
+                        "on a Merge failed reply, or auto-prune on close/merge."
+                    )
+                else:
+                    log(
+                        "handed off; awaiting approval. Will recover "
                         "on a Merge failed reply, or auto-prune on close/merge."
                     )
                 last_state = new_state
