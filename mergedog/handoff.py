@@ -149,6 +149,30 @@ def _latest_mergebot_event(
 _POLL_INTERVAL_SEC = 60
 
 
+def _merging_progress_line(pr: int) -> str:
+    """Build the body of a [MERGING]-phase log line: CI progress + failures.
+
+    Replaces the verbose "handed off; awaiting @pytorchbot merge" message
+    once pytorchmergebot has actually picked up the merge -- the [MERGING]
+    log prefix already says what state we're in, so the body shows how
+    much of pytorchmergebot's rebased CI is done and how many checks it's
+    waving past as failed (== "ignoring").
+    """
+    try:
+        checks = github.get_pr_checks_all(pr)
+    except Exception:
+        return "waiting for merge"
+    total = len(checks)
+    done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
+    failed = sum(
+        1 for c in checks if c.get("bucket") in {"fail", "cancel"}
+    )
+    body = f"waiting for merge; CI {done}/{total} done"
+    if failed:
+        body += f", {failed} failed"
+    return body
+
+
 def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -164,9 +188,11 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
         won't re-react to the same comment.
     """
     last_state: str | None = None
+    last_merging_msg: str | None = None
     while True:
         pr_data = github.get_pr(pr)
-        set_merging(github.has_label(pr_data, github.MERGING_LABEL))
+        merging = github.has_label(pr_data, github.MERGING_LABEL)
+        set_merging(merging)
         if pr_data.get("state") != "OPEN":
             return "closed", None
         event = _latest_mergebot_event(pr, since_iso)
@@ -174,14 +200,24 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
         if kind == "failed":
             log("pytorchmergebot reported merge failure; halting")
             return "failed", event[1]
-        new_state = kind or "watching"
-        if new_state != last_state:
-            if new_state == "started":
-                log("pytorchmergebot picked up the merge; waiting for outcome")
-            else:
-                log(
-                    "handed off; awaiting `@pytorchbot merge`. Will recover "
-                    "on a Merge failed reply, or auto-prune on close/merge."
-                )
-            last_state = new_state
+        if merging:
+            msg = _merging_progress_line(pr)
+            if msg != last_merging_msg:
+                log(msg)
+                last_merging_msg = msg
+            # Force a re-log of the awaiting message if the label disappears
+            # later (shouldn't happen in normal flow, but cheap to handle).
+            last_state = "merging"
+        else:
+            last_merging_msg = None
+            new_state = kind or "watching"
+            if new_state != last_state:
+                if new_state == "started":
+                    log("pytorchmergebot picked up the merge; waiting for outcome")
+                else:
+                    log(
+                        "handed off; awaiting `@pytorchbot merge`. Will recover "
+                        "on a Merge failed reply, or auto-prune on close/merge."
+                    )
+                last_state = new_state
         time.sleep(_POLL_INTERVAL_SEC)
