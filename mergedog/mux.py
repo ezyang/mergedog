@@ -340,6 +340,15 @@ class MuxApp(App):
         self._refresh()
 
     def on_unmount(self) -> None:
+        # Fan out SIGTERM first so the per-PR grace windows in
+        # ``_terminate_group`` overlap instead of serializing -- otherwise
+        # quitting with N tracked PRs blocks for up to ~4*N seconds.
+        for _pr, (p, _f, _) in self.procs.items():
+            if p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         for _pr, (p, f, _) in self.procs.items():
             _terminate_group(p, grace=2.0)
             try:
