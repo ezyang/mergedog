@@ -15,6 +15,9 @@ Commands typed at the bottom (enter to submit):
     rebase all                        re-run every tracked PR with --rebase
     cancel <pr>                       SIGTERM a shepherd
     log <pr>                          show the path to its log file
+    ignore-sev [on|off]               toggle (or show) the mux-wide
+                                      ``--ignore-sev`` default applied to
+                                      every shepherd spawn
     quit                              terminate everything and exit
 
 Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
@@ -118,15 +121,24 @@ class MuxApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit")]
 
-    def __init__(self, initial: list[int]) -> None:
+    def __init__(self, initial: list[int], *, ignore_sev: bool = False) -> None:
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
         self._initial = initial
+        # Mux-wide default for ``--ignore-sev``. When True, every shepherd
+        # spawn gets the flag injected so newly added (or rebase-respawned)
+        # PRs don't park on an open CI SEV. Existing parked shepherds are
+        # NOT auto-restarted on toggle -- use ``rebase all`` (or cancel +
+        # add) to apply the new default to running PRs.
+        self.ignore_sev = ignore_sev
 
     def compose(self) -> ComposeResult:
         yield DataTable()
         yield Input(
-            placeholder="<pr> | add <pr> | rebase <pr|all> | cancel <pr> | log <pr> | quit"
+            placeholder=(
+                "<pr> | add <pr> | rebase <pr|all> | cancel <pr> | "
+                "log <pr> | ignore-sev [on|off] | quit"
+            )
         )
 
     def on_mount(self) -> None:
@@ -138,12 +150,18 @@ class MuxApp(App):
         self.set_interval(2.0, self._refresh)
         self.query_one(Input).focus()
 
+    def _shepherd_args(self, extra: list[str]) -> list[str]:
+        """Apply mux-wide defaults to a shepherd argv tail."""
+        if self.ignore_sev and "--ignore-sev" not in extra:
+            return ["--ignore-sev", *extra]
+        return list(extra)
+
     def _do_add(self, pr: int, extra: list[str]) -> None:
         if pr in self.procs and self.procs[pr][0].poll() is None:
             self.notify(f"[{pr}] already running", severity="warning")
             return
         try:
-            self.procs[pr] = _spawn(pr, extra)
+            self.procs[pr] = _spawn(pr, self._shepherd_args(extra))
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
 
@@ -157,12 +175,35 @@ class MuxApp(App):
         # ``_terminate_group`` is a no-op for already-exited processes.
         for pr in prs:
             _terminate_group(self.procs[pr][0])
+        rebase_args = self._shepherd_args(["--rebase"])
         for pr in prs:
             try:
-                self.procs[pr] = _spawn(pr, ["--rebase"])
+                self.procs[pr] = _spawn(pr, rebase_args)
             except Exception as e:
                 self.notify(f"[{pr}] failed: {e}", severity="error")
         self.notify(f"rebasing {len(prs)} PR(s)")
+
+    def _do_ignore_sev(self, rest: list[str]) -> None:
+        if not rest:
+            state = "on" if self.ignore_sev else "off"
+            self.notify(f"ignore-sev is {state}")
+            return
+        arg = rest[0].lower()
+        if arg in ("on", "true", "1", "yes"):
+            new = True
+        elif arg in ("off", "false", "0", "no"):
+            new = False
+        elif arg == "toggle":
+            new = not self.ignore_sev
+        else:
+            self.notify(f"usage: ignore-sev [on|off|toggle]", severity="warning")
+            return
+        self.ignore_sev = new
+        state = "on" if new else "off"
+        self.notify(
+            f"ignore-sev {state} (applies to future spawns; "
+            f"use `rebase all` to apply to running PRs)"
+        )
 
     def _do_cancel(self, pr: int) -> None:
         entry = self.procs.get(pr)
@@ -271,6 +312,8 @@ class MuxApp(App):
                         self.notify(str(entry[2]))
                     else:
                         self.notify(f"[{pr}] unknown", severity="warning")
+            elif cmd in ("ignore-sev", "ignore_sev"):
+                self._do_ignore_sev(rest)
             elif cmd in ("quit", "q", "exit"):
                 self.exit()
                 return
@@ -304,6 +347,15 @@ def main() -> int:
         action="store_true",
         help="Start a shepherd for every PR with state on disk.",
     )
+    parser.add_argument(
+        "--ignore-sev",
+        action="store_true",
+        help=(
+            "Mux-wide default: pass --ignore-sev to every spawned "
+            "shepherd so they don't park on open ``ci: sev`` issues. "
+            "Toggle at runtime with the ``ignore-sev on|off`` command."
+        ),
+    )
     args = parser.parse_args()
 
     ensure_dirs()
@@ -321,7 +373,7 @@ def main() -> int:
 
     # ``mouse=False`` keeps the terminal's native selection / right-click
     # paste working. We don't actually click anything in the table.
-    MuxApp(initial).run(mouse=False)
+    MuxApp(initial, ignore_sev=args.ignore_sev).run(mouse=False)
     return 0
 
 
