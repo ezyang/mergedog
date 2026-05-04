@@ -86,6 +86,36 @@ TRUNK_LABEL = "ciflow/trunk"
 # exit path (success, HALT, SIGTERM from ``mux cancel``, ctrl-c).
 MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
+# When CI flips to failed, ``gh run view --log-failed`` often returns nothing
+# for the first few seconds because GitHub hasn't published the log yet.
+# Calling claude on a content-free prompt nearly guarantees a "spurious"
+# verdict, so we defer the invocation up to this many poll cycles waiting
+# for logs to appear. Past the cap, we invoke claude anyway -- the trusted
+# failing-check-name list in the prompt still gives it something to act on.
+MAX_EMPTY_LOG_DEFERS = 3
+# Below this many post-strip chars (across all failing jobs combined) the
+# prompt's logs section is considered content-free.
+MIN_USEFUL_LOG_CHARS = 200
+
+
+def _failed_logs_are_content_free(
+    failed: list[tuple[str, str]],
+) -> bool:
+    """True if no failing job has a substantive log excerpt yet.
+
+    "<no log available>" placeholders and short stub bodies count as empty.
+    Used to defer claude invocation when GitHub hasn't published logs yet
+    for jobs that just transitioned to failed.
+    """
+    if not failed:
+        return True
+    total = 0
+    for _, text in failed:
+        stripped = (text or "").strip()
+        if stripped == "<no log available>":
+            continue
+        total += len(stripped)
+    return total < MIN_USEFUL_LOG_CHARS
 
 
 def _apply_spurious_overrides(
@@ -683,6 +713,10 @@ def _shepherd_body(
         # off. Cleared whenever we push a fix (fresh CI invalidates the
         # judgments).
         spurious_check_names: set[str] = set()
+        # How many consecutive ``failed`` polls have come back with
+        # content-free logs from gh. Reset whenever we either pull useful
+        # logs or leave the failed branch.
+        empty_log_defers = 0
 
         # Poll CI, fix or judge spurious until ready for handoff. Breaks
         # out (via the handoff path) when CI is green and the trunk
@@ -706,6 +740,7 @@ def _shepherd_body(
             # 2. Approve any approval-pending workflow runs.
             approved = _approve_pending_runs(current, run_state_cache)
             if approved:
+                empty_log_defers = 0
                 stable_observation = None  # newly-approved runs invalidate stability
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
@@ -737,6 +772,7 @@ def _shepherd_body(
                 stable_since = time.time()
 
             if status == "pending":
+                empty_log_defers = 0
                 time.sleep(POLL_INTERVAL_SEC)
                 continue
 
@@ -751,6 +787,24 @@ def _shepherd_body(
                         f"intervention"
                     )
                 failed = github.get_failed_job_logs(pr)
+                # GitHub publishes a job's log a few seconds after the job
+                # transitions to failed. Calling claude on an empty logs
+                # block (with a stale dr. ci that may still say "no
+                # failures") almost always produces a "spurious" verdict;
+                # defer a few cycles to let logs land.
+                if (
+                    _failed_logs_are_content_free(failed)
+                    and empty_log_defers < MAX_EMPTY_LOG_DEFERS
+                ):
+                    empty_log_defers += 1
+                    log(
+                        f"failed-job logs not yet available from gh "
+                        f"(defer {empty_log_defers}/{MAX_EMPTY_LOG_DEFERS}); "
+                        f"waiting for logs to publish before invoking claude"
+                    )
+                    time.sleep(POLL_INTERVAL_SEC)
+                    continue
+                empty_log_defers = 0
                 ctx_path, comments = _refresh_context_file(pr_data)
                 prompt = render_fix_prompt(
                     url=pr_data.get("url", ""),
@@ -851,6 +905,7 @@ def _shepherd_body(
             # freshly-pushed commit can't trick us by reporting "1/1 done"
             # while the rest of the workflows are still being created.
             if status == "passed":
+                empty_log_defers = 0
                 elapsed = time.time() - stable_since
                 if elapsed < CI_STABILITY_WINDOW_SEC:
                     remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
