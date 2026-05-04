@@ -36,16 +36,38 @@ def utc_now_iso() -> str:
 _MAX_COMMENT_LEN = 60000
 
 
-def _format_handoff_comment(pr_data: dict, sessions: list[ClaudeSession]) -> str:
-    """Build the markdown body posted on the PR at handoff."""
+def _format_handoff_comment(
+    pr_data: dict,
+    sessions: list[ClaudeSession],
+    *,
+    recovering: bool = False,
+) -> str:
+    """Build the markdown body posted on the PR at handoff.
+
+    ``recovering=True`` reframes the comment for the case where
+    pytorchmergebot already replied "Merge failed" once and mergedog
+    re-inspected CI; the human still needs to re-run ``@pytorchbot
+    merge`` themselves -- mergedog never auto-retriggers a land.
+    """
     n = len(sessions)
-    head: list[str] = [
-        "## mergedog handoff",
-        "",
-        "All required CI is green. Ready for human review and "
-        "`@pytorchbot merge`.",
-        "",
-    ]
+    if recovering:
+        head: list[str] = [
+            "## mergedog handoff (after merge failure)",
+            "",
+            "pytorchmergebot reported `Merge failed`. mergedog re-inspected "
+            "CI and is handing back off to you. **Please review the latest "
+            "session(s) below and re-run `@pytorchbot merge` if you're "
+            "happy** — mergedog will not retrigger the merge itself.",
+            "",
+        ]
+    else:
+        head = [
+            "## mergedog handoff",
+            "",
+            "All required CI is green. Ready for human review and "
+            "`@pytorchbot merge`.",
+            "",
+        ]
     if n == 0:
         head.append(
             "claude was not invoked during this run (CI was green from the "
@@ -98,11 +120,15 @@ def post_handoff_comment(
     sessions: list[ClaudeSession],
     *,
     force: bool = False,
+    recovering: bool = False,
 ) -> None:
-    if not force and github.has_mergedog_handoff_comment(pr):
+    # Recovery handoffs always post a fresh comment (forcing past the
+    # "already handed off" check) -- the prior comment said "ready to
+    # merge", which is now stale, and the human needs the new framing.
+    if not force and not recovering and github.has_mergedog_handoff_comment(pr):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
         return
-    body = _format_handoff_comment(pr_data, sessions)
+    body = _format_handoff_comment(pr_data, sessions, recovering=recovering)
     try:
         github.post_pr_comment(pr, body)
         log(f"posted handoff summary to PR #{pr}")
