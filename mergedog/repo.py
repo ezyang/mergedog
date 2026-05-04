@@ -436,30 +436,48 @@ def fetch_ghstack_orig(head_ref: str) -> str:
     we modify and re-submit it.
     """
     orig_ref = head_orig_ref(head_ref)
+    return _fetch_origin_branch(orig_ref)
+
+
+def fetch_ghstack_head(head_ref: str) -> str:
+    """Fetch the synthetic /head branch for a ghstack PR; return its SHA.
+
+    Used both at startup to verify origin's view of /head matches gh's, and
+    after ``ghstack submit`` to learn the new /head SHA so we can trust it
+    before the polling loop sees it on the GitHub side.
+    """
+    return _fetch_origin_branch(head_ref)
+
+
+def _fetch_origin_branch(branch: str) -> str:
+    """Fetch a single branch from origin and return its current SHA."""
     run(
         [
             "git",
             "fetch",
             "origin",
-            f"+refs/heads/{orig_ref}:refs/remotes/origin/{orig_ref}",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
         ],
         cwd=REPO_DIR,
         capture=False,
         loud=True,
     )
     return run(
-        ["git", "rev-parse", f"refs/remotes/origin/{orig_ref}"],
+        ["git", "rev-parse", f"refs/remotes/origin/{branch}"],
         cwd=REPO_DIR,
     ).stdout.strip()
 
 
-def squash_into_parent(worktree: Path) -> str:
-    """Fold HEAD into HEAD~1 in-place.
+def fixup_into_parent(worktree: Path) -> str:
+    """Fold HEAD into HEAD~1 with fixup (not squash) semantics.
 
-    The parent's commit message is preserved; the tree becomes HEAD's tree.
-    Returns the SHA of the new amended commit. Used by the ghstack fix-CI
-    flow so claude's ``[MERGEDOG]`` fix becomes part of the contributor's
-    original commit (which ghstack then re-uploads as a synthetic head).
+    The parent's commit message is kept verbatim; HEAD's tree is folded in;
+    HEAD's *commit message* is discarded. Returns the SHA of the new amended
+    commit. Used by the ghstack fix-CI flow: claude's ``[MERGEDOG]`` fix
+    becomes part of the contributor's original commit, and the message that
+    described the fix is propagated separately into ``ghstack submit -m``
+    (so it shows up as the submit's audit message rather than rewriting the
+    contributor's commit message on /orig).
     """
     name, email = get_mergedog_identity()
     run(["git", "reset", "--soft", "HEAD~1"], cwd=worktree, capture=False, loud=True)
