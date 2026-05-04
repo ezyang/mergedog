@@ -405,17 +405,20 @@ def _parse_run_link(link: str) -> tuple[int | None, int | None]:
 def evaluate_checks(checks: list[dict]) -> str:
     """Reduce a list of checks to a single status: pending, failed, passed.
 
-    We wait for every check to complete before declaring failure, so that
-    when we hand the failed-log bundle to claude it has the full picture.
+    Declare failure as soon as any check fails, even with others still
+    pending. The point is to push a fix immediately so fresh CI starts
+    sooner -- waiting for slow unrelated workflows before invoking claude
+    can add tens of minutes before any new signal returns. Any failures
+    that crystallize after the fix is pushed are caught by the next loop.
     """
     if not checks:
         return "pending"
-    pending_buckets = {"pending", None}
     fail_buckets = {"fail", "cancel"}
-    is_pending = any(c.get("bucket") in pending_buckets for c in checks)
-    if is_pending:
-        return "pending"
+    pending_buckets = {"pending", None}
     is_failed = any(c.get("bucket") in fail_buckets for c in checks)
     if is_failed:
         return "failed"
+    is_pending = any(c.get("bucket") in pending_buckets for c in checks)
+    if is_pending:
+        return "pending"
     return "passed"
