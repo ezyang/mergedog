@@ -10,6 +10,7 @@ Run via::
 Commands typed at the bottom (enter to submit):
 
     add <pr> [extra mergedog flags]   start a shepherd
+    <pr>                              shorthand for ``add <pr>``
     cancel <pr>                       SIGTERM a shepherd
     log <pr>                          show the path to its log file
     quit                              terminate everything and exit
@@ -122,7 +123,7 @@ class MuxApp(App):
 
     def compose(self) -> ComposeResult:
         yield DataTable()
-        yield Input(placeholder="add <pr> | cancel <pr> | log <pr> | quit")
+        yield Input(placeholder="<pr> | add <pr> | cancel <pr> | log <pr> | quit")
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
@@ -218,6 +219,9 @@ class MuxApp(App):
             self.notify(f"parse error: {e}", severity="error")
             return
         cmd, rest = args[0], args[1:]
+        # Bare PR number or PR URL → treat as ``add <pr>``.
+        if cmd.isdigit() or "/pull/" in cmd:
+            cmd, rest = "add", args
         try:
             if cmd in ("add", "a"):
                 if not rest:
