@@ -164,6 +164,14 @@ def get_pr_head_sha(pr: int) -> str:
     return data["headRefOid"]
 
 
+def get_pr_labels(pr: int) -> list[str]:
+    """Return the names of labels currently applied to the PR."""
+    data = _gh_json(
+        ["pr", "view", str(pr), "--repo", REPO, "--json", "labels"]
+    )
+    return [l.get("name", "") for l in data.get("labels", []) or []]
+
+
 def list_workflow_runs_for_sha(sha: str) -> list[dict]:
     data = _gh_json(
         [
@@ -245,6 +253,8 @@ def has_label(pr_data: dict, label: str) -> bool:
 
 
 CI_SEV_LABEL = "ci: sev"
+# pytorchmergebot stamps this label while a PR is actively being merged.
+MERGING_LABEL = "merging"
 
 
 def list_active_ci_sevs() -> list[dict]:

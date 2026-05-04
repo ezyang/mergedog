@@ -18,7 +18,7 @@ from mergedog.handoff import (
     utc_now_iso,
     watch_post_handoff,
 )
-from mergedog.log import die, log
+from mergedog.log import die, log, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
@@ -86,6 +86,24 @@ TRUNK_LABEL = "ciflow/trunk"
 # exit path (success, HALT, SIGTERM from ``mux cancel``, ctrl-c).
 MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
+
+
+def _refresh_merging_state(pr: int) -> None:
+    """Toggle the [MERGING] log prefix based on the PR's current labels.
+
+    Called once per main-poll iteration. ``[MERGING]`` is the only signal
+    the mux has back from each shepherd that pytorchmergebot is actively
+    merging the PR -- the mux only reads the last log line per shepherd,
+    so we have to thread the state through the log itself.
+
+    Failures are silently swallowed: a bad ``gh`` call here shouldn't HALT
+    over a UI nicety.
+    """
+    try:
+        labels = github.get_pr_labels(pr)
+    except Exception:
+        return
+    set_merging(github.MERGING_LABEL in labels)
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -624,6 +642,7 @@ def _shepherd_body(
     # Poll CI, fix or judge spurious until ready for handoff. Breaks out
     # (via the handoff path) when CI is green and the trunk label is on.
     while True:
+        _refresh_merging_state(pr)
         # 1. Verify the PR head is still trusted.
         current = github.get_pr_head_sha(pr)
         if self_pr:
