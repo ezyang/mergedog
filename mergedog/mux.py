@@ -12,6 +12,7 @@ Commands typed at the bottom (enter to submit):
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
     rebase <pr>                       shorthand for ``add <pr> --rebase``
+    rebase all                        re-run every tracked PR with --rebase
     cancel <pr>                       SIGTERM a shepherd
     log <pr>                          show the path to its log file
     quit                              terminate everything and exit
@@ -125,7 +126,7 @@ class MuxApp(App):
     def compose(self) -> ComposeResult:
         yield DataTable()
         yield Input(
-            placeholder="<pr> | add <pr> | rebase <pr> | cancel <pr> | log <pr> | quit"
+            placeholder="<pr> | add <pr> | rebase <pr|all> | cancel <pr> | log <pr> | quit"
         )
 
     def on_mount(self) -> None:
@@ -145,6 +146,23 @@ class MuxApp(App):
             self.procs[pr] = _spawn(pr, extra)
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
+
+    def _do_rebase_all(self) -> None:
+        prs = sorted(self.procs)
+        if not prs:
+            self.notify("no PRs to rebase", severity="warning")
+            return
+        # Terminate any running shepherds first so the re-spawn isn't
+        # blocked by the "already running" guard in ``_do_add``.
+        # ``_terminate_group`` is a no-op for already-exited processes.
+        for pr in prs:
+            _terminate_group(self.procs[pr][0])
+        for pr in prs:
+            try:
+                self.procs[pr] = _spawn(pr, ["--rebase"])
+            except Exception as e:
+                self.notify(f"[{pr}] failed: {e}", severity="error")
+        self.notify(f"rebasing {len(prs)} PR(s)")
 
     def _do_cancel(self, pr: int) -> None:
         entry = self.procs.get(pr)
@@ -233,7 +251,9 @@ class MuxApp(App):
                     self._do_add(_parse_pr(rest[0]), rest[1:])
             elif cmd == "rebase":
                 if not rest:
-                    self.notify("usage: rebase <pr>", severity="warning")
+                    self.notify("usage: rebase <pr> | rebase all", severity="warning")
+                elif rest[0] == "all":
+                    self._do_rebase_all()
                 else:
                     self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
             elif cmd in ("cancel", "c", "kill", "rm"):
