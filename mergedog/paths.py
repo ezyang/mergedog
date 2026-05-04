@@ -1,9 +1,25 @@
-"""Filesystem layout used by mergedog."""
+"""Filesystem layout used by mergedog.
+
+The root directory defaults to ``~/.mergedog`` but can be overridden via
+the ``MERGEDOG_ROOT`` environment variable. This is honoured at import
+time, so any caller that wants to redirect mergedog at a different root
+should set the env var (or use ``--root`` on the entry-point CLIs, which
+sets it for you) before importing anything from this module.
+"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-ROOT = Path.home() / ".mergedog"
+
+def _resolve_root() -> Path:
+    env = os.environ.get("MERGEDOG_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return Path.home() / ".mergedog"
+
+
+ROOT = _resolve_root()
 REPO_DIR = ROOT / "repo"
 WORKTREES_DIR = ROOT / "worktrees"
 STATE_DIR = ROOT / "state"

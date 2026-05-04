@@ -68,6 +68,18 @@ def main(argv: list[str] | None = None) -> int:
             "stampede already-broken trunk."
         ),
     )
+    parser.add_argument(
+        "--root",
+        metavar="DIR",
+        help=(
+            "Override the on-disk root (default: ``~/.mergedog`` or the "
+            "``MERGEDOG_ROOT`` env var). Useful to run a second mergedog "
+            "session against a disjoint set of PRs without sharing the "
+            "clone, worktrees, state, or logs of the default install. "
+            "When invoked from ``mergedog.mux``, the env var is "
+            "inherited by every spawned shepherd automatically."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:

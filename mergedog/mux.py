@@ -33,21 +33,45 @@ import sys
 import time
 from pathlib import Path
 
-from rich.text import Text
-from textual import work
-from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Input
 
-from mergedog import repo as repo_mod
-from mergedog.cli import _parse_pr
-from mergedog.paths import (
+def _preparse_root(argv: list[str]) -> None:
+    """Promote ``--root`` to ``MERGEDOG_ROOT`` before mergedog imports.
+
+    ``mergedog.paths`` resolves the root at import time, so we seed the
+    env var here -- before the ``from mergedog...`` block below -- and
+    leave canonical argparse handling to ``main()`` for help text. Env
+    inheritance then carries the same root into every spawned shepherd.
+    """
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--root" and i + 1 < len(argv):
+            os.environ["MERGEDOG_ROOT"] = str(Path(argv[i + 1]).expanduser().resolve())
+            return
+        if a.startswith("--root="):
+            value = a.split("=", 1)[1]
+            os.environ["MERGEDOG_ROOT"] = str(Path(value).expanduser().resolve())
+            return
+        i += 1
+
+
+_preparse_root(sys.argv[1:])
+
+from rich.text import Text  # noqa: E402
+from textual import work  # noqa: E402
+from textual.app import App, ComposeResult  # noqa: E402
+from textual.widgets import DataTable, Input  # noqa: E402
+
+from mergedog import repo as repo_mod  # noqa: E402
+from mergedog.cli import _parse_pr  # noqa: E402
+from mergedog.paths import (  # noqa: E402
     ROOT,
     STATE_DIR,
     context_file,
     ensure_dirs,
     state_file,
 )
-from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE
+from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 
@@ -379,6 +403,19 @@ def main() -> int:
             "Mux-wide default: pass --ignore-sev to every spawned "
             "shepherd so they don't park on open ``ci: sev`` issues. "
             "Toggle at runtime with the ``ignore-sev on|off`` command."
+        ),
+    )
+    parser.add_argument(
+        "--root",
+        metavar="DIR",
+        help=(
+            "Override the on-disk root (default: ``~/.mergedog`` or the "
+            "``MERGEDOG_ROOT`` env var). Use this to run a second mux "
+            "against a disjoint set of PRs -- a separate clone, "
+            "worktrees, state, logs, and trust DB -- so destructive "
+            "commands like ``rebase all`` don't touch the default "
+            "install. The chosen root is exported to ``MERGEDOG_ROOT`` "
+            "before any spawn, so every shepherd inherits it."
         ),
     )
     args = parser.parse_args()
