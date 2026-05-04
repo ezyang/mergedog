@@ -150,11 +150,13 @@ def _fork_ssh_url(pr_data: dict) -> str:
     return f"git@github.com:{owner}/{name}.git"
 
 
-def _refresh_context_file(pr_data: dict) -> Path:
+def _refresh_context_file(pr_data: dict) -> tuple[Path, list[dict]]:
     """Rebuild the per-PR sidecar from the latest title/body/comments.
 
     Refreshed before each claude invocation so that comments added partway
-    through a shepherd run show up in the agent's context.
+    through a shepherd run show up in the agent's context. Returns both the
+    sidecar path and the raw comments list so callers can pull out trusted
+    snippets (e.g., dr. ci summary) without re-fetching.
     """
     pr = pr_data["number"]
     comments = github.get_pr_comments(pr)
@@ -167,7 +169,7 @@ def _refresh_context_file(pr_data: dict) -> Path:
     )
     path = context_file(pr)
     context_mod.write_context_file(path, text)
-    return path
+    return path, comments
 
 
 _APPROVAL_PENDING_STATUSES = {"action_required", "waiting"}
@@ -440,7 +442,7 @@ def _merge_main_resolving_conflicts(
 
     if status == "conflict":
         log("merge produced conflicts; asking claude to resolve")
-        ctx_path = _refresh_context_file(pr_data)
+        ctx_path, _ = _refresh_context_file(pr_data)
         prompt = render_merge_conflict_prompt(
             url=pr_data.get("url", ""),
             branch=branch,
@@ -675,13 +677,14 @@ def _shepherd_body(
                     f"intervention"
                 )
             failed = github.get_failed_job_logs(pr)
-            ctx_path = _refresh_context_file(pr_data)
+            ctx_path, comments = _refresh_context_file(pr_data)
             prompt = render_fix_prompt(
                 url=pr_data.get("url", ""),
                 branch=branch,
                 context_path=str(ctx_path),
                 failed_jobs=failed,
                 is_ghstack=is_ghstack,
+                drci_summary=github.latest_drci_summary(comments),
             )
             session_failed_jobs = [name for name, _ in failed]
             sha_before = current
