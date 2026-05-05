@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from mergedog import shepherd
+from mergedog import shepherd, stack_shepherd
 
 
 def _parse_pr(value: str) -> int:
@@ -22,14 +22,8 @@ def _parse_pr(value: str) -> int:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="mergedog",
-        description=(
-            "Autonomously shepherd an approved pytorch/pytorch PR through "
-            "CI to the point a human can comment `@pytorchbot merge`."
-        ),
-    )
+def _add_common_flags(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by the single-PR and stack entry points."""
     parser.add_argument(
         "pr",
         type=_parse_pr,
@@ -89,6 +83,17 @@ def main(argv: list[str] | None = None) -> int:
             "inherited by every spawned shepherd automatically."
         ),
     )
+
+
+def _single_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mergedog",
+        description=(
+            "Autonomously shepherd an approved pytorch/pytorch PR through "
+            "CI to the point a human can comment `@pytorchbot merge`."
+        ),
+    )
+    _add_common_flags(parser)
     args = parser.parse_args(argv)
 
     try:
@@ -103,3 +108,41 @@ def main(argv: list[str] | None = None) -> int:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
         return 130
     return 0
+
+
+def _stack_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mergedog stack",
+        description=(
+            "Shepherd a whole ghstack stack from a single foreground "
+            "process. Pass any PR in the stack; mergedog reads the "
+            "stack listing from the PR body and drives every PR in "
+            "bottom-up order."
+        ),
+    )
+    _add_common_flags(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        stack_shepherd.run_stack(
+            args.pr,
+            rebase=args.rebase,
+            accept_divergence=args.accept_divergence,
+            ignore_sev=args.ignore_sev,
+            reassess=args.reassess,
+        )
+    except KeyboardInterrupt:
+        print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
+        return 130
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    # Subcommand dispatch: ``mergedog stack <pr> [...]`` runs the stack
+    # shepherd; everything else stays on the single-PR path so existing
+    # ``mergedog <pr>`` invocations (and ``mux.py`` spawns) keep working.
+    if argv and argv[0] == "stack":
+        return _stack_main(argv[1:])
+    return _single_main(argv)
