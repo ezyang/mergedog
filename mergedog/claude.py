@@ -1,14 +1,17 @@
 """Invoke claude as a subprocess to investigate and (maybe) fix CI failures."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Iterator, Mapping
 
 from mergedog.log import log
+from mergedog.paths import LINTRUNNER_VENV, REPO_DIR
 from mergedog.process import run
 from mergedog import repo as repo_mod
 from mergedog.repo import head_sha, head_subject
@@ -19,11 +22,6 @@ MERGEDOG_PREFIX = "[MERGEDOG]"
 # Opus) can't downgrade us. mergedog runs async; slow is fine, capable is
 # not optional.
 _CLAUDE_MODEL = "opus"
-
-# pytorch-flavored lintrunner lives in the user's pytorch venv. We borrow
-# it instead of asking mergedog to maintain its own toolchain. Override
-# with ``MERGEDOG_LINTRUNNER=/path/to/lintrunner`` if your layout differs.
-_DEFAULT_LINTRUNNER = Path.home() / "Dev" / "pytorch" / ".venv" / "bin" / "lintrunner"
 
 
 def _relativize(text: str, worktree: Path | None) -> str:
@@ -172,28 +170,72 @@ def _is_clean(worktree: Path) -> bool:
     return proc.stdout.strip() == ""
 
 
-def _resolve_lintrunner() -> Path | None:
-    """Return the lintrunner binary to use, or None if it's unavailable.
+def _ensure_lintrunner_setup() -> Path | None:
+    """Ensure mergedog's shared lintrunner venv + ``.lintbin`` exist.
 
-    ``MERGEDOG_LINTRUNNER`` env override wins; otherwise we fall back to
-    the user's pytorch venv. A missing lintrunner is a warning, not a
-    failure -- formatting drift will still be caught by CI; we'd just
-    have wasted a fix-CI cycle on it.
+    mergedog manages its own lintrunner via uv: a single venv at
+    ``<ROOT>/lintrunner-venv`` and a single ``.lintbin`` populated once
+    in ``<REPO_DIR>``. Both are reused across all worktrees -- each
+    worktree symlinks ``.lintbin`` rather than re-initing.
+
+    Held under a file lock so the mux's concurrent shepherds cooperate:
+    only one runs ``uv venv`` / ``lintrunner init``; the rest see the
+    artifacts and skip. Returns the lintrunner binary, or None if setup
+    fails (no uv, install error) -- a missing lintrunner is a warning,
+    not a halt; formatting drift would still be caught by CI.
     """
-    override = os.environ.get("MERGEDOG_LINTRUNNER")
-    if override:
-        p = Path(override).expanduser()
-        if p.exists():
-            return p
-        log(f"WARNING: MERGEDOG_LINTRUNNER={override} not found; skipping lintrunner")
+    binary = LINTRUNNER_VENV / "bin" / "lintrunner"
+    lintbin = REPO_DIR / ".lintbin"
+    if binary.exists() and lintbin.is_dir():
+        return binary
+    if shutil.which("uv") is None:
+        log("WARNING: uv not found on PATH; skipping lintrunner")
         return None
-    if _DEFAULT_LINTRUNNER.exists():
-        return _DEFAULT_LINTRUNNER
-    log(
-        f"WARNING: lintrunner not found at {_DEFAULT_LINTRUNNER}; "
-        "skipping (set MERGEDOG_LINTRUNNER to override)"
-    )
-    return None
+    REPO_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = REPO_DIR / ".mergedog-lintrunner-setup.lock"
+    with open(lock_path, "w") as fp:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        # Re-check under the lock; another shepherd may have set up while
+        # we were blocked.
+        if not binary.exists():
+            log(f"creating shared lintrunner venv at {LINTRUNNER_VENV}")
+            try:
+                if not LINTRUNNER_VENV.exists():
+                    run(["uv", "venv", str(LINTRUNNER_VENV)], loud=True)
+                run(
+                    [
+                        "uv", "pip", "install",
+                        "--python", str(LINTRUNNER_VENV / "bin" / "python"),
+                        "lintrunner",
+                    ],
+                    loud=True,
+                )
+            except subprocess.CalledProcessError as e:
+                log(f"WARNING: lintrunner venv setup failed: {e}; skipping")
+                return None
+            if not binary.exists():
+                return None
+        if not lintbin.is_dir():
+            env = os.environ.copy()
+            env["PATH"] = f"{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+            log("running lintrunner init (one-time; downloads pinned binaries)")
+            proc = subprocess.run(
+                [str(binary), "init"],
+                cwd=str(REPO_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            for line in (proc.stdout or "").splitlines()[-20:]:
+                log(f"  lintrunner init: {line}")
+            if proc.returncode != 0:
+                for line in (proc.stderr or "").splitlines()[-10:]:
+                    log(f"  lintrunner init stderr: {line}")
+                log(
+                    f"WARNING: lintrunner init exited {proc.returncode}; "
+                    ".lintbin may be incomplete"
+                )
+    return binary
 
 
 def _run_lintrunner_amend(worktree: Path) -> str | None:
@@ -213,7 +255,7 @@ def _run_lintrunner_amend(worktree: Path) -> str | None:
     lintrunner across the whole diff against main would slow us down
     without finding anything new.
     """
-    lintrunner = _resolve_lintrunner()
+    lintrunner = _ensure_lintrunner_setup()
     if lintrunner is None:
         return None
     # lintrunner shells out to its sibling tools (clang-format, ruff, ...);
@@ -222,17 +264,17 @@ def _run_lintrunner_amend(worktree: Path) -> str | None:
     venv_bin = lintrunner.parent
     env = os.environ.copy()
     env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
-    # pytorch's ``.lintrunner.toml`` references native lint binaries by
-    # the relative path ``.lintbin/<tool>`` (clang-format, clang-tidy,
-    # actionlint, ...). The donor pytorch checkout already ran
-    # ``lintrunner init`` once and has them populated; symlink that dir
-    # into the worktree so lintrunner finds them without us having to
-    # re-init per worktree.
-    donor_lintbin = venv_bin.parent.parent / ".lintbin"
+    # pytorch's ``.lintrunner.toml`` references native lint binaries by the
+    # relative path ``.lintbin/<tool>`` (clang-format, clang-tidy,
+    # actionlint, ...). ``_ensure_lintrunner_setup`` populated ``.lintbin``
+    # in the main clone via ``lintrunner init``; symlink that dir into the
+    # worktree so lintrunner finds them without us having to re-init per
+    # worktree.
+    main_lintbin = REPO_DIR / ".lintbin"
     worktree_lintbin = worktree / ".lintbin"
-    if donor_lintbin.is_dir() and not worktree_lintbin.exists():
+    if main_lintbin.is_dir() and not worktree_lintbin.exists():
         try:
-            worktree_lintbin.symlink_to(donor_lintbin)
+            worktree_lintbin.symlink_to(main_lintbin)
         except OSError as e:
             log(f"WARNING: could not symlink .lintbin into worktree: {e}")
     # CLANGTIDY (and the EXECUTORCH variant) want a populated ``build/``
