@@ -748,7 +748,13 @@ def ghstack_submit(
     "cowardly refusing to push" anti-clobber check. Used as an
     operator-controlled escape hatch (``--force-ghstack``) when local
     bookkeeping disagrees with origin and we know it's safe to push.
+
+    The submit message is prefixed with ``[MERGEDOG] `` so the audit
+    line on Phabricator is unambiguously from this harness; idempotent
+    when the caller already prefixed it (e.g. claude's fix-CI message).
     """
+    if not message.startswith("[MERGEDOG]"):
+        message = f"[MERGEDOG] {message}"
     args = ["ghstack", "submit", "-m", message, "HEAD"]
     if no_stack:
         args.insert(2, "--no-stack")
