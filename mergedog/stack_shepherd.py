@@ -2,8 +2,14 @@
 
 For each member of the stack we mirror the per-PR ghstack setup that
 :mod:`mergedog.shepherd` does for the single-PR case: validate the PR
-is open and not a draft, seed trust from reviews, fetch /head and
-/orig from origin, and stand up a worktree at /orig.
+is open and not a draft, seed trust from reviews, and snapshot the
+current /head and /orig SHAs from origin.
+
+Stack mode uses a single shared worktree (rooted at the bottom PR's
+number) for the whole run -- we navigate its HEAD to whichever
+member's ``/orig`` we're operating on rather than carrying N
+worktrees. Per tick we batch-fetch every member's ``/head`` and
+``/orig`` from origin so staleness checks are local.
 
 Scheduler v0.1: per tick, every member is trust-checked, has its
 pending workflow runs approved, and has its CI status inspected. Then
@@ -58,12 +64,16 @@ class _MemberCtx:
     Most fields are transient scheduler bookkeeping that the tick loop
     mutates; only ``trust`` is persisted to disk (via its own
     ``save()``).
+
+    ``head_sha`` is GitHub's view (used for trust checks); ``orig_sha``
+    is origin's view (used for staleness). They're refreshed on
+    different cadences -- ``head_sha`` per tick from ``gh pr view``,
+    ``orig_sha`` from the per-tick batch git fetch.
     """
 
     member: StackMember
     pr_data: dict
     trust: TrustDB
-    worktree: Path
     self_pr: bool
     head_sha: str
     orig_sha: str
@@ -103,7 +113,8 @@ def _setup_member(
     """Per-member analogue of the ghstack init block in ``_shepherd_body``.
 
     ``viewer`` is passed in (rather than re-queried) so a stack run
-    only hits ``gh api user`` once.
+    only hits ``gh api user`` once. Does not touch any worktree --
+    that's owned by ``run_stack`` at the stack level.
     """
     pr = member.pr
     _validate_member(pr_data)
@@ -129,17 +140,30 @@ def _setup_member(
             f"reports for the PR ({head_sha[:12]}); refusing to act"
         )
     orig_sha = repo.fetch_ghstack_orig(member.head_ref)
-    worktree = repo.ensure_worktree(pr, orig_sha)
 
     return _MemberCtx(
         member=member,
         pr_data=pr_data,
         trust=trust,
-        worktree=worktree,
         self_pr=self_pr,
         head_sha=head_sha,
         orig_sha=orig_sha,
     )
+
+
+def _refresh_stack_refs(contexts: list[_MemberCtx]) -> None:
+    """Batch-fetch every member's /head and /orig and update ctx.orig_sha.
+
+    ``ctx.head_sha`` is left to ``_refresh_member_head`` to set from
+    GitHub's API view (which is what trust uses); we still fetch
+    /head here to keep the local origin remote-tracking branch in
+    sync with the remote, since later git-side tooling
+    (``ghstack checkout`` / ``ghstack submit``) reads from there.
+    """
+    pairs = [(ctx.member.head_ref, ctx.member.orig_ref) for ctx in contexts]
+    refs = repo.fetch_stack_refs(pairs)
+    for ctx in contexts:
+        ctx.orig_sha = refs[ctx.member.orig_ref]
 
 
 def _refresh_member_head(ctx: _MemberCtx) -> None:
@@ -204,6 +228,7 @@ def _inspect_member(ctx: _MemberCtx) -> str:
 
 def _try_fix(
     ctx: _MemberCtx,
+    worktree: Path,
     earlier_in_stack: int,
     sessions: list[ClaudeSession],
     *,
@@ -215,6 +240,11 @@ def _try_fix(
     judgment recorded). False means we deferred -- typically because
     GitHub hasn't published the failing job's logs yet -- and the
     caller should sleep before re-ticking.
+
+    Navigates the shared worktree to this member's ``/orig`` before
+    invoking claude. After a clean fix, the worktree's HEAD is left
+    at the new ``/orig_i`` (the [MERGEDOG] commit folded into the
+    contributor's commit); the next tick navigates elsewhere as needed.
     """
     pr = ctx.member.pr
     if ctx.fix_commits_pushed >= MAX_FIX_COMMITS:
@@ -255,9 +285,16 @@ def _try_fix(
         drci_summary=github.latest_drci_summary(comments, head_sha=ctx.head_sha),
     )
     session_failed_jobs = [name for name, _ in failed]
+
+    # Position the shared worktree at this member's /orig before
+    # claude touches it. Whatever HEAD was before (e.g., another
+    # member's just-folded fix) is irrelevant -- we want claude
+    # operating on a single-commit-on-/orig_{i-1} starting state.
+    repo.set_worktree_to_sha(worktree, ctx.orig_sha)
+
     sha_before = ctx.head_sha
     started_at = utc_now_iso()
-    ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(ctx.worktree, prompt)
+    ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(worktree, prompt)
     _record_claude_session(
         sessions,
         mode=f"fix-CI #{pr}",
@@ -304,7 +341,7 @@ def _try_fix(
 
     _publish_ghstack_fix(
         pr,
-        ctx.worktree,
+        worktree,
         ctx.member.head_ref,
         new_sha,
         ctx.trust,
@@ -317,6 +354,7 @@ def _try_fix(
 
 def _scheduler_tick(
     contexts: list[_MemberCtx],
+    worktree: Path,
     sessions: list[ClaudeSession],
     *,
     ignore_sev: bool,
@@ -326,7 +364,9 @@ def _scheduler_tick(
     Returns True if an action was taken (re-tick immediately); False
     if we should sleep before re-ticking.
     """
-    # Trust + metadata refresh.
+    # Refresh local origin refs (single git fetch for all members'
+    # /head + /orig), then trust + metadata refresh per member.
+    _refresh_stack_refs(contexts)
     for ctx in contexts:
         _refresh_member_head(ctx)
         _refresh_member_pr_data(ctx)
@@ -357,7 +397,11 @@ def _scheduler_tick(
     for i, (ctx, status) in enumerate(member_status):
         if status == "failed":
             return _try_fix(
-                ctx, earlier_in_stack=i, sessions=sessions, ignore_sev=ignore_sev
+                ctx,
+                worktree,
+                earlier_in_stack=i,
+                sessions=sessions,
+                ignore_sev=ignore_sev,
             )
 
     # All members are passed or pending. Nothing to do this tick;
@@ -421,8 +465,15 @@ def run_stack(
             contexts.append(ctx)
             log(
                 f"  PR #{ctx.member.pr}: /head={ctx.head_sha[:12]} "
-                f"/orig={ctx.orig_sha[:12]} worktree={ctx.worktree}"
+                f"/orig={ctx.orig_sha[:12]}"
             )
+
+        # One worktree for the whole stack -- the bottom PR's number
+        # gives the path. Initialize at the bottom member's /orig; the
+        # tick loop navigates as needed for each operation.
+        bottom = contexts[0]
+        worktree = repo.ensure_stack_worktree(bottom.member.pr, bottom.orig_sha)
+        log(f"  stack worktree: {worktree}")
 
         # Main scheduler loop. Spins forever until killed; propagation,
         # ciflow/trunk gating, and a real handoff exit are added in
@@ -430,7 +481,7 @@ def run_stack(
         sessions: list[ClaudeSession] = []
         while True:
             took_action = _scheduler_tick(
-                contexts, sessions, ignore_sev=ignore_sev
+                contexts, worktree, sessions, ignore_sev=ignore_sev
             )
             if not took_action:
                 time.sleep(POLL_INTERVAL_SEC)

@@ -34,6 +34,17 @@ def worktree_dir(pr: int) -> Path:
     return WORKTREES_DIR / str(pr)
 
 
+def stack_worktree_dir(bottom_pr: int) -> Path:
+    """Worktree path for a stack-mode shepherd, namespaced by bottom PR.
+
+    The whole stack uses one worktree (we navigate its HEAD to whichever
+    member's /orig we're operating on). Naming by the bottom PR keeps it
+    distinct from any single-PR worktree that may have once existed for
+    the same number, and makes ``ls ~/.mergedog/worktrees`` skim-readable.
+    """
+    return WORKTREES_DIR / f"stack-{bottom_pr}"
+
+
 def state_file(pr: int) -> Path:
     return STATE_DIR / f"{pr}.json"
 

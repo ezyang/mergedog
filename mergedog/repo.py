@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from mergedog.log import die, log
-from mergedog.paths import REPO_DIR, REPO_SSH_URL, ensure_dirs, worktree_dir
+from mergedog.paths import (
+    REPO_DIR,
+    REPO_SSH_URL,
+    ensure_dirs,
+    stack_worktree_dir,
+    worktree_dir,
+)
 from mergedog.process import run, run_streamed
 
 
@@ -285,6 +291,135 @@ def ensure_worktree(
             loud=True,
         )
     return wt
+
+
+def ensure_stack_worktree(bottom_pr: int, sha: str) -> Path:
+    """Get the shared stack-mode worktree for a stack rooted at ``bottom_pr``.
+
+    Stack mode operates with one worktree for the whole stack -- we
+    navigate its HEAD between ``/orig_i`` SHAs as we work on different
+    members rather than carrying N worktrees. The path is namespaced
+    ``stack-<bottom_pr>`` so it can't collide with a single-PR worktree
+    of the same number.
+
+    No upstream tracking is configured: ``ghstack submit`` and
+    ``ghstack checkout`` work from commit metadata, not a tracked branch.
+    """
+    wt = stack_worktree_dir(bottom_pr)
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    local_branch = f"mergedog-stack/{bottom_pr}"
+
+    if not _worktree_alive(wt):
+        if wt.exists():
+            run(
+                ["git", "worktree", "remove", "--force", str(wt)],
+                cwd=REPO_DIR,
+                check=False,
+                loud=True,
+            )
+            if wt.exists():
+                shutil.rmtree(wt, ignore_errors=True)
+        run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
+        run(["git", "branch", "-D", local_branch], cwd=REPO_DIR, check=False)
+        run(
+            ["git", "worktree", "add", "-B", local_branch, str(wt), sha],
+            cwd=REPO_DIR,
+            capture=False,
+            loud=True,
+        )
+    else:
+        head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        merge_in_progress = is_merge_in_progress(wt)
+        rebase_in_progress = is_rebase_in_progress(wt)
+        clean = run(["git", "status", "--porcelain"], cwd=wt).stdout.strip() == ""
+        current_branch = run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt
+        ).stdout.strip()
+        if (
+            head == sha
+            and not merge_in_progress
+            and not rebase_in_progress
+            and clean
+            and current_branch == local_branch
+        ):
+            log(f"reusing stack worktree at {wt} (already at {sha[:12]}, clean)")
+        else:
+            log(
+                f"resetting stack worktree at {wt} -> {sha[:12]} "
+                f"(was {head[:12]} on {current_branch!r}, "
+                f"clean={clean}, merge_in_progress={merge_in_progress}, "
+                f"rebase_in_progress={rebase_in_progress})"
+            )
+            if merge_in_progress:
+                run(["git", "merge", "--abort"], cwd=wt, check=False, loud=True)
+            if rebase_in_progress:
+                run(["git", "rebase", "--abort"], cwd=wt, check=False, loud=True)
+            if current_branch != local_branch:
+                run(
+                    ["git", "checkout", "-B", local_branch],
+                    cwd=wt,
+                    loud=True,
+                )
+            run(["git", "reset", "--hard", sha], cwd=wt, loud=True)
+    return wt
+
+
+def set_worktree_to_sha(worktree: Path, sha: str) -> None:
+    """Move ``worktree``'s HEAD to ``sha``, aborting any in-flight op.
+
+    Used between operations on a shared stack worktree -- e.g. navigating
+    from ``/orig_i`` to ``/orig_j`` before invoking claude on a different
+    stack member. Stays on whichever local branch is current; the branch
+    just gets fast-moved to ``sha``.
+    """
+    if is_merge_in_progress(worktree):
+        run(["git", "merge", "--abort"], cwd=worktree, check=False, loud=True)
+    if is_rebase_in_progress(worktree):
+        run(["git", "rebase", "--abort"], cwd=worktree, check=False, loud=True)
+    run(["git", "reset", "--hard", sha], cwd=worktree, loud=True)
+
+
+def fetch_stack_refs(
+    head_orig_pairs: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Batch-fetch a set of (head_ref, orig_ref) pairs from origin.
+
+    Returns a mapping from ref name (``gh/<user>/<id>/{head,orig}``) to
+    the current SHA. One ``git fetch`` for everything keeps per-tick
+    refresh cheap on a stack of size N -- there's a single network
+    round-trip rather than 2N.
+    """
+    refspecs: list[str] = []
+    refs: list[str] = []
+    for head_ref, orig_ref in head_orig_pairs:
+        for ref in (head_ref, orig_ref):
+            refspecs.append(f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
+            refs.append(ref)
+    with _fetch_lock():
+        run(
+            ["git", "fetch", "origin", *refspecs],
+            cwd=REPO_DIR,
+            capture=False,
+            loud=True,
+        )
+    out: dict[str, str] = {}
+    for ref in refs:
+        out[ref] = run(
+            ["git", "rev-parse", f"refs/remotes/origin/{ref}"],
+            cwd=REPO_DIR,
+        ).stdout.strip()
+    return out
+
+
+def parent_sha(sha: str) -> str:
+    """Return the first parent of ``sha`` from the local object database.
+
+    Used for ghstack staleness checks: a child ``/orig`` is up-to-date iff
+    its parent SHA equals its parent member's current ``/orig`` SHA.
+    """
+    return run(
+        ["git", "rev-parse", f"{sha}^"], cwd=REPO_DIR
+    ).stdout.strip()
 
 
 def push_to_fork(worktree: Path, remote: str | None = None, branch: str | None = None) -> None:
