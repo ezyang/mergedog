@@ -88,6 +88,7 @@ class _MemberCtx:
     trunk_applied: bool = False
     spurious_check_names: set[str] = field(default_factory=set)
     run_state_cache: dict = field(default_factory=dict)
+    failing_check_names: list[str] = field(default_factory=list)
 
 
 def _validate_member(pr_data: dict) -> None:
@@ -246,7 +247,12 @@ def _refresh_context_for(ctx: _MemberCtx) -> tuple[Path, list[dict]]:
 
 
 def _inspect_member(ctx: _MemberCtx) -> str:
-    """Update ctx with current CI status; return ``passed``/``failed``/``pending``."""
+    """Update ctx with current CI status; return ``passed``/``failed``/``pending``.
+
+    Also caches the post-spurious-override failing check names on the ctx
+    so that other members' fix prompts can reference them as the "earlier
+    stack" status block without making another checks API call.
+    """
     checks = github.get_pr_checks_all(ctx.member.pr)
     effective = _apply_spurious_overrides(checks, ctx.spurious_check_names)
     status = github.evaluate_checks(effective)
@@ -261,6 +267,11 @@ def _inspect_member(ctx: _MemberCtx) -> str:
         ctx.stable_since = time.time()
     if status != "failed":
         ctx.empty_log_defers = 0
+    ctx.failing_check_names = sorted(
+        c.get("name", "")
+        for c in effective
+        if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+    )
     return status
 
 
@@ -358,6 +369,19 @@ def _try_fix(
         if c.get("bucket") in {"fail", "cancel"} and c.get("name")
     )
 
+    earlier_members: list[dict] = []
+    if target_idx > 0:
+        for i, earlier in enumerate(contexts[:target_idx]):
+            earlier_members.append(
+                {
+                    "pr": earlier.member.pr,
+                    "head_offset": target_idx - i,
+                    "status": earlier.last_status or "unknown",
+                    "failing_checks": list(earlier.failing_check_names),
+                    "fix_commits_pushed": earlier.fix_commits_pushed,
+                }
+            )
+
     prompt = render_fix_prompt(
         url=ctx.pr_data.get("url", ""),
         branch=ctx.member.head_ref,
@@ -366,6 +390,7 @@ def _try_fix(
         failing_check_names=failing_check_names,
         is_ghstack=True,
         earlier_in_stack=target_idx,
+        earlier_members=earlier_members,
         drci_summary=github.latest_drci_summary(comments, head_sha=ctx.head_sha),
         extra_context=extra_context,
     )

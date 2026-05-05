@@ -30,13 +30,51 @@ def _mk_ctx(
         self_pr=False,
         head_sha="x",
         orig_sha=orig_sha,
-        local_orig_sha=orig_sha,
     )
     if status is not None:
         ctx.stable_observation = (status, 1)
         ctx.stable_since = time.time() - stable_for
     ctx.trunk_applied = trunk_applied
     return ctx
+
+
+class TestInspectMember(unittest.TestCase):
+    def _ctx(self, *, spurious=()):
+        ctx = _mk_ctx(orig_sha="A", status=None)
+        ctx.spurious_check_names = set(spurious)
+        return ctx
+
+    def test_caches_failing_check_names_post_overrides(self):
+        ctx = self._ctx(spurious={"flaky_dynamo"})
+        checks = [
+            {"name": "pull / linux", "bucket": "fail"},
+            {"name": "lint", "bucket": "cancel"},
+            {"name": "flaky_dynamo", "bucket": "fail"},
+            {"name": "ok_check", "bucket": "pass"},
+        ]
+        with mock.patch.object(
+            stack_shepherd.github, "get_pr_checks_all", return_value=checks
+        ), mock.patch.object(
+            stack_shepherd.github, "evaluate_checks", return_value="failed"
+        ):
+            stack_shepherd._inspect_member(ctx)
+        # The spurious-overridden ``flaky_dynamo`` is treated as
+        # ``skipping`` and so is not in the cached failing set.
+        self.assertEqual(ctx.failing_check_names, ["lint", "pull / linux"])
+
+    def test_caches_empty_when_no_failures(self):
+        ctx = self._ctx()
+        checks = [
+            {"name": "pull / linux", "bucket": "pass"},
+            {"name": "lint", "bucket": "pass"},
+        ]
+        with mock.patch.object(
+            stack_shepherd.github, "get_pr_checks_all", return_value=checks
+        ), mock.patch.object(
+            stack_shepherd.github, "evaluate_checks", return_value="passed"
+        ):
+            stack_shepherd._inspect_member(ctx)
+        self.assertEqual(ctx.failing_check_names, [])
 
 
 class TestPropagationNeeded(unittest.TestCase):
