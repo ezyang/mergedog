@@ -514,6 +514,36 @@ def _extract_pytest_failures(cleaned: str, max_chars: int) -> str | None:
     )
 
 
+def _find_anchor(cleaned: str, lines: list[str]) -> int:
+    """Find the best character offset to anchor the trimming window on.
+
+    Tries, in order:
+      1. dr.ci's ruleset regexes (highest-priority match, last occurrence)
+      2. Pytest ``= FAILURES =`` section header
+      3. Generic ``_LOG_FAILURE_MARKERS`` (last occurrence of any)
+
+    Returns -1 if nothing matches.
+    """
+    from mergedog.log_classifier import classify
+
+    match = classify(lines)
+    if match is not None:
+        # Convert line number to character offset in the joined string.
+        offset = 0
+        for i, line in enumerate(lines):
+            if i == match.line_num:
+                return offset
+            offset += len(line) + 1  # +1 for \n
+        return offset
+
+    best = -1
+    for m in _LOG_FAILURE_MARKERS:
+        i = cleaned.rfind(m)
+        if i > best:
+            best = i
+    return best
+
+
 def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     """Trim a CI log to ~``max_chars``, biased toward the actual failure line.
 
@@ -521,31 +551,29 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
       1. Strip per-line ``gh`` prefixes (saves ~40-50% of bytes).
       2. If still over budget, try to extract the pytest ``= FAILURES =``
          section which contains actual tracebacks.
-      3. Otherwise find the *last* occurrence of any ``_LOG_FAILURE_MARKERS``
-         token and keep a window around it (most chars before, fewer after)
-         plus a small tail.
-      4. If no marker is found, fall back to head+tail so the agent
+      3. Otherwise use dr.ci's ruleset regexes to find the failure line,
+         falling back to generic ``_LOG_FAILURE_MARKERS``. Keep a window
+         around the anchor (most chars before, fewer after) plus a small
+         tail.
+      4. If no anchor is found, fall back to head+tail so the agent
          at least sees both ends rather than just post-job cleanup.
 
-    Why bias *before* the marker: compiler errors typically print the error
+    Why bias *before* the anchor: compiler errors typically print the error
     line, then the source location, then a caret pointing at the column.
-    Walking back from the marker reaches the entire diagnostic; walking
+    Walking back from the anchor reaches the entire diagnostic; walking
     forward mostly reaches "ninja: build stopped" and shutdown noise.
     """
-    cleaned = "\n".join(_strip_gh_log_prefix(l) for l in text.splitlines())
+    lines = [_strip_gh_log_prefix(l) for l in text.splitlines()]
+    cleaned = "\n".join(lines)
     if len(cleaned) <= max_chars:
         return cleaned
     # Pytest logs: extract the FAILURES section directly.
     pytest_extract = _extract_pytest_failures(cleaned, max_chars)
     if pytest_extract is not None:
         return pytest_extract
-    best = -1
-    for m in _LOG_FAILURE_MARKERS:
-        i = cleaned.rfind(m)
-        if i > best:
-            best = i
+    best = _find_anchor(cleaned, lines)
     if best < 0:
-        # No marker; fall back to head+tail so the agent sees both ends.
+        # No anchor; fall back to head+tail so the agent sees both ends.
         half = max_chars // 2
         return (
             cleaned[: max_chars - half]
