@@ -35,7 +35,7 @@ from pathlib import Path
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
 from mergedog import github, repo
-from mergedog.handoff import ClaudeSession, utc_now_iso
+from mergedog.handoff import ClaudeSession, post_handoff_comment, utc_now_iso
 from mergedog.log import die, log
 from mergedog.paths import REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt
@@ -47,6 +47,7 @@ from mergedog.shepherd import (
     MAX_FIX_COMMITS,
     MERGEDOG_LABEL,
     POLL_INTERVAL_SEC,
+    TRUNK_LABEL,
     _apply_spurious_overrides,
     _approve_pending_runs,
     _failed_logs_are_content_free,
@@ -379,11 +380,7 @@ def _propagation_needed(
         if repo.parent_sha(child.orig_sha) == parent.orig_sha:
             continue
         found_stale = True
-        if parent.stable_observation is None:
-            return False
-        if parent.stable_observation[0] != "passed":
-            return False
-        if now - parent.stable_since < CI_STABILITY_WINDOW_SEC:
+        if not _is_green_stable(parent, now):
             return False
     return found_stale
 
@@ -455,10 +452,92 @@ def _propagate_stack(
         ctx.stable_observation = None
 
 
+def _is_green_stable(ctx: _MemberCtx, now: float) -> bool:
+    """True iff ctx's CI verdict is ``passed`` and has held for the window.
+
+    Used both for trunk-promotion eligibility and (via callers) for the
+    propagation predicate. ``stable_observation is None`` means we
+    haven't seen any inspection yet -- not stable.
+    """
+    if ctx.stable_observation is None:
+        return False
+    if ctx.stable_observation[0] != "passed":
+        return False
+    return now - ctx.stable_since >= CI_STABILITY_WINDOW_SEC
+
+
+def _trunk_promotion_target(
+    contexts: list[_MemberCtx], now: float
+) -> _MemberCtx | None:
+    """Lowest member eligible for ciflow/trunk promotion, or None.
+
+    Eligibility:
+      - ``trunk_applied`` is False (haven't promoted yet),
+      - the member's current CI is green-stable,
+      - parent (if any) is trunk-applied AND green-stable -- i.e., the
+        parent's trunk-only CI has settled green.
+
+    The "parent green-stable" check is effectively "parent's trunk-CI
+    is green" because applying trunk on a member resets its
+    ``stable_observation`` (new trunk-only checks appear), so the
+    next time we see ``passed`` and stable, the trunk checks have
+    settled.
+    """
+    for i, ctx in enumerate(contexts):
+        if ctx.trunk_applied:
+            continue
+        if not _is_green_stable(ctx, now):
+            return None
+        if i > 0:
+            prev = contexts[i - 1]
+            if not prev.trunk_applied:
+                return None
+            if not _is_green_stable(prev, now):
+                return None
+        return ctx
+    return None
+
+
+def _apply_trunk(ctx: _MemberCtx, *, ignore_sev: bool) -> None:
+    """Add the ciflow/trunk label to a stack member.
+
+    Adding the label kicks off trunk-only workflow runs; we gate on a
+    CI SEV first so we don't pile on broken trunk. Marks
+    ``trunk_applied`` and resets stability so the next inspection
+    starts the window over (because new checks will appear).
+    """
+    pr = ctx.member.pr
+    _wait_for_no_active_sev(
+        f"applying {TRUNK_LABEL} to PR #{pr}", ignore_sev=ignore_sev
+    )
+    log(f"PR #{pr}: CI green; applying {TRUNK_LABEL} label")
+    github.add_label(pr, TRUNK_LABEL)
+    ctx.trunk_applied = True
+    ctx.last_status = None
+    ctx.stable_observation = None
+
+
+def _all_trunk_green_stable(
+    contexts: list[_MemberCtx], now: float
+) -> bool:
+    """True iff every member has had ciflow/trunk applied and is green-stable.
+
+    The exit condition for ``run_stack``: nothing left to do but post
+    the per-member handoff comments and let humans run
+    ``@pytorchbot merge``.
+    """
+    for ctx in contexts:
+        if not ctx.trunk_applied:
+            return False
+        if not _is_green_stable(ctx, now):
+            return False
+    return True
+
+
 def _scheduler_tick(
     contexts: list[_MemberCtx],
     worktree: Path,
-    sessions: list[ClaudeSession],
+    sessions_by_pr: dict[int, list[ClaudeSession]],
     *,
     ignore_sev: bool,
 ) -> bool:
@@ -505,26 +584,37 @@ def _scheduler_tick(
                 ctx,
                 worktree,
                 earlier_in_stack=i,
-                sessions=sessions,
+                sessions=sessions_by_pr[ctx.member.pr],
                 ignore_sev=ignore_sev,
             )
             if took_action:
                 return True
             # Fix deferred (logs not ready). Don't fall through to
-            # propagation -- a member is failing, parent fixes haven't
-            # cleared, we should keep waiting on logs.
+            # propagation/trunk -- a member is failing, parent fixes
+            # haven't cleared, we should keep waiting on logs.
             return False
+
+    now = time.time()
 
     # No failing members. Check whether the stack has stale children
     # below green-stable parents and, if so, propagate via a full
     # ghstack submit. This is the only path that updates /head on
     # multiple members at once.
-    if _propagation_needed(contexts, time.time()):
+    if _propagation_needed(contexts, now):
         _propagate_stack(contexts, worktree, ignore_sev=ignore_sev)
         return True
 
-    # All members passed/pending and no stale children. ciflow/trunk
-    # gating + handoff exit come in later commits; for now, sleep.
+    # No fixes, no propagation. Try to advance the trunk frontier:
+    # promote the lowest member that's green-stable on regular CI and
+    # whose parent (if any) is already trunk-applied + green-stable.
+    target = _trunk_promotion_target(contexts, now)
+    if target is not None:
+        _apply_trunk(target, ignore_sev=ignore_sev)
+        return True
+
+    # Everyone is in a stable state -- either green or waiting for the
+    # window to elapse. Sleep; the outer loop checks the all-trunk-green
+    # exit predicate after every tick.
     return False
 
 
@@ -594,14 +684,28 @@ def run_stack(
         worktree = repo.ensure_stack_worktree(bottom.member.pr, bottom.orig_sha)
         log(f"  stack worktree: {worktree}")
 
-        # Main scheduler loop. Spins forever until killed; propagation,
-        # ciflow/trunk gating, and a real handoff exit are added in
-        # follow-up commits.
-        sessions: list[ClaudeSession] = []
+        # Main scheduler loop. Per-PR session lists keep claude
+        # transcripts attributable so each member's handoff comment
+        # only shows its own work.
+        sessions_by_pr: dict[int, list[ClaudeSession]] = {
+            ctx.member.pr: [] for ctx in contexts
+        }
         while True:
             took_action = _scheduler_tick(
-                contexts, worktree, sessions, ignore_sev=ignore_sev
+                contexts, worktree, sessions_by_pr, ignore_sev=ignore_sev
             )
+            if _all_trunk_green_stable(contexts, time.time()):
+                log(
+                    "all members trunk-green; posting handoff "
+                    "comments and exiting"
+                )
+                for ctx in contexts:
+                    post_handoff_comment(
+                        ctx.member.pr,
+                        ctx.pr_data,
+                        sessions_by_pr[ctx.member.pr],
+                    )
+                return
             if not took_action:
                 time.sleep(POLL_INTERVAL_SEC)
     finally:

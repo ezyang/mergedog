@@ -7,8 +7,14 @@ from mergedog.shepherd import CI_STABILITY_WINDOW_SEC
 from mergedog.stack import StackMember
 
 
-def _mk_ctx(*, orig_sha: str, status: str | None, stable_for: float = 0.0):
-    """Build a stub _MemberCtx with just the fields _propagation_needed reads.
+def _mk_ctx(
+    *,
+    orig_sha: str,
+    status: str | None,
+    stable_for: float = 0.0,
+    trunk_applied: bool = False,
+):
+    """Build a stub _MemberCtx with just the fields the predicates read.
 
     ``status`` is the verdict ("passed"/"failed"/"pending") to expose via
     stable_observation; None means "not yet observed". ``stable_for`` sets
@@ -28,6 +34,7 @@ def _mk_ctx(*, orig_sha: str, status: str | None, stable_for: float = 0.0):
     if status is not None:
         ctx.stable_observation = (status, 1)
         ctx.stable_since = time.time() - stable_for
+    ctx.trunk_applied = trunk_applied
     return ctx
 
 
@@ -88,6 +95,111 @@ class TestPropagationNeeded(unittest.TestCase):
             self.assertFalse(
                 stack_shepherd._propagation_needed([p0, p1, p2], time.time())
             )
+
+
+class TestTrunkPromotionTarget(unittest.TestCase):
+    def test_bottom_eligible_when_green_stable(self):
+        bottom = _mk_ctx(orig_sha="A", status="passed", stable_for=CI_STABILITY_WINDOW_SEC + 1)
+        target = stack_shepherd._trunk_promotion_target([bottom], time.time())
+        self.assertIs(target, bottom)
+
+    def test_bottom_not_eligible_when_unstable(self):
+        bottom = _mk_ctx(orig_sha="A", status="passed", stable_for=1)
+        self.assertIsNone(
+            stack_shepherd._trunk_promotion_target([bottom], time.time())
+        )
+
+    def test_child_blocked_until_parent_trunk_applied_and_stable(self):
+        # Parent has trunk applied and is green-stable; child is green-stable.
+        parent = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+            trunk_applied=True,
+        )
+        child = _mk_ctx(orig_sha="B", status="passed", stable_for=CI_STABILITY_WINDOW_SEC + 1)
+        target = stack_shepherd._trunk_promotion_target(
+            [parent, child], time.time()
+        )
+        self.assertIs(target, child)
+
+    def test_child_blocked_when_parent_not_trunk_applied(self):
+        # Parent green-stable but never had trunk applied (the bottom should
+        # have been promoted first, but the predicate must not skip).
+        parent = _mk_ctx(orig_sha="A", status="passed", stable_for=CI_STABILITY_WINDOW_SEC + 1)
+        child = _mk_ctx(orig_sha="B", status="passed", stable_for=CI_STABILITY_WINDOW_SEC + 1)
+        # The lowest eligible is parent itself, not child.
+        target = stack_shepherd._trunk_promotion_target(
+            [parent, child], time.time()
+        )
+        self.assertIs(target, parent)
+
+    def test_child_blocked_when_parent_trunk_applied_but_unstable(self):
+        # Parent trunk-applied but trunk-CI hasn't settled yet (unstable).
+        parent = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=1,  # too fresh
+            trunk_applied=True,
+        )
+        child = _mk_ctx(orig_sha="B", status="passed", stable_for=CI_STABILITY_WINDOW_SEC + 1)
+        self.assertIsNone(
+            stack_shepherd._trunk_promotion_target(
+                [parent, child], time.time()
+            )
+        )
+
+
+class TestAllTrunkGreenStable(unittest.TestCase):
+    def test_all_satisfied(self):
+        a = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+            trunk_applied=True,
+        )
+        b = _mk_ctx(
+            orig_sha="B",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+            trunk_applied=True,
+        )
+        self.assertTrue(
+            stack_shepherd._all_trunk_green_stable([a, b], time.time())
+        )
+
+    def test_one_member_not_trunk_applied_blocks(self):
+        a = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+            trunk_applied=True,
+        )
+        b = _mk_ctx(
+            orig_sha="B",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+        )
+        self.assertFalse(
+            stack_shepherd._all_trunk_green_stable([a, b], time.time())
+        )
+
+    def test_one_member_unstable_blocks(self):
+        a = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+            trunk_applied=True,
+        )
+        b = _mk_ctx(
+            orig_sha="B",
+            status="passed",
+            stable_for=1,  # too fresh
+            trunk_applied=True,
+        )
+        self.assertFalse(
+            stack_shepherd._all_trunk_green_stable([a, b], time.time())
+        )
 
 
 if __name__ == "__main__":
