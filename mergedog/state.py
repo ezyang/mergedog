@@ -31,6 +31,11 @@ class TrustDB:
     # post-handoff watcher so a restart doesn't re-react to a failure we
     # already saw and exited on.
     last_observed_failure_iso: str = ""
+    # Check names claude already judged spurious (unrelated to this PR).
+    # Persisted so that a restart doesn't re-invoke claude for the same
+    # failures. Cleared whenever a fix commit is pushed (fresh CI
+    # invalidates prior judgments).
+    spurious_check_names: list[str] = field(default_factory=list)
     path: Path | None = None
 
     @classmethod
@@ -45,6 +50,9 @@ class TrustDB:
                 head_repo_clone_url=data.get("head_repo_clone_url", ""),
                 last_observed_failure_iso=data.get(
                     "last_observed_failure_iso", ""
+                ),
+                spurious_check_names=list(
+                    data.get("spurious_check_names", [])
                 ),
                 path=path,
             )
@@ -65,6 +73,7 @@ class TrustDB:
                 "head_branch": self.head_branch,
                 "head_repo_clone_url": self.head_repo_clone_url,
                 "last_observed_failure_iso": self.last_observed_failure_iso,
+                "spurious_check_names": self.spurious_check_names,
             },
             indent=2,
         )

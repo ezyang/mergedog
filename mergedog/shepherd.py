@@ -562,6 +562,7 @@ def shepherd(
     rebase: bool = False,
     accept_divergence: bool = False,
     ignore_sev: bool = False,
+    reassess: bool = False,
 ) -> None:
     repo.ensure_clone()
     repo.fetch_origin()
@@ -580,7 +581,7 @@ def shepherd(
         log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     try:
-        _shepherd_body(pr, pr_data, rebase, accept_divergence, ignore_sev)
+        _shepherd_body(pr, pr_data, rebase, accept_divergence, ignore_sev, reassess)
     finally:
         try:
             github.remove_label(pr, MERGEDOG_LABEL)
@@ -594,6 +595,7 @@ def _shepherd_body(
     rebase: bool,
     accept_divergence: bool,
     ignore_sev: bool,
+    reassess: bool = False,
 ) -> None:
     is_ghstack = _is_ghstack(pr_data)
     branch = pr_data["headRefName"]
@@ -711,8 +713,14 @@ def _shepherd_body(
         # importantly -- treat them as if they were skipped so we keep
         # waiting for any *other* still-pending checks before handing
         # off. Cleared whenever we push a fix (fresh CI invalidates the
-        # judgments).
-        spurious_check_names: set[str] = set()
+        # judgments). Seeded from the trust DB so that restarts don't
+        # re-invoke claude for the same failures.
+        if reassess:
+            spurious_check_names: set[str] = set()
+            trust.spurious_check_names = []
+            trust.save()
+        else:
+            spurious_check_names = set(trust.spurious_check_names)
         # How many consecutive ``failed`` polls have come back with
         # content-free logs from gh. Reset whenever we either pull useful
         # logs or leave the failed branch.
@@ -859,6 +867,8 @@ def _shepherd_body(
                         and c.get("name")
                     }
                     spurious_check_names |= newly_spurious
+                    trust.spurious_check_names = sorted(spurious_check_names)
+                    trust.save()
                     log(
                         f"claude judged {len(newly_spurious)} failure"
                         f"{'' if len(newly_spurious) == 1 else 's'} spurious; "
@@ -868,6 +878,8 @@ def _shepherd_body(
                     continue
                 elif is_ghstack:
                     spurious_check_names.clear()
+                    trust.spurious_check_names = []
+                    trust.save()
                     _publish_ghstack_fix(
                         pr, worktree, branch, new_sha, trust,
                         ignore_sev=ignore_sev,
@@ -878,6 +890,7 @@ def _shepherd_body(
                 else:
                     assert fork_remote is not None
                     spurious_check_names.clear()
+                    trust.spurious_check_names = []
                     trust.trust(new_sha)
                     # Piggyback: we're going to push and trigger fresh CI
                     # anyway, so merge origin/main while we're at it. CI

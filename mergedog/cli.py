@@ -69,6 +69,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--reassess",
+        action="store_true",
+        help=(
+            "Ignore previously-persisted spurious-check judgments and "
+            "re-invoke claude for any current CI failures. Useful for "
+            "testing or when you suspect a prior spurious verdict was wrong."
+        ),
+    )
+    parser.add_argument(
         "--root",
         metavar="DIR",
         help=(
@@ -88,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             rebase=args.rebase,
             accept_divergence=args.accept_divergence,
             ignore_sev=args.ignore_sev,
+            reassess=args.reassess,
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)

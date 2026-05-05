@@ -49,6 +49,7 @@ def _format_handoff_comment(
     re-inspected CI; the human still needs to re-run ``@pytorchbot
     merge`` themselves -- mergedog never auto-retriggers a land.
     """
+    marker = "<!-- mergedog:handoff -->\n"
     n = len(sessions)
     if recovering:
         head: list[str] = [
@@ -73,7 +74,7 @@ def _format_handoff_comment(
             "claude was not invoked during this run (CI was green from the "
             "start; no merge or fix needed)."
         )
-        return "\n".join(head) + "\n"
+        return marker + "\n".join(head) + "\n"
 
     head.append(
         f"During shepherding, claude was invoked **{n}** time"
@@ -111,7 +112,7 @@ def _format_handoff_comment(
             "live in `~/.mergedog/logs/" + str(pr_data.get("number")) + ".log` "
             "on the operator's machine]_"
         )
-    return body
+    return marker + body
 
 
 def post_handoff_comment(

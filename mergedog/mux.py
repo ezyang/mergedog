@@ -161,8 +161,8 @@ class MuxApp(App):
         yield DataTable()
         yield Input(
             placeholder=(
-                "<pr> | add <pr> | rebase <pr|all> | cancel <pr> | "
-                "log <pr> | ignore-sev [on|off] | quit"
+                "<pr> | add <pr> | rebase <pr|all> | reassess <pr> | "
+                "cancel <pr> | log <pr> | ignore-sev [on|off] | quit"
             )
         )
 
@@ -337,6 +337,11 @@ class MuxApp(App):
                     self._do_rebase_all()
                 else:
                     self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
+            elif cmd == "reassess":
+                if not rest:
+                    self.notify("usage: reassess <pr>", severity="warning")
+                else:
+                    self._do_add(_parse_pr(rest[0]), ["--reassess", *rest[1:]])
             elif cmd in ("cancel", "c", "kill", "rm"):
                 if not rest:
                     self.notify("usage: cancel <pr>", severity="warning")
