@@ -376,7 +376,55 @@ def set_worktree_to_sha(worktree: Path, sha: str) -> None:
         run(["git", "merge", "--abort"], cwd=worktree, check=False, loud=True)
     if is_rebase_in_progress(worktree):
         run(["git", "rebase", "--abort"], cwd=worktree, check=False, loud=True)
+    if is_cherry_pick_in_progress(worktree):
+        run(["git", "cherry-pick", "--abort"], cwd=worktree, check=False, loud=True)
     run(["git", "reset", "--hard", sha], cwd=worktree, loud=True)
+
+
+def is_cherry_pick_in_progress(worktree: Path) -> bool:
+    """True if a cherry-pick is mid-flight in this worktree.
+
+    git records this by writing ``.git/CHERRY_PICK_HEAD``; the equivalent
+    of ``MERGE_HEAD`` for a cherry-pick.
+    """
+    proc = run(
+        ["git", "rev-parse", "--verify", "CHERRY_PICK_HEAD"],
+        cwd=worktree,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def cherry_pick(worktree: Path, sha: str) -> None:
+    """Cherry-pick ``sha`` onto the worktree's HEAD.
+
+    Used by stack mode to rebase a child's ``/orig`` onto the current
+    parent ``/orig`` before invoking claude on the child -- otherwise
+    ``ghstack submit --no-stack`` rejects the push because HEAD~1's
+    source-id no longer matches origin's parent ``/orig``.
+
+    On conflict: aborts the in-flight cherry-pick (so the worktree is
+    left in a sane state) and raises ``RuntimeError`` with the git
+    error captured. Callers turn that into a halt for now -- claude-
+    assisted stack-rebase resolution can come later.
+    """
+    proc = run(
+        ["git", "cherry-pick", sha],
+        cwd=worktree,
+        check=False,
+        loud=True,
+    )
+    if proc.returncode != 0:
+        run(
+            ["git", "cherry-pick", "--abort"],
+            cwd=worktree,
+            check=False,
+            loud=True,
+        )
+        raise RuntimeError(
+            f"git cherry-pick {sha[:12]} failed:\n"
+            f"{(proc.stdout or '').rstrip()}\n{(proc.stderr or '').rstrip()}"
+        )
 
 
 def fetch_stack_refs(

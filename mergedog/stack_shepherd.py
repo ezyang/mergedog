@@ -269,6 +269,7 @@ def _try_fix(
     ctx: _MemberCtx,
     worktree: Path,
     earlier_in_stack: int,
+    parent_orig_sha: str | None,
     sessions: list[ClaudeSession],
     *,
     ignore_sev: bool,
@@ -280,10 +281,17 @@ def _try_fix(
     GitHub hasn't published the failing job's logs yet -- and the
     caller should sleep before re-ticking.
 
-    Navigates the shared worktree to this member's ``/orig`` before
-    invoking claude. After a clean fix, the worktree's HEAD is left
-    at the new ``/orig_i`` (the [MERGEDOG] commit folded into the
-    contributor's commit); the next tick navigates elsewhere as needed.
+    Before invoking claude, the shared worktree is positioned at this
+    member's ``/orig`` *rebased onto the current parent ``/orig``* (a
+    cherry-pick when stale, otherwise a plain navigation). Without
+    that rebase, ``ghstack submit --no-stack`` later rejects the push:
+    if a parent member was just fixed, this member's old ``/orig``
+    points at the old parent ``/orig``, whose source-id no longer
+    matches origin -- ghstack's anti-clobber check fires.
+
+    After a clean fix, the worktree's HEAD is left at the new
+    ``/orig_i`` (the [MERGEDOG] commit folded into the contributor's
+    commit); the next tick navigates elsewhere as needed.
     """
     pr = ctx.member.pr
     if ctx.fix_commits_pushed >= MAX_FIX_COMMITS:
@@ -326,10 +334,33 @@ def _try_fix(
     session_failed_jobs = [name for name, _ in failed]
 
     # Position the shared worktree at this member's /orig before
-    # claude touches it. Whatever HEAD was before (e.g., another
-    # member's just-folded fix) is irrelevant -- we want claude
-    # operating on a single-commit-on-/orig_{i-1} starting state.
-    repo.set_worktree_to_sha(worktree, ctx.orig_sha)
+    # claude touches it. For a non-bottom member whose /orig parent no
+    # longer matches the current parent's /orig (because that parent
+    # was just fixed), cherry-pick this member's /orig onto the
+    # current parent. The cherry-picked commit keeps the same
+    # ghstack-source-id (the trailer is preserved through cherry-pick),
+    # so a later ``ghstack submit --no-stack`` recognizes it as an
+    # update to this PR rather than a divergent push.
+    if (
+        parent_orig_sha is not None
+        and repo.parent_sha(ctx.orig_sha) != parent_orig_sha
+    ):
+        log(
+            f"PR #{pr}: rebasing /orig onto current parent "
+            f"{parent_orig_sha[:12]} before invoking claude"
+        )
+        repo.set_worktree_to_sha(worktree, parent_orig_sha)
+        try:
+            repo.cherry_pick(worktree, ctx.orig_sha)
+        except RuntimeError as e:
+            die(
+                f"PR #{pr}: cherry-pick onto current parent /orig "
+                f"conflicts; halting for human intervention "
+                f"(claude-assisted stack-rebase resolution is not "
+                f"yet wired)\n{e}"
+            )
+    else:
+        repo.set_worktree_to_sha(worktree, ctx.orig_sha)
 
     sha_before = ctx.head_sha
     started_at = utc_now_iso()
@@ -626,10 +657,12 @@ def _scheduler_tick(
         if status != "failed":
             continue
         any_failing = True
+        parent_orig_sha = contexts[i - 1].orig_sha if i > 0 else None
         took_action = _try_fix(
             ctx,
             worktree,
             earlier_in_stack=i,
+            parent_orig_sha=parent_orig_sha,
             sessions=sessions_by_pr[ctx.member.pr],
             ignore_sev=ignore_sev,
         )
