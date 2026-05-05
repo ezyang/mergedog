@@ -99,9 +99,9 @@ def resolve_stack(pr: int) -> tuple[list[StackMember], dict[int, dict]]:
 
     Discovery uses the orig branch as the canonical source: we find the
     top PR from the body's stack listing, fetch its ``/orig`` ref, and
-    walk the commit ancestry extracting ``Pull-Request-Resolved``
-    trailers. This is more reliable than parsing the markdown table
-    (which can drift on mid-stack submits).
+    walk the commit ancestry extracting ``Pull-Request`` (or older
+    ``Pull-Request-Resolved``) trailers. This is more reliable than
+    parsing the markdown table (which can drift on mid-stack submits).
 
     The PR body is still used for one thing: bootstrapping to find the
     top PR, since only the top's ``/orig`` has the full commit chain.
@@ -138,7 +138,7 @@ def resolve_stack(pr: int) -> tuple[list[StackMember], dict[int, dict]]:
     nums = repo_mod.walk_orig_stack(top_orig_ref)
     if not nums:
         die(
-            f"PR #{top_pr}: no Pull-Request-Resolved trailers found "
+            f"PR #{top_pr}: no Pull-Request(-Resolved) trailers found "
             f"walking {top_orig_ref}; is this a valid ghstack stack?"
         )
     if pr not in nums:

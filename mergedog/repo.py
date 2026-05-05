@@ -707,8 +707,8 @@ def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> No
 
 
 
-_PR_RESOLVED_RE = __import__("re").compile(
-    r"Pull-Request-Resolved:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
+_PR_TRAILER_RE = __import__("re").compile(
+    r"Pull-Request(?:-Resolved)?:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
 )
 
 
@@ -716,9 +716,10 @@ def walk_orig_stack(orig_ref: str) -> list[int]:
     """Walk the commit ancestry of ``orig_ref`` and return PR numbers bottom-up.
 
     Each commit on a ghstack ``/orig`` branch carries a
-    ``Pull-Request-Resolved: <url>`` trailer. We walk from the tip back
-    to the merge-base with ``origin/main`` and extract the PR number from
-    each commit. The result is bottom-first (parents before children).
+    ``Pull-Request:`` (or older ``Pull-Request-Resolved:``) trailer. We
+    walk from the tip back to the merge-base with ``origin/main`` and
+    extract the PR number from each commit. The result is bottom-first
+    (parents before children).
     """
     merge_base = run(
         ["git", "merge-base", f"refs/remotes/origin/{orig_ref}", "origin/main"],
@@ -733,7 +734,7 @@ def walk_orig_stack(orig_ref: str) -> list[int]:
     ).stdout
     prs: list[int] = []
     for chunk in log_output.split("---END---"):
-        m = _PR_RESOLVED_RE.search(chunk)
+        m = _PR_TRAILER_RE.search(chunk)
         if m:
             prs.append(int(m.group(1)))
     return prs

@@ -2,7 +2,8 @@
 
 GitHub's ``/orig`` branches are canonical. Stack membership is
 discovered by walking the top PR's ``/orig`` commit ancestry and
-extracting ``Pull-Request-Resolved`` trailers. The working tree for
+extracting ``Pull-Request`` (or older ``Pull-Request-Resolved``)
+trailers. The working tree for
 any member is reconstructed on demand via ``ghstack cherry-pick
 --no-fetch`` (one call per member, bottom to top) rather than
 maintained as persistent local state.
