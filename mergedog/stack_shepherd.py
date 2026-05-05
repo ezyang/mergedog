@@ -5,23 +5,47 @@ For each member of the stack we mirror the per-PR ghstack setup that
 is open and not a draft, seed trust from reviews, fetch /head and
 /orig from origin, and stand up a worktree at /orig.
 
-The reactive scheduler -- fix bottom-up via ``ghstack submit
---no-stack``, propagate via full ``ghstack submit`` only when a
-green-stable parent has stale children, gate ciflow/trunk on parent
-trunk-green -- is still to come. ``run_stack`` exits after setup so
-each step of the buildup stays a small reviewable commit.
+Scheduler v0.1: per tick, every member is trust-checked, has its
+pending workflow runs approved, and has its CI status inspected. Then
+a bottom-up scan picks the lowest member with status="failed" and
+actionable logs and invokes claude on it; on a clean fix the commit
+is folded into /orig and re-published with ``ghstack submit
+--no-stack`` (so siblings don't get hit with fresh CI). Propagation
+of a parent fix to children, ciflow/trunk gating, and handoff are
+still to come.
+
+Cross-module helpers from :mod:`mergedog.shepherd` are imported with
+their leading underscores; we'll promote them in a follow-up cleanup
+once the stack work has settled.
 """
 from __future__ import annotations
 
 import signal
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mergedog import claude as claude_mod
+from mergedog import context as context_mod
 from mergedog import github, repo
+from mergedog.handoff import ClaudeSession, utc_now_iso
 from mergedog.log import die, log
-from mergedog.paths import REPO_SSH_URL
-from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE, MERGEDOG_LABEL
+from mergedog.paths import REPO_SSH_URL, context_file
+from mergedog.prompts import render_fix_prompt
+from mergedog.shepherd import (
+    APPROVAL_SETTLE_SEC,
+    EXIT_PR_NOT_ACTIONABLE,
+    MAX_EMPTY_LOG_DEFERS,
+    MAX_FIX_COMMITS,
+    MERGEDOG_LABEL,
+    POLL_INTERVAL_SEC,
+    _apply_spurious_overrides,
+    _approve_pending_runs,
+    _failed_logs_are_content_free,
+    _publish_ghstack_fix,
+    _record_claude_session,
+)
 from mergedog.stack import StackMember, resolve_stack
 from mergedog.state import TrustDB
 from mergedog.trust_seed import seed_trust_from_reviews
@@ -31,9 +55,9 @@ from mergedog.trust_seed import seed_trust_from_reviews
 class _MemberCtx:
     """Operational state for one stack member during a run.
 
-    Most fields are transient scheduler bookkeeping that the
-    forthcoming tick loop will mutate; only ``trust`` is persisted to
-    disk (via its own ``save()``).
+    Most fields are transient scheduler bookkeeping that the tick loop
+    mutates; only ``trust`` is persisted to disk (via its own
+    ``save()``).
     """
 
     member: StackMember
@@ -118,6 +142,229 @@ def _setup_member(
     )
 
 
+def _refresh_member_head(ctx: _MemberCtx) -> None:
+    """Re-read GitHub's view of the PR head and trust-check it."""
+    current = github.get_pr_head_sha(ctx.member.pr)
+    if ctx.self_pr:
+        ctx.trust.trust(current)
+    if not ctx.trust.is_trusted(current):
+        subject = github.get_commit_subject(current)
+        die(
+            f"PR #{ctx.member.pr} head moved to untrusted commit "
+            f"{current[:12]}: {subject!r}. Manual intervention required."
+        )
+    ctx.head_sha = current
+
+
+def _refresh_member_pr_data(ctx: _MemberCtx) -> None:
+    """Re-fetch PR metadata so per-tick decisions see fresh labels/state.
+
+    A fresh ``gh pr view`` per tick per member is moderately chatty but
+    correct -- labels/state can change underneath us (a maintainer
+    could close, draft, or unlabel) and we'd rather catch it on the
+    next tick than churn on stale data.
+    """
+    ctx.pr_data = github.get_pr(ctx.member.pr)
+
+
+def _refresh_context_for(ctx: _MemberCtx) -> tuple[Path, list[dict]]:
+    """Build the per-PR context sidecar (analogue of ``_refresh_context_file``)."""
+    pr = ctx.member.pr
+    comments = github.get_pr_comments(pr)
+    text = context_mod.render_context(
+        pr=pr,
+        url=ctx.pr_data.get("url", ""),
+        title=ctx.pr_data.get("title", ""),
+        body=ctx.pr_data.get("body", "") or "",
+        comments=comments,
+    )
+    path = context_file(pr)
+    context_mod.write_context_file(path, text)
+    return path, comments
+
+
+def _inspect_member(ctx: _MemberCtx) -> str:
+    """Update ctx with current CI status; return ``passed``/``failed``/``pending``."""
+    checks = github.get_pr_checks_all(ctx.member.pr)
+    effective = _apply_spurious_overrides(checks, ctx.spurious_check_names)
+    status = github.evaluate_checks(effective)
+    done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
+    summary = f"{status} ({done}/{len(checks)} done)"
+    if summary != ctx.last_status:
+        log(f"PR #{ctx.member.pr} CI -> {summary}")
+        ctx.last_status = summary
+    observation = (status, len(checks))
+    if ctx.stable_observation != observation:
+        ctx.stable_observation = observation
+        ctx.stable_since = time.time()
+    if status != "failed":
+        ctx.empty_log_defers = 0
+    return status
+
+
+def _try_fix(
+    ctx: _MemberCtx,
+    earlier_in_stack: int,
+    sessions: list[ClaudeSession],
+    *,
+    ignore_sev: bool,
+) -> bool:
+    """Attempt to fix or judge spurious for one member.
+
+    Returns True if a state change happened (fix pushed or spurious
+    judgment recorded). False means we deferred -- typically because
+    GitHub hasn't published the failing job's logs yet -- and the
+    caller should sleep before re-ticking.
+    """
+    pr = ctx.member.pr
+    if ctx.fix_commits_pushed >= MAX_FIX_COMMITS:
+        die(
+            f"PR #{pr}: already pushed {ctx.fix_commits_pushed} fix "
+            f"commits and CI is still failing; halting"
+        )
+
+    failed = github.get_failed_job_logs(pr)
+    if (
+        _failed_logs_are_content_free(failed)
+        and ctx.empty_log_defers < MAX_EMPTY_LOG_DEFERS
+    ):
+        ctx.empty_log_defers += 1
+        log(
+            f"PR #{pr}: failed-job logs not yet available "
+            f"(defer {ctx.empty_log_defers}/{MAX_EMPTY_LOG_DEFERS})"
+        )
+        return False
+    ctx.empty_log_defers = 0
+
+    ctx_path, comments = _refresh_context_for(ctx)
+    checks = github.get_pr_checks_all(pr)
+    failing_check_names = sorted(
+        c.get("name", "")
+        for c in checks
+        if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+    )
+
+    prompt = render_fix_prompt(
+        url=ctx.pr_data.get("url", ""),
+        branch=ctx.member.head_ref,
+        context_path=str(ctx_path),
+        failed_jobs=failed,
+        failing_check_names=failing_check_names,
+        is_ghstack=True,
+        earlier_in_stack=earlier_in_stack,
+        drci_summary=github.latest_drci_summary(comments, head_sha=ctx.head_sha),
+    )
+    session_failed_jobs = [name for name, _ in failed]
+    sha_before = ctx.head_sha
+    started_at = utc_now_iso()
+    ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(ctx.worktree, prompt)
+    _record_claude_session(
+        sessions,
+        mode=f"fix-CI #{pr}",
+        sha_before=sha_before,
+        started_at=started_at,
+        ran_cleanly=ran_cleanly,
+        new_sha=new_sha,
+        transcript=transcript,
+        on_commit=f"pushed fix commit {{sha}} on PR #{pr}",
+        on_clean_noop=f"judged failures on PR #{pr} spurious (no commit)",
+        extra=(
+            f" — failing jobs: {', '.join(session_failed_jobs)}"
+            if session_failed_jobs
+            else ""
+        ),
+    )
+    if not ran_cleanly:
+        die(f"PR #{pr}: claude exited abnormally or produced an invalid commit")
+
+    if new_sha is None:
+        # Spurious -- could be a true infra flake, or claude's signal
+        # that the failure is actually parent-caused. Either way we
+        # mark and wait. The mark sticks until we propagate (which
+        # gives this member a new /head and we'll clear then).
+        newly_spurious = {
+            c.get("name")
+            for c in checks
+            if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+        }
+        ctx.spurious_check_names |= newly_spurious
+        ctx.trust.spurious_check_names = sorted(ctx.spurious_check_names)
+        ctx.trust.save()
+        log(
+            f"PR #{pr}: claude judged {len(newly_spurious)} failure"
+            f"{'' if len(newly_spurious) == 1 else 's'} spurious; continuing"
+        )
+        ctx.last_status = None  # force re-log on next inspect
+        return True
+
+    # Real fix: clear spurious -- the new /head is fresh CI.
+    ctx.spurious_check_names.clear()
+    ctx.trust.spurious_check_names = []
+    ctx.trust.save()
+
+    _publish_ghstack_fix(
+        pr,
+        ctx.worktree,
+        ctx.member.head_ref,
+        new_sha,
+        ctx.trust,
+        ignore_sev=ignore_sev,
+    )
+    ctx.fix_commits_pushed += 1
+    ctx.last_status = None
+    return True
+
+
+def _scheduler_tick(
+    contexts: list[_MemberCtx],
+    sessions: list[ClaudeSession],
+    *,
+    ignore_sev: bool,
+) -> bool:
+    """One scheduler tick.
+
+    Returns True if an action was taken (re-tick immediately); False
+    if we should sleep before re-ticking.
+    """
+    # Trust + metadata refresh.
+    for ctx in contexts:
+        _refresh_member_head(ctx)
+        _refresh_member_pr_data(ctx)
+
+    # Approve any approval-pending workflow runs across the stack. If
+    # we approved anything, re-tick after a short settle so the new
+    # runs become visible before we evaluate status.
+    approved_total = 0
+    for ctx in contexts:
+        approved_total += _approve_pending_runs(
+            ctx.head_sha, ctx.run_state_cache
+        )
+    if approved_total > 0:
+        time.sleep(APPROVAL_SETTLE_SEC)
+        return True
+
+    # Inspect every member. Bottom-first iteration order doesn't
+    # matter for inspection itself, but it makes the log line ordering
+    # match the natural stack reading order.
+    member_status: list[tuple[_MemberCtx, str]] = []
+    for ctx in contexts:
+        member_status.append((ctx, _inspect_member(ctx)))
+
+    # Bottom-up: take the lowest failing member and try to fix it. We
+    # don't try to classify "child-only bug" up front -- the prompt
+    # tells claude to no-commit if the failure looks parent-caused, so
+    # the loop converges naturally once we propagate (future commit).
+    for i, (ctx, status) in enumerate(member_status):
+        if status == "failed":
+            return _try_fix(
+                ctx, earlier_in_stack=i, sessions=sessions, ignore_sev=ignore_sev
+            )
+
+    # All members are passed or pending. Nothing to do this tick;
+    # propagation/trunk/handoff come in later commits.
+    return False
+
+
 def _sigterm_to_systemexit(signum, frame) -> None:  # type: ignore[no-untyped-def]
     sys.exit(128 + signum)
 
@@ -165,16 +412,28 @@ def run_stack(
                 accept_divergence=accept_divergence,
                 viewer=viewer,
             )
+            if reassess:
+                ctx.spurious_check_names = set()
+                ctx.trust.spurious_check_names = []
+                ctx.trust.save()
+            else:
+                ctx.spurious_check_names = set(ctx.trust.spurious_check_names)
             contexts.append(ctx)
             log(
                 f"  PR #{ctx.member.pr}: /head={ctx.head_sha[:12]} "
                 f"/orig={ctx.orig_sha[:12]} worktree={ctx.worktree}"
             )
 
-        log(
-            "stack-shepherd setup complete; scheduler not yet wired -- "
-            "exiting"
-        )
+        # Main scheduler loop. Spins forever until killed; propagation,
+        # ciflow/trunk gating, and a real handoff exit are added in
+        # follow-up commits.
+        sessions: list[ClaudeSession] = []
+        while True:
+            took_action = _scheduler_tick(
+                contexts, sessions, ignore_sev=ignore_sev
+            )
+            if not took_action:
+                time.sleep(POLL_INTERVAL_SEC)
     finally:
         for pr_num in labelled:
             try:

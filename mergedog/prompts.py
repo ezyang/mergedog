@@ -110,6 +110,24 @@ _GHSTACK_HINT = """
     ``ghstack`` or any of its subcommands."""
 
 
+_STACK_MEMBER_HINT = """
+
+  - This PR is part of a ghstack stack and sits on top of {earlier_count} \
+    earlier commit(s) from the same contributor. Those earlier commits are \
+    reachable as ``HEAD~1`` through ``HEAD~{earlier_count}``. As a narrow \
+    exception to the "do not inspect commit history" rule above, you MAY \
+    run ``git show HEAD~k`` (and ``git diff`` between adjacent stack \
+    commits) for ``k`` in 1..{earlier_count} to understand what those \
+    earlier commits did. Do NOT inspect anything older than \
+    ``HEAD~{earlier_count}`` -- that's commits already on origin/main, \
+    outside the trust boundary established by approving this stack.
+  - If a CI failure on this PR appears to have been caused by code \
+    introduced in one of those earlier stack commits rather than by this \
+    PR's own diff, take option 2 (no commit). mergedog will fix the \
+    earlier PR first and re-trigger CI on this PR after rebasing onto the \
+    fixed parent."""
+
+
 _DRCI_SECTION_TEMPLATE = """
 The pytorch CI bot (``dr. ci``, posting as ``pytorch-bot``) summarizes \
 the failing jobs on this PR's head commit and often quotes the salient \
@@ -147,6 +165,7 @@ def render_fix_prompt(
     failed_jobs: list[tuple[str, str]],
     failing_check_names: list[str] | None = None,
     is_ghstack: bool = False,
+    earlier_in_stack: int = 0,
     drci_summary: str | None = None,
 ) -> str:
     sections = []
@@ -163,6 +182,9 @@ def render_fix_prompt(
         failing_checks_section = _FAILING_CHECKS_SECTION_TEMPLATE.format(
             failing_checks_body=body
         )
+    ghstack_hint = _GHSTACK_HINT if is_ghstack else ""
+    if earlier_in_stack > 0:
+        ghstack_hint += _STACK_MEMBER_HINT.format(earlier_count=earlier_in_stack)
     return FIX_PROMPT.format(
         url=url,
         branch=branch,
@@ -170,7 +192,7 @@ def render_fix_prompt(
         failing_checks_section=failing_checks_section,
         drci_section=drci_section,
         failed_jobs="\n".join(sections) if sections else "(no logs available)",
-        ghstack_hint=_GHSTACK_HINT if is_ghstack else "",
+        ghstack_hint=ghstack_hint,
     )
 
 
