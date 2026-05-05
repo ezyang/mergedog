@@ -70,6 +70,33 @@ class TestTrimLog(unittest.TestCase):
         self.assertIn("[head truncated]", out)
         self.assertIn("[tail truncated]", out)
 
+    def test_pytest_failures_section_extracted(self):
+        prefix = "job\tstep\t2026-05-04T18:00:00Z "
+        preamble = "\n".join(f"{prefix}PASS test_{i}" for i in range(5_000))
+        failures = "\n".join(
+            f"{prefix}{line}"
+            for line in [
+                "= FAILURES =",
+                "___ test_redispatch_as_strided ___",
+                "    def test_redispatch_as_strided(self):",
+                "        x = torch.randn(4)",
+                ">       self.assertEqual(expect, actual)",
+                "E       AssertionError: tensor not close",
+                "",
+                "= short test summary info =",
+                "FAILED test/test_overrides.py::test_redispatch_as_strided",
+                "= 1 failed, 200 passed =",
+            ]
+        )
+        log = f"{preamble}\n{failures}"
+        out = _trim_log_for_prompt(log, max_chars=4_000)
+        self.assertIn("= FAILURES =", out)
+        self.assertIn("AssertionError: tensor not close", out)
+        self.assertIn("1 failed", out)
+        self.assertIn("[head truncated]", out)
+        # Preamble PASS lines should be gone.
+        self.assertNotIn("PASS test_4999", out)
+
     def test_no_marker_falls_back_to_head_and_tail(self):
         # No failure markers at all — just lots of unrelated lines.
         prefix = "job\tstep\t2026-05-04T18:00:00Z "

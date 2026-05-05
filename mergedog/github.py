@@ -452,6 +452,10 @@ _LOG_FAILURE_MARKERS = (
     "FATAL:",
     "Test Failed",
     "FAILED test",              # pytest summary lines
+    "short test summary info",  # pytest section header before FAILED lines
+    " failed,",                 # pytest "= N failed, M passed =" final line
+    " failed =",                # pytest "= N failed =" final line (no passed)
+    "= FAILURES =",             # pytest FAILURES section header
 )
 
 
@@ -477,15 +481,50 @@ def _strip_gh_log_prefix(line: str) -> str:
     return rest
 
 
+def _extract_pytest_failures(cleaned: str, max_chars: int) -> str | None:
+    """Try to extract the pytest FAILURES section + short summary.
+
+    Pytest prints failures as::
+
+        = FAILURES =
+        ___ test_name ___
+        <traceback>
+        ...
+        = short test summary info =
+        FAILED test/foo.py::test_name - AssertionError: ...
+        = N failed, M passed =
+
+    If both delimiters are present, extract from ``= FAILURES =`` through
+    end-of-log. This is far more useful than a generic window around an
+    arbitrary marker, because it contains the actual tracebacks.
+    """
+    fail_start = cleaned.find("= FAILURES =")
+    if fail_start < 0:
+        return None
+    section = cleaned[fail_start:]
+    if len(section) <= max_chars:
+        return "... [head truncated] ...\n" + section if fail_start > 0 else section
+    # Section itself is over budget — trim from the front of the section,
+    # keeping the tail (short test summary + final summary are at the end).
+    return (
+        "... [head truncated] ...\n"
+        + section[: max_chars // 4]
+        + "\n... [middle truncated] ...\n"
+        + section[-(max_chars * 3 // 4):]
+    )
+
+
 def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     """Trim a CI log to ~``max_chars``, biased toward the actual failure line.
 
     Strategy:
       1. Strip per-line ``gh`` prefixes (saves ~40-50% of bytes).
-      2. If still over budget, find the *last* occurrence of any
-         ``_LOG_FAILURE_MARKERS`` token and keep a window around it
-         (most chars before, fewer after) plus a small tail.
-      3. If no marker is found, fall back to head+tail so the agent
+      2. If still over budget, try to extract the pytest ``= FAILURES =``
+         section which contains actual tracebacks.
+      3. Otherwise find the *last* occurrence of any ``_LOG_FAILURE_MARKERS``
+         token and keep a window around it (most chars before, fewer after)
+         plus a small tail.
+      4. If no marker is found, fall back to head+tail so the agent
          at least sees both ends rather than just post-job cleanup.
 
     Why bias *before* the marker: compiler errors typically print the error
@@ -496,6 +535,10 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     cleaned = "\n".join(_strip_gh_log_prefix(l) for l in text.splitlines())
     if len(cleaned) <= max_chars:
         return cleaned
+    # Pytest logs: extract the FAILURES section directly.
+    pytest_extract = _extract_pytest_failures(cleaned, max_chars)
+    if pytest_extract is not None:
+        return pytest_extract
     best = -1
     for m in _LOG_FAILURE_MARKERS:
         i = cleaned.rfind(m)
