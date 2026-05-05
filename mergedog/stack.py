@@ -97,28 +97,62 @@ def resolve_stack(pr: int) -> tuple[list[StackMember], dict[int, dict]]:
     the caller can pass them straight to validators / context renderers
     without a second round-trip.
 
-    Halts (via ``die``) if ``pr`` isn't a ghstack PR or if its body
-    has no parseable stack header. A genuine stack-of-one (one ghstack
-    PR with itself as the only listed entry) is allowed.
+    Discovery uses the orig branch as the canonical source: we find the
+    top PR from the body's stack listing, fetch its ``/orig`` ref, and
+    walk the commit ancestry extracting ``Pull-Request-Resolved``
+    trailers. This is more reliable than parsing the markdown table
+    (which can drift on mid-stack submits).
+
+    The PR body is still used for one thing: bootstrapping to find the
+    top PR, since only the top's ``/orig`` has the full commit chain.
     """
+    from mergedog import repo as repo_mod
+
     pr_data = github.get_pr(pr)
     body = pr_data.get("body", "") or ""
-    nums = parse_stack_from_body(body)
-    if not nums:
+
+    # Bootstrap: find the top PR from the body listing so we can walk
+    # its orig branch for the canonical stack.
+    body_nums = parse_stack_from_body(body)
+    if not body_nums:
         die(
             f"PR #{pr} has no parseable ghstack stack listing in its body; "
             f"refusing to run stack mode (use the regular shepherd for "
             f"non-stack PRs)"
         )
+    top_pr = body_nums[-1]
+    top_data = github.get_pr(top_pr) if top_pr != pr else pr_data
+
+    # Derive the top's orig ref and walk it for canonical membership.
+    top_head_ref = top_data.get("headRefName") or ""
+    if not (top_head_ref.startswith("gh/") and top_head_ref.endswith("/head")):
+        die(
+            f"PR #{top_pr} is not a ghstack PR "
+            f"(headRefName={top_head_ref!r}); use the regular shepherd"
+        )
+    top_orig_ref = top_head_ref[: -len("/head")] + "/orig"
+
+    # Fetch the top's orig ref (and main, needed for merge-base) so
+    # walk_orig_stack can read commits locally.
+    repo_mod.fetch_stack_refs([(top_head_ref, top_orig_ref)])
+    nums = repo_mod.walk_orig_stack(top_orig_ref)
+    if not nums:
+        die(
+            f"PR #{top_pr}: no Pull-Request-Resolved trailers found "
+            f"walking {top_orig_ref}; is this a valid ghstack stack?"
+        )
     if pr not in nums:
         die(
-            f"PR #{pr} is not present in its own stack listing "
-            f"({nums}); ghstack body is malformed"
+            f"PR #{pr} is not present in the orig-branch stack "
+            f"({nums}); ghstack state is inconsistent"
         )
+
     members: list[StackMember] = []
     pr_data_by_pr: dict[int, dict] = {pr: pr_data}
+    if top_pr != pr:
+        pr_data_by_pr[top_pr] = top_data
     for n in nums:
-        if n != pr:
+        if n not in pr_data_by_pr:
             pr_data_by_pr[n] = github.get_pr(n)
         members.append(StackMember.from_pr_data(pr_data_by_pr[n]))
     return members, pr_data_by_pr

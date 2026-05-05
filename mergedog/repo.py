@@ -147,6 +147,17 @@ def _fetch_lock() -> Iterator[None]:
             fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
+def fetch_main() -> None:
+    """Fetch just ``origin/main`` -- much faster than a full ``fetch_origin``."""
+    with _fetch_lock():
+        run(
+            ["git", "fetch", "origin", "main"],
+            cwd=REPO_DIR,
+            capture=False,
+            loud=True,
+        )
+
+
 def fetch_origin() -> None:
     # ``capture=True`` (the default) so any future failure surfaces git's
     # stderr through ``process.run``'s error path instead of bare ``rc=1``.
@@ -395,89 +406,7 @@ def is_cherry_pick_in_progress(worktree: Path) -> bool:
     return proc.returncode == 0
 
 
-_LOCAL_ORIG_BRANCH_PREFIX = "mergedog-local/"
 
-
-def local_orig_branch_name(pr: int) -> str:
-    return f"{_LOCAL_ORIG_BRANCH_PREFIX}{pr}"
-
-
-def get_local_orig(pr: int) -> str | None:
-    """Return the SHA of ``mergedog-local/<pr>``, or None if it doesn't exist.
-
-    Stack mode keeps a per-member branch pointing at the current "what
-    we'd push as /orig" so the local stack survives Ctrl-C and restart
-    without losing claude's fix work. The branch lives in the main
-    ``~/.mergedog/repo`` (visible to every worktree); we read the SHA
-    from there with ``rev-parse`` and return None on missing refs.
-    """
-    branch = local_orig_branch_name(pr)
-    proc = run(
-        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=REPO_DIR,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
-
-
-def set_local_orig(pr: int, sha: str) -> None:
-    """Point ``mergedog-local/<pr>`` at ``sha`` (creating or moving it).
-
-    Uses ``git update-ref`` rather than ``git branch -f`` so we don't
-    care whether the branch already exists.
-    """
-    branch = local_orig_branch_name(pr)
-    _git_write_with_retry(
-        ["git", "update-ref", f"refs/heads/{branch}", sha],
-        cwd=REPO_DIR,
-    )
-
-
-def commit_tree_sha(worktree: Path, sha: str) -> str:
-    """Return the tree SHA of the commit ``sha``.
-
-    Used to tell whether two commits have the same content even when
-    their commit-SHAs differ (e.g., trailer-only differences after a
-    ghstack submit rewrites the source-id trailer).
-    """
-    return run(
-        ["git", "rev-parse", f"{sha}^{{tree}}"],
-        cwd=worktree,
-    ).stdout.strip()
-
-
-def cherry_pick(worktree: Path, sha: str) -> None:
-    """Cherry-pick ``sha`` onto the worktree's HEAD.
-
-    Used by stack mode to rebase a child's ``/orig`` onto the current
-    parent ``/orig`` before invoking claude on the child -- otherwise
-    ``ghstack submit --no-stack`` rejects the push because HEAD~1's
-    source-id no longer matches origin's parent ``/orig``.
-
-    On conflict: aborts the in-flight cherry-pick (so the worktree is
-    left in a sane state) and raises ``RuntimeError`` with the git
-    error captured. Callers turn that into a halt for now -- claude-
-    assisted stack-rebase resolution can come later.
-    """
-    proc = run(
-        ["git", "cherry-pick", sha],
-        cwd=worktree,
-        check=False,
-        loud=True,
-    )
-    if proc.returncode != 0:
-        run(
-            ["git", "cherry-pick", "--abort"],
-            cwd=worktree,
-            check=False,
-            loud=True,
-        )
-        raise RuntimeError(
-            f"git cherry-pick {sha[:12]} failed:\n"
-            f"{(proc.stdout or '').rstrip()}\n{(proc.stderr or '').rstrip()}"
-        )
 
 
 def fetch_stack_refs(
@@ -763,21 +692,51 @@ def ghstack_submit(
     run(args, cwd=worktree, capture=False, loud=True)
 
 
-def ghstack_checkout(worktree: Path, pr: int) -> None:
-    """Run ``ghstack checkout <pr>`` to assemble the latest stack locally.
+def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> None:
+    """Cherry-pick a single PR's ``/orig`` commit onto the worktree's HEAD.
 
-    Used before a propagation submit: ghstack reads each stack member's
-    ``/orig`` from origin and lays them down as a local branch with the
-    upper commits cherry-picked onto whatever the current parent ``/orig``
-    is. The result is the post-rebase state we want to push, ready for
-    ``ghstack_submit(no_stack=False)``.
+    Used to reconstruct the stack one member at a time: start from the
+    merge-base with main, then cherry-pick each member bottom-to-top.
+    ``--no-fetch`` skips the per-PR remote fetch since we batch-fetch
+    all refs up front.
     """
-    run(
-        ["ghstack", "checkout", str(pr)],
-        cwd=worktree,
-        capture=False,
-        loud=True,
-    )
+    args = ["ghstack", "cherry-pick", str(pr)]
+    if no_fetch:
+        args.append("--no-fetch")
+    run(args, cwd=worktree, capture=False, loud=True)
+
+
+
+_PR_RESOLVED_RE = __import__("re").compile(
+    r"Pull-Request-Resolved:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
+)
+
+
+def walk_orig_stack(orig_ref: str) -> list[int]:
+    """Walk the commit ancestry of ``orig_ref`` and return PR numbers bottom-up.
+
+    Each commit on a ghstack ``/orig`` branch carries a
+    ``Pull-Request-Resolved: <url>`` trailer. We walk from the tip back
+    to the merge-base with ``origin/main`` and extract the PR number from
+    each commit. The result is bottom-first (parents before children).
+    """
+    merge_base = run(
+        ["git", "merge-base", f"refs/remotes/origin/{orig_ref}", "origin/main"],
+        cwd=REPO_DIR,
+    ).stdout.strip()
+    log_output = run(
+        [
+            "git", "log", "--reverse", "--format=%B---END---",
+            f"{merge_base}..refs/remotes/origin/{orig_ref}",
+        ],
+        cwd=REPO_DIR,
+    ).stdout
+    prs: list[int] = []
+    for chunk in log_output.split("---END---"):
+        m = _PR_RESOLVED_RE.search(chunk)
+        if m:
+            prs.append(int(m.group(1)))
+    return prs
 
 
 REBASE_BODY_HINT = "Rebase onto origin/main to refresh stale base."
