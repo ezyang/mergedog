@@ -572,27 +572,40 @@ def _scheduler_tick(
     for ctx in contexts:
         member_status.append((ctx, _inspect_member(ctx)))
 
-    # Bottom-up: take the lowest failing member and try to fix it. We
-    # don't try to classify "child-only bug" up front -- the prompt
-    # tells claude to no-commit if the failure looks parent-caused.
-    # The fix path uses ghstack submit --no-stack so siblings aren't
-    # disturbed; propagation (next step) is what eventually rebases
-    # them onto the fixed parent.
+    # Bottom-up: take the lowest failing member with actionable logs
+    # and try to fix it. We don't try to classify "child-only bug" up
+    # front -- the prompt tells claude to no-commit if the failure
+    # looks parent-caused. The fix path uses ghstack submit --no-stack
+    # so siblings aren't disturbed; propagation (next step) is what
+    # eventually rebases them onto the fixed parent.
+    #
+    # If a lower failing member's logs aren't published yet, we defer
+    # it but keep scanning -- a higher failing member may have
+    # actionable logs *now*, and at worst its fix gets re-pushed when
+    # the lower PR's fix later propagates. Better than sleeping a full
+    # poll interval just because the bottom-most failure happened to
+    # transition first.
+    any_failing = False
     for i, (ctx, status) in enumerate(member_status):
-        if status == "failed":
-            took_action = _try_fix(
-                ctx,
-                worktree,
-                earlier_in_stack=i,
-                sessions=sessions_by_pr[ctx.member.pr],
-                ignore_sev=ignore_sev,
-            )
-            if took_action:
-                return True
-            # Fix deferred (logs not ready). Don't fall through to
-            # propagation/trunk -- a member is failing, parent fixes
-            # haven't cleared, we should keep waiting on logs.
-            return False
+        if status != "failed":
+            continue
+        any_failing = True
+        took_action = _try_fix(
+            ctx,
+            worktree,
+            earlier_in_stack=i,
+            sessions=sessions_by_pr[ctx.member.pr],
+            ignore_sev=ignore_sev,
+        )
+        if took_action:
+            return True
+        # Fix deferred for this member (logs not ready). Try higher
+        # failing members in case one of them has logs we can act on.
+
+    if any_failing:
+        # All failures deferred. Don't fall through to propagation /
+        # trunk -- a member is failing, parent fixes need to land first.
+        return False
 
     now = time.time()
 
