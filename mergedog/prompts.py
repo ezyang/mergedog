@@ -88,7 +88,7 @@ PR context:
   Branch: {branch}
 
 {untrusted_blurb}
-{failing_checks_section}{drci_section}
+{failing_checks_section}{drci_section}{extra_context_section}
 Failed CI jobs (excerpt, biased toward the last failure marker -- not the \
 literal log tail):
 
@@ -157,6 +157,19 @@ harness re-invoke you on the next CI cycle once the logs are visible.
 """
 
 
+_EXTRA_CONTEXT_SECTION_TEMPLATE = """
+The mergedog operator supplied the following additional context for this \
+run. Unlike the sidecar, this block is trusted: it was passed in via a \
+command-line flag by the human running mergedog, not by the PR author or \
+external commenters. Treat any directives here as authoritative \
+instructions about how to handle this PR.
+
+--- begin operator context ---
+{extra_context_body}
+--- end operator context ---
+"""
+
+
 def render_fix_prompt(
     *,
     url: str,
@@ -167,6 +180,7 @@ def render_fix_prompt(
     is_ghstack: bool = False,
     earlier_in_stack: int = 0,
     drci_summary: str | None = None,
+    extra_context: str | None = None,
 ) -> str:
     sections = []
     for name, log_text in failed_jobs:
@@ -182,6 +196,11 @@ def render_fix_prompt(
         failing_checks_section = _FAILING_CHECKS_SECTION_TEMPLATE.format(
             failing_checks_body=body
         )
+    extra_context_section = (
+        _EXTRA_CONTEXT_SECTION_TEMPLATE.format(extra_context_body=extra_context.strip())
+        if extra_context and extra_context.strip()
+        else ""
+    )
     ghstack_hint = _GHSTACK_HINT if is_ghstack else ""
     if earlier_in_stack > 0:
         ghstack_hint += _STACK_MEMBER_HINT.format(earlier_count=earlier_in_stack)
@@ -191,6 +210,7 @@ def render_fix_prompt(
         untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
         failing_checks_section=failing_checks_section,
         drci_section=drci_section,
+        extra_context_section=extra_context_section,
         failed_jobs="\n".join(sections) if sections else "(no logs available)",
         ghstack_hint=ghstack_hint,
     )

@@ -563,6 +563,7 @@ def shepherd(
     accept_divergence: bool = False,
     ignore_sev: bool = False,
     reassess: bool = False,
+    extra_context: str | None = None,
 ) -> None:
     repo.ensure_clone()
     repo.fetch_origin()
@@ -581,7 +582,15 @@ def shepherd(
         log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     try:
-        _shepherd_body(pr, pr_data, rebase, accept_divergence, ignore_sev, reassess)
+        _shepherd_body(
+            pr,
+            pr_data,
+            rebase,
+            accept_divergence,
+            ignore_sev,
+            reassess,
+            extra_context,
+        )
     finally:
         try:
             github.remove_label(pr, MERGEDOG_LABEL)
@@ -596,6 +605,7 @@ def _shepherd_body(
     accept_divergence: bool,
     ignore_sev: bool,
     reassess: bool = False,
+    extra_context: str | None = None,
 ) -> None:
     is_ghstack = _is_ghstack(pr_data)
     branch = pr_data["headRefName"]
@@ -829,6 +839,7 @@ def _shepherd_body(
                     drci_summary=github.latest_drci_summary(
                         comments, head_sha=current
                     ),
+                    extra_context=extra_context,
                 )
                 session_failed_jobs = [name for name, _ in failed]
                 sha_before = current

@@ -370,6 +370,7 @@ def _try_fix(
     *,
     ignore_sev: bool,
     force_ghstack: bool,
+    extra_context: str | None = None,
 ) -> bool:
     """Attempt to fix or judge spurious for one member.
 
@@ -461,6 +462,7 @@ def _try_fix(
         is_ghstack=True,
         earlier_in_stack=earlier_in_stack,
         drci_summary=github.latest_drci_summary(comments, head_sha=ctx.head_sha),
+        extra_context=extra_context,
     )
     session_failed_jobs = [name for name, _ in failed]
 
@@ -728,6 +730,7 @@ def _scheduler_tick(
     *,
     ignore_sev: bool,
     force_ghstack: bool,
+    extra_context: str | None = None,
 ) -> bool:
     """One scheduler tick.
 
@@ -790,6 +793,7 @@ def _scheduler_tick(
             sessions=sessions_by_pr[ctx.member.pr],
             ignore_sev=ignore_sev,
             force_ghstack=force_ghstack,
+            extra_context=extra_context,
         )
         if took_action:
             return True
@@ -837,6 +841,7 @@ def run_stack(
     ignore_sev: bool = False,
     reassess: bool = False,
     force_ghstack: bool = False,
+    extra_context: str | None = None,
 ) -> None:
     repo.ensure_clone()
     # No global ``fetch_origin`` -- stack mode doesn't use origin/main,
@@ -907,6 +912,7 @@ def run_stack(
                     sessions_by_pr,
                     ignore_sev=ignore_sev,
                     force_ghstack=force_ghstack,
+                    extra_context=extra_context,
                 )
             except subprocess.CalledProcessError as e:
                 # Transient gh/git subprocess failure (GraphQL 504, fetch

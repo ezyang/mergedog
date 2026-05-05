@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from mergedog import shepherd, stack_shepherd
 
@@ -83,6 +84,36 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
             "inherited by every spawned shepherd automatically."
         ),
     )
+    extra = parser.add_mutually_exclusive_group()
+    extra.add_argument(
+        "--extra-context",
+        metavar="TEXT",
+        help=(
+            "Operator-supplied hint string injected into claude's fix-CI "
+            "prompt as a trusted section. Use to steer claude on this run "
+            "(e.g. \"the lint failure on file X is pre-existing; ignore\"). "
+            "Mutually exclusive with --extra-context-file."
+        ),
+    )
+    extra.add_argument(
+        "--extra-context-file",
+        metavar="PATH",
+        type=Path,
+        help=(
+            "Like --extra-context, but reads the hint text from a file. "
+            "Useful for longer playbooks. Mutually exclusive with "
+            "--extra-context."
+        ),
+    )
+
+
+def _resolve_extra_context(args: argparse.Namespace) -> str | None:
+    if args.extra_context_file is not None:
+        try:
+            return args.extra_context_file.read_text()
+        except OSError as e:
+            raise SystemExit(f"failed to read --extra-context-file: {e}")
+    return args.extra_context
 
 
 def _single_main(argv: list[str]) -> int:
@@ -103,6 +134,7 @@ def _single_main(argv: list[str]) -> int:
             accept_divergence=args.accept_divergence,
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
+            extra_context=_resolve_extra_context(args),
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
@@ -142,6 +174,7 @@ def _stack_main(argv: list[str]) -> int:
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
             force_ghstack=args.force_ghstack,
+            extra_context=_resolve_extra_context(args),
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
