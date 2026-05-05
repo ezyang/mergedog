@@ -30,6 +30,7 @@ def _mk_ctx(
         self_pr=False,
         head_sha="x",
         orig_sha=orig_sha,
+        local_orig_sha=orig_sha,
     )
     if status is not None:
         ctx.stable_observation = (status, 1)

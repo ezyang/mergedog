@@ -395,6 +395,59 @@ def is_cherry_pick_in_progress(worktree: Path) -> bool:
     return proc.returncode == 0
 
 
+_LOCAL_ORIG_BRANCH_PREFIX = "mergedog-local/"
+
+
+def local_orig_branch_name(pr: int) -> str:
+    return f"{_LOCAL_ORIG_BRANCH_PREFIX}{pr}"
+
+
+def get_local_orig(pr: int) -> str | None:
+    """Return the SHA of ``mergedog-local/<pr>``, or None if it doesn't exist.
+
+    Stack mode keeps a per-member branch pointing at the current "what
+    we'd push as /orig" so the local stack survives Ctrl-C and restart
+    without losing claude's fix work. The branch lives in the main
+    ``~/.mergedog/repo`` (visible to every worktree); we read the SHA
+    from there with ``rev-parse`` and return None on missing refs.
+    """
+    branch = local_orig_branch_name(pr)
+    proc = run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def set_local_orig(pr: int, sha: str) -> None:
+    """Point ``mergedog-local/<pr>`` at ``sha`` (creating or moving it).
+
+    Uses ``git update-ref`` rather than ``git branch -f`` so we don't
+    care whether the branch already exists.
+    """
+    branch = local_orig_branch_name(pr)
+    _git_write_with_retry(
+        ["git", "update-ref", f"refs/heads/{branch}", sha],
+        cwd=REPO_DIR,
+    )
+
+
+def commit_tree_sha(worktree: Path, sha: str) -> str:
+    """Return the tree SHA of the commit ``sha``.
+
+    Used to tell whether two commits have the same content even when
+    their commit-SHAs differ (e.g., trailer-only differences after a
+    ghstack submit rewrites the source-id trailer).
+    """
+    return run(
+        ["git", "rev-parse", f"{sha}^{{tree}}"],
+        cwd=worktree,
+    ).stdout.strip()
+
+
 def cherry_pick(worktree: Path, sha: str) -> None:
     """Cherry-pick ``sha`` onto the worktree's HEAD.
 
@@ -674,7 +727,13 @@ def fixup_into_parent(worktree: Path) -> str:
     return head_sha(worktree)
 
 
-def ghstack_submit(worktree: Path, message: str, *, no_stack: bool = True) -> None:
+def ghstack_submit(
+    worktree: Path,
+    message: str,
+    *,
+    no_stack: bool = True,
+    force: bool = False,
+) -> None:
     """Run ``ghstack submit ... -m <message> HEAD`` in the worktree.
 
     Default ``no_stack=True`` re-uploads only the commit at HEAD's PR --
@@ -684,10 +743,17 @@ def ghstack_submit(worktree: Path, message: str, *, no_stack: bool = True) -> No
     Pass ``no_stack=False`` for stack-mode propagation: ghstack walks
     every commit reachable from HEAD down to the merge-base with main
     and pushes any /head whose contents differ from origin.
+
+    ``force=True`` adds ghstack's ``--force`` flag, bypassing its
+    "cowardly refusing to push" anti-clobber check. Used as an
+    operator-controlled escape hatch (``--force-ghstack``) when local
+    bookkeeping disagrees with origin and we know it's safe to push.
     """
     args = ["ghstack", "submit", "-m", message, "HEAD"]
     if no_stack:
         args.insert(2, "--no-stack")
+    if force:
+        args.insert(2, "--force")
     run(args, cwd=worktree, capture=False, loud=True)
 
 

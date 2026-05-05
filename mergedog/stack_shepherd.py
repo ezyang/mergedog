@@ -52,7 +52,6 @@ from mergedog.shepherd import (
     _apply_spurious_overrides,
     _approve_pending_runs,
     _failed_logs_are_content_free,
-    _publish_ghstack_fix,
     _record_claude_session,
     _wait_for_no_active_sev,
 )
@@ -66,13 +65,21 @@ class _MemberCtx:
     """Operational state for one stack member during a run.
 
     Most fields are transient scheduler bookkeeping that the tick loop
-    mutates; only ``trust`` is persisted to disk (via its own
-    ``save()``).
+    mutates; only ``trust`` and the ``mergedog-local/<pr>`` branch
+    (mirrored by ``local_orig_sha``) survive across restarts.
 
-    ``head_sha`` is GitHub's view (used for trust checks); ``orig_sha``
-    is origin's view (used for staleness). They're refreshed on
-    different cadences -- ``head_sha`` per tick from ``gh pr view``,
-    ``orig_sha`` from the per-tick batch git fetch.
+    Three SHAs are tracked for each member, with different roles:
+
+    - ``head_sha``: GitHub's view of the PR head (from ``gh pr view``).
+      Used for trust checks.
+    - ``orig_sha``: origin's view of the ``/orig`` branch (from a
+      ``git fetch`` of remote-tracking branches). Used as the truth for
+      "what has been pushed".
+    - ``local_orig_sha``: what we'd push as ``/orig`` if we submitted
+      now. Persisted as ``mergedog-local/<pr>`` so a Ctrl-C mid-fix
+      doesn't lose claude's work; on resume we detect that
+      ``local_orig_sha != orig_sha`` and just push instead of
+      re-invoking claude.
     """
 
     member: StackMember
@@ -81,6 +88,7 @@ class _MemberCtx:
     self_pr: bool
     head_sha: str
     orig_sha: str
+    local_orig_sha: str
     last_status: str | None = None
     stable_observation: tuple[str, int] | None = None
     stable_since: float = 0.0
@@ -150,6 +158,13 @@ def _setup_member(
             f"reports for the PR ({head_sha[:12]}); refusing to act"
         )
 
+    # Initialize the persistent local /orig pointer. If a previous
+    # mergedog session left a ``mergedog-local/<pr>`` branch, adopt
+    # its SHA -- that's where we'd resume from. Otherwise seed it from
+    # origin's /orig so the first tick has something to navigate to.
+    local_orig_sha = repo.get_local_orig(pr) or origin_orig_sha
+    repo.set_local_orig(pr, local_orig_sha)
+
     return _MemberCtx(
         member=member,
         pr_data=pr_data,
@@ -157,6 +172,7 @@ def _setup_member(
         self_pr=self_pr,
         head_sha=head_sha,
         orig_sha=origin_orig_sha,
+        local_orig_sha=local_orig_sha,
     )
 
 
@@ -265,14 +281,94 @@ def _inspect_member(ctx: _MemberCtx) -> str:
     return status
 
 
+def _ensure_local_stack_consistent(
+    contexts: list[_MemberCtx], worktree: Path
+) -> None:
+    """Maintain the invariant ``parent(local_orig[i]) == local_orig[i-1]``.
+
+    Walks the stack bottom-up. For each member whose local ``/orig``
+    parent doesn't match its predecessor's local ``/orig``, cherry-picks
+    the local commit onto the new parent so the chain is intact. The
+    cherry-picked commit keeps the ghstack-source-id trailer through
+    git's standard message-preserving cherry-pick, so a later
+    ``ghstack submit --no-stack`` recognizes it as an update to the
+    same PR.
+
+    Updates are written to ``mergedog-local/<pr>`` immediately so a
+    Ctrl-C mid-rebase is recoverable on the next run.
+
+    Conflicts halt the run: claude-assisted stack-rebase resolution
+    isn't wired yet. Operator can ``--reset-local-stack`` to discard
+    local state and start over.
+    """
+    for i in range(1, len(contexts)):
+        parent_ctx = contexts[i - 1]
+        ctx = contexts[i]
+        if repo.parent_sha(ctx.local_orig_sha) == parent_ctx.local_orig_sha:
+            continue
+        log(
+            f"PR #{ctx.member.pr}: local /orig parent doesn't match "
+            f"parent's local /orig; cherry-picking onto "
+            f"{parent_ctx.local_orig_sha[:12]}"
+        )
+        repo.set_worktree_to_sha(worktree, parent_ctx.local_orig_sha)
+        try:
+            repo.cherry_pick(worktree, ctx.local_orig_sha)
+        except RuntimeError as e:
+            die(
+                f"PR #{ctx.member.pr}: cherry-pick onto current "
+                f"parent's local /orig conflicts; halting (claude-"
+                f"assisted stack-rebase resolution is not yet wired)"
+                f"\n{e}"
+            )
+        new_local = repo.head_sha(worktree)
+        ctx.local_orig_sha = new_local
+        repo.set_local_orig(ctx.member.pr, new_local)
+        log(f"PR #{ctx.member.pr}: local /orig now {new_local[:12]}")
+
+
+def _publish_local_orig(
+    ctx: _MemberCtx,
+    worktree: Path,
+    *,
+    submit_message: str,
+    ignore_sev: bool,
+    force_ghstack: bool,
+) -> None:
+    """Push ``ctx.local_orig_sha`` to origin via ``ghstack submit --no-stack``.
+
+    The worktree must already be positioned at ``ctx.local_orig_sha``.
+    After a successful submit, refreshes the origin /head and /orig
+    snapshots and resyncs ``ctx.local_orig_sha`` so they all match.
+    """
+    pr = ctx.member.pr
+    _wait_for_no_active_sev(
+        f"submitting PR #{pr} via ghstack", ignore_sev=ignore_sev
+    )
+    repo.ghstack_submit(worktree, submit_message, force=force_ghstack)
+    new_head_sha = repo.fetch_ghstack_head(ctx.member.head_ref)
+    new_orig_sha = repo.fetch_ghstack_orig(ctx.member.head_ref)
+    ctx.trust.trust(new_head_sha)
+    ctx.head_sha = new_head_sha
+    ctx.orig_sha = new_orig_sha
+    # ghstack rewrote the source-id trailer locally before pushing, so
+    # origin's /orig has a different SHA than the local commit we
+    # asked it to push. Adopt origin's SHA as the local /orig going
+    # forward -- they're equivalent and any downstream rebase should
+    # use what's actually on origin.
+    ctx.local_orig_sha = new_orig_sha
+    repo.set_local_orig(pr, new_orig_sha)
+    log(f"PR #{pr}: ghstack submitted; new /head = {new_head_sha[:12]}")
+
+
 def _try_fix(
     ctx: _MemberCtx,
     worktree: Path,
     earlier_in_stack: int,
-    parent_orig_sha: str | None,
     sessions: list[ClaudeSession],
     *,
     ignore_sev: bool,
+    force_ghstack: bool,
 ) -> bool:
     """Attempt to fix or judge spurious for one member.
 
@@ -281,17 +377,18 @@ def _try_fix(
     GitHub hasn't published the failing job's logs yet -- and the
     caller should sleep before re-ticking.
 
-    Before invoking claude, the shared worktree is positioned at this
-    member's ``/orig`` *rebased onto the current parent ``/orig``* (a
-    cherry-pick when stale, otherwise a plain navigation). Without
-    that rebase, ``ghstack submit --no-stack`` later rejects the push:
-    if a parent member was just fixed, this member's old ``/orig``
-    points at the old parent ``/orig``, whose source-id no longer
-    matches origin -- ghstack's anti-clobber check fires.
+    Two flows in order:
 
-    After a clean fix, the worktree's HEAD is left at the new
-    ``/orig_i`` (the [MERGEDOG] commit folded into the contributor's
-    commit); the next tick navigates elsewhere as needed.
+    1. **Resume**: if ``ctx.local_orig_sha`` differs from origin's
+       ``/orig`` and the trees differ too, we have a pending fix from
+       a previous tick (Ctrl-C between fixup and submit, or a previous
+       submit that hit cowardly). Push it directly without invoking
+       claude.
+
+    2. **Standard**: navigate to ``ctx.local_orig_sha`` (already
+       rebased onto current parent by ``_ensure_local_stack_consistent``),
+       invoke claude, lintrunner-amend, fold via ``fixup_into_parent``,
+       update the local /orig branch, then submit.
     """
     pr = ctx.member.pr
     if ctx.fix_commits_pushed >= MAX_FIX_COMMITS:
@@ -299,6 +396,39 @@ def _try_fix(
             f"PR #{pr}: already pushed {ctx.fix_commits_pushed} fix "
             f"commits and CI is still failing; halting"
         )
+
+    # Resume case: if local /orig has unpushed content not on origin,
+    # push it now without re-invoking claude. Compare trees rather
+    # than commit SHAs -- a successful submit rewrites the local
+    # source-id trailer, leaving local and origin with the same tree
+    # but distinct SHAs.
+    if ctx.local_orig_sha != ctx.orig_sha:
+        local_tree = repo.commit_tree_sha(worktree, ctx.local_orig_sha)
+        origin_tree = repo.commit_tree_sha(worktree, ctx.orig_sha)
+        if local_tree == origin_tree:
+            log(
+                f"PR #{pr}: local /orig content matches origin; "
+                f"adopting origin SHA"
+            )
+            ctx.local_orig_sha = ctx.orig_sha
+            repo.set_local_orig(pr, ctx.orig_sha)
+        else:
+            log(
+                f"PR #{pr}: pending unpushed local fix detected "
+                f"({ctx.local_orig_sha[:12]} vs origin {ctx.orig_sha[:12]}); "
+                f"submitting without re-invoking claude"
+            )
+            repo.set_worktree_to_sha(worktree, ctx.local_orig_sha)
+            _publish_local_orig(
+                ctx,
+                worktree,
+                submit_message="Resume mergedog fix-CI submit",
+                ignore_sev=ignore_sev,
+                force_ghstack=force_ghstack,
+            )
+            ctx.fix_commits_pushed += 1
+            ctx.last_status = None
+            return True
 
     failed = github.get_failed_job_logs(pr)
     if (
@@ -333,34 +463,11 @@ def _try_fix(
     )
     session_failed_jobs = [name for name, _ in failed]
 
-    # Position the shared worktree at this member's /orig before
-    # claude touches it. For a non-bottom member whose /orig parent no
-    # longer matches the current parent's /orig (because that parent
-    # was just fixed), cherry-pick this member's /orig onto the
-    # current parent. The cherry-picked commit keeps the same
-    # ghstack-source-id (the trailer is preserved through cherry-pick),
-    # so a later ``ghstack submit --no-stack`` recognizes it as an
-    # update to this PR rather than a divergent push.
-    if (
-        parent_orig_sha is not None
-        and repo.parent_sha(ctx.orig_sha) != parent_orig_sha
-    ):
-        log(
-            f"PR #{pr}: rebasing /orig onto current parent "
-            f"{parent_orig_sha[:12]} before invoking claude"
-        )
-        repo.set_worktree_to_sha(worktree, parent_orig_sha)
-        try:
-            repo.cherry_pick(worktree, ctx.orig_sha)
-        except RuntimeError as e:
-            die(
-                f"PR #{pr}: cherry-pick onto current parent /orig "
-                f"conflicts; halting for human intervention "
-                f"(claude-assisted stack-rebase resolution is not "
-                f"yet wired)\n{e}"
-            )
-    else:
-        repo.set_worktree_to_sha(worktree, ctx.orig_sha)
+    # Position the shared worktree at this member's persistent local
+    # /orig. _ensure_local_stack_consistent (run earlier this tick)
+    # already rebased it onto the current parent's local /orig, so
+    # claude is operating on a fresh-base view.
+    repo.set_worktree_to_sha(worktree, ctx.local_orig_sha)
 
     sha_before = ctx.head_sha
     started_at = utc_now_iso()
@@ -409,13 +516,25 @@ def _try_fix(
     ctx.trust.spurious_check_names = []
     ctx.trust.save()
 
-    _publish_ghstack_fix(
-        pr,
+    # Capture the [MERGEDOG] commit's full message before fixup
+    # discards it, then fold claude's commit into the contributor's
+    # /orig commit. After fixup, HEAD is the new local /orig. Update
+    # the persistent ``mergedog-local/<pr>`` branch *before* the
+    # submit so a Ctrl-C between fixup and a successful push is
+    # recoverable on the next tick (the resume case at the top of
+    # this function).
+    fix_message = repo.commit_message(worktree, new_sha)
+    repo.fixup_into_parent(worktree)
+    new_local_orig = repo.head_sha(worktree)
+    ctx.local_orig_sha = new_local_orig
+    repo.set_local_orig(pr, new_local_orig)
+
+    _publish_local_orig(
+        ctx,
         worktree,
-        ctx.member.head_ref,
-        new_sha,
-        ctx.trust,
+        submit_message=fix_message,
         ignore_sev=ignore_sev,
+        force_ghstack=force_ghstack,
     )
     ctx.fix_commits_pushed += 1
     ctx.last_status = None
@@ -607,6 +726,7 @@ def _scheduler_tick(
     sessions_by_pr: dict[int, list[ClaudeSession]],
     *,
     ignore_sev: bool,
+    force_ghstack: bool,
 ) -> bool:
     """One scheduler tick.
 
@@ -619,6 +739,11 @@ def _scheduler_tick(
     for ctx in contexts:
         _refresh_member_head(ctx)
         _refresh_member_pr_data(ctx)
+
+    # Ensure each member's local /orig is parented on its predecessor's
+    # local /orig. Cherry-picks where stale; updates the persistent
+    # mergedog-local/<pr> branches.
+    _ensure_local_stack_consistent(contexts, worktree)
 
     # Approve any approval-pending workflow runs across the stack. If
     # we approved anything, re-tick after a short settle so the new
@@ -657,14 +782,13 @@ def _scheduler_tick(
         if status != "failed":
             continue
         any_failing = True
-        parent_orig_sha = contexts[i - 1].orig_sha if i > 0 else None
         took_action = _try_fix(
             ctx,
             worktree,
             earlier_in_stack=i,
-            parent_orig_sha=parent_orig_sha,
             sessions=sessions_by_pr[ctx.member.pr],
             ignore_sev=ignore_sev,
+            force_ghstack=force_ghstack,
         )
         if took_action:
             return True
@@ -711,6 +835,7 @@ def run_stack(
     accept_divergence: bool = False,
     ignore_sev: bool = False,
     reassess: bool = False,
+    force_ghstack: bool = False,
 ) -> None:
     repo.ensure_clone()
     # No global ``fetch_origin`` -- stack mode doesn't use origin/main,
@@ -775,7 +900,11 @@ def run_stack(
         }
         while True:
             took_action = _scheduler_tick(
-                contexts, worktree, sessions_by_pr, ignore_sev=ignore_sev
+                contexts,
+                worktree,
+                sessions_by_pr,
+                ignore_sev=ignore_sev,
+                force_ghstack=force_ghstack,
             )
             if _all_trunk_green_stable(contexts, time.time()):
                 log(

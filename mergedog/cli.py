@@ -121,6 +121,17 @@ def _stack_main(argv: list[str]) -> int:
         ),
     )
     _add_common_flags(parser)
+    parser.add_argument(
+        "--force-ghstack",
+        action="store_true",
+        help=(
+            "Pass ``--force`` to every ``ghstack submit`` invocation, "
+            "bypassing ghstack's anti-clobber 'Cowardly refusing to "
+            "push' check. Use when local bookkeeping disagrees with "
+            "origin and you've decided it's safe to force the push -- "
+            "an operator-controlled escape hatch for testing."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -130,6 +141,7 @@ def _stack_main(argv: list[str]) -> int:
             accept_divergence=args.accept_divergence,
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
+            force_ghstack=args.force_ghstack,
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
