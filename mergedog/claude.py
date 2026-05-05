@@ -326,12 +326,20 @@ def _invoke(
         log("claude exited but the merge is still in progress; refusing to push")
         return False, None, transcript
 
+    inconclusive_path = worktree / ".mergedog-inconclusive"
+    inconclusive = inconclusive_path.exists()
+    if inconclusive:
+        inconclusive_path.unlink()
+
     if not _is_clean(worktree):
         log("claude left an uncommitted working tree; refusing to push")
         return False, None, transcript
 
     after = head_sha(worktree)
     if after == before:
+        if inconclusive:
+            log("claude signalled INCONCLUSIVE; halting for human review")
+            return False, None, transcript
         if expect_merge_commit:
             log("claude aborted the merge without committing")
         else:

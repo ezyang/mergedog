@@ -28,6 +28,14 @@ Your job, right now, is to decide which of two things to do and do exactly it:
      harness will then advance the PR. A human reviews everything at the \
      end, so a wrong call here is recoverable.
 
+  3. Signal INCONCLUSIVE by running ``touch .mergedog-inconclusive`` and \
+     then exiting without committing. Choose this if you genuinely cannot \
+     tell whether a failure is real or spurious -- for example, the log \
+     excerpt is truncated and you cannot see the actual error message, or \
+     the failing test is plausibly related to the PR's changes but you \
+     lack enough information to be sure. The harness will HALT for human \
+     review instead of advancing the PR.
+
 Commit message contract (when you do commit):
 
   - Subject line: starts with ``[MERGEDOG] `` followed by a one-line \
