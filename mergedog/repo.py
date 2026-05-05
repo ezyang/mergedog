@@ -626,14 +626,34 @@ def fixup_into_parent(worktree: Path) -> str:
     return head_sha(worktree)
 
 
-def ghstack_submit(worktree: Path, message: str) -> None:
-    """Run ``ghstack submit --no-stack -m <message> HEAD`` in the worktree.
+def ghstack_submit(worktree: Path, message: str, *, no_stack: bool = True) -> None:
+    """Run ``ghstack submit ... -m <message> HEAD`` in the worktree.
 
-    ``--no-stack`` so we re-upload only this PR's commit; if it's part of a
-    larger stack the other commits are unchanged and shouldn't be touched.
+    Default ``no_stack=True`` re-uploads only the commit at HEAD's PR --
+    used by both the single-PR shepherd and stack-mode fix path so siblings
+    don't get hit with fresh CI for an unrelated parent fix.
+
+    Pass ``no_stack=False`` for stack-mode propagation: ghstack walks
+    every commit reachable from HEAD down to the merge-base with main
+    and pushes any /head whose contents differ from origin.
+    """
+    args = ["ghstack", "submit", "-m", message, "HEAD"]
+    if no_stack:
+        args.insert(2, "--no-stack")
+    run(args, cwd=worktree, capture=False, loud=True)
+
+
+def ghstack_checkout(worktree: Path, pr: int) -> None:
+    """Run ``ghstack checkout <pr>`` to assemble the latest stack locally.
+
+    Used before a propagation submit: ghstack reads each stack member's
+    ``/orig`` from origin and lays them down as a local branch with the
+    upper commits cherry-picked onto whatever the current parent ``/orig``
+    is. The result is the post-rebase state we want to push, ready for
+    ``ghstack_submit(no_stack=False)``.
     """
     run(
-        ["ghstack", "submit", "--no-stack", "-m", message, "HEAD"],
+        ["ghstack", "checkout", str(pr)],
         cwd=worktree,
         capture=False,
         loud=True,

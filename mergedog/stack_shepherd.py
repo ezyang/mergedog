@@ -41,6 +41,7 @@ from mergedog.paths import REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
+    CI_STABILITY_WINDOW_SEC,
     EXIT_PR_NOT_ACTIONABLE,
     MAX_EMPTY_LOG_DEFERS,
     MAX_FIX_COMMITS,
@@ -51,6 +52,7 @@ from mergedog.shepherd import (
     _failed_logs_are_content_free,
     _publish_ghstack_fix,
     _record_claude_session,
+    _wait_for_no_active_sev,
 )
 from mergedog.stack import StackMember, resolve_stack
 from mergedog.state import TrustDB
@@ -352,6 +354,107 @@ def _try_fix(
     return True
 
 
+def _propagation_needed(
+    contexts: list[_MemberCtx], now: float
+) -> bool:
+    """Should we run a full ghstack submit to propagate parent fixes?
+
+    Bottom-up scan over consecutive (parent, child) pairs. A pair is
+    "stale" iff ``parent_of(child.orig_sha) != parent.orig_sha`` -- the
+    parent has been updated on origin but the child's /orig still has
+    the old parent's SHA in its parent pointer.
+
+    Propagation only fires when *every* stale pair has a green-stable
+    parent (status=passed for ``CI_STABILITY_WINDOW_SEC``). One full
+    ghstack submit re-bases the entire stack in a single push, so we
+    wait until it's safe at every layer rather than firing per-pair.
+    A non-green parent at any depth blocks propagation -- we'd rather
+    fix that parent first than rebase children onto code we know is
+    failing.
+    """
+    found_stale = False
+    for i in range(len(contexts) - 1):
+        parent = contexts[i]
+        child = contexts[i + 1]
+        if repo.parent_sha(child.orig_sha) == parent.orig_sha:
+            continue
+        found_stale = True
+        if parent.stable_observation is None:
+            return False
+        if parent.stable_observation[0] != "passed":
+            return False
+        if now - parent.stable_since < CI_STABILITY_WINDOW_SEC:
+            return False
+    return found_stale
+
+
+def _propagate_stack(
+    contexts: list[_MemberCtx],
+    worktree: Path,
+    *,
+    ignore_sev: bool,
+) -> None:
+    """Run a full ghstack submit to push parent fixes down to children.
+
+    ``ghstack checkout <top_pr>`` assembles the latest /orig branches
+    into a local stack, cherry-picking upper commits onto whatever the
+    current parent /orig is. ``ghstack submit HEAD`` then pushes every
+    /head whose content differs from origin -- typically just the
+    children that just got rebased.
+
+    After the push: refresh /head + /orig for every member, trust the
+    new /heads, clear ``spurious_check_names`` on members whose /head
+    actually changed (fresh CI invalidates prior judgments), and reset
+    stability so the trunk-promotion gate (future commit) waits the
+    window again.
+    """
+    if len(contexts) < 2:
+        return
+
+    top = contexts[-1]
+    log(
+        f"propagating stack: ghstack checkout #{top.member.pr} + "
+        f"submit (full)"
+    )
+    if _wait_for_no_active_sev(
+        "running full ghstack submit to propagate parent fix",
+        ignore_sev=ignore_sev,
+    ):
+        # SEV waited: /orig branches may have moved while we sat. Re-fetch
+        # so ghstack checkout sees the latest.
+        _refresh_stack_refs(contexts)
+
+    pre_head = {ctx.member.pr: ctx.head_sha for ctx in contexts}
+
+    repo.ghstack_checkout(worktree, top.member.pr)
+    repo.ghstack_submit(
+        worktree, "Propagate parent fix downstream", no_stack=False
+    )
+
+    # Refresh refs and update ctx state for any member whose /head moved.
+    pairs = [(ctx.member.head_ref, ctx.member.orig_ref) for ctx in contexts]
+    refs = repo.fetch_stack_refs(pairs)
+    for ctx in contexts:
+        new_head = refs[ctx.member.head_ref]
+        new_orig = refs[ctx.member.orig_ref]
+        ctx.orig_sha = new_orig
+        if new_head != pre_head[ctx.member.pr]:
+            ctx.trust.trust(new_head)
+            ctx.spurious_check_names.clear()
+            ctx.trust.spurious_check_names = []
+            ctx.trust.save()
+            ctx.head_sha = new_head
+            ctx.last_status = None
+            ctx.empty_log_defers = 0
+            log(
+                f"  PR #{ctx.member.pr}: /head -> {new_head[:12]} "
+                f"(rebased; cleared spurious)"
+            )
+        # Reset stability either way -- a propagation push restarts the
+        # clock for ciflow/trunk eligibility downstream.
+        ctx.stable_observation = None
+
+
 def _scheduler_tick(
     contexts: list[_MemberCtx],
     worktree: Path,
@@ -392,20 +495,36 @@ def _scheduler_tick(
 
     # Bottom-up: take the lowest failing member and try to fix it. We
     # don't try to classify "child-only bug" up front -- the prompt
-    # tells claude to no-commit if the failure looks parent-caused, so
-    # the loop converges naturally once we propagate (future commit).
+    # tells claude to no-commit if the failure looks parent-caused.
+    # The fix path uses ghstack submit --no-stack so siblings aren't
+    # disturbed; propagation (next step) is what eventually rebases
+    # them onto the fixed parent.
     for i, (ctx, status) in enumerate(member_status):
         if status == "failed":
-            return _try_fix(
+            took_action = _try_fix(
                 ctx,
                 worktree,
                 earlier_in_stack=i,
                 sessions=sessions,
                 ignore_sev=ignore_sev,
             )
+            if took_action:
+                return True
+            # Fix deferred (logs not ready). Don't fall through to
+            # propagation -- a member is failing, parent fixes haven't
+            # cleared, we should keep waiting on logs.
+            return False
 
-    # All members are passed or pending. Nothing to do this tick;
-    # propagation/trunk/handoff come in later commits.
+    # No failing members. Check whether the stack has stale children
+    # below green-stable parents and, if so, propagate via a full
+    # ghstack submit. This is the only path that updates /head on
+    # multiple members at once.
+    if _propagation_needed(contexts, time.time()):
+        _propagate_stack(contexts, worktree, ignore_sev=ignore_sev)
+        return True
+
+    # All members passed/pending and no stale children. ciflow/trunk
+    # gating + handoff exit come in later commits; for now, sleep.
     return False
 
 
