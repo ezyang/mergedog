@@ -29,6 +29,7 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -110,10 +111,17 @@ def _setup_member(
     member: StackMember,
     pr_data: dict,
     *,
+    origin_head_sha: str,
+    origin_orig_sha: str,
     accept_divergence: bool,
     viewer: str,
 ) -> _MemberCtx:
     """Per-member analogue of the ghstack init block in ``_shepherd_body``.
+
+    ``origin_head_sha`` / ``origin_orig_sha`` are read from a single
+    batch ``git fetch`` done by ``run_stack`` before this loop runs --
+    we used to fetch /head and /orig per-member here, which serialized
+    8+ network round-trips and ate most of startup.
 
     ``viewer`` is passed in (rather than re-queried) so a stack run
     only hits ``gh api user`` once. Does not touch any worktree --
@@ -135,14 +143,12 @@ def _setup_member(
     )
 
     head_sha = pr_data["headRefOid"]
-    origin_head_sha = repo.fetch_ghstack_head(member.head_ref)
     if origin_head_sha != head_sha:
         die(
             f"PR #{pr}: origin's {member.head_ref} "
             f"({origin_head_sha[:12]}) differs from the SHA GitHub "
             f"reports for the PR ({head_sha[:12]}); refusing to act"
         )
-    orig_sha = repo.fetch_ghstack_orig(member.head_ref)
 
     return _MemberCtx(
         member=member,
@@ -150,8 +156,38 @@ def _setup_member(
         trust=trust,
         self_pr=self_pr,
         head_sha=head_sha,
-        orig_sha=orig_sha,
+        orig_sha=origin_orig_sha,
     )
+
+
+def _add_mergedog_labels_parallel(members: list[StackMember]) -> list[int]:
+    """Apply the mergedog label to every member concurrently.
+
+    Sequential ``gh pr edit ... --add-label`` calls were ~5s each on a
+    real run -- 4 PRs took 20s of pure waiting. Threads are fine here
+    since this is I/O-bound on a subprocess invocation. Failures are
+    logged and the PR is left out of the returned list so the
+    finally-cleanup only removes labels we actually added.
+    """
+    if not members:
+        return []
+    labelled: list[int] = []
+    with ThreadPoolExecutor(max_workers=len(members)) as ex:
+        futures = {
+            ex.submit(github.add_label, m.pr, MERGEDOG_LABEL): m
+            for m in members
+        }
+        for fut in as_completed(futures):
+            m = futures[fut]
+            try:
+                fut.result()
+                labelled.append(m.pr)
+            except Exception as e:
+                log(
+                    f"WARNING: failed to add {MERGEDOG_LABEL} to "
+                    f"PR #{m.pr}: {e}"
+                )
+    return sorted(labelled)
 
 
 def _refresh_stack_refs(contexts: list[_MemberCtx]) -> None:
@@ -644,7 +680,9 @@ def run_stack(
     reassess: bool = False,
 ) -> None:
     repo.ensure_clone()
-    repo.fetch_origin()
+    # No global ``fetch_origin`` -- stack mode doesn't use origin/main,
+    # only the stack's own /head and /orig refs. The targeted batch
+    # fetch below is much faster than a full pytorch/pytorch fetch.
 
     members, pr_data_by_pr = resolve_stack(pr)
     log(f"resolved ghstack stack containing PR #{pr}: {len(members)} member(s)")
@@ -654,20 +692,17 @@ def run_stack(
     # Tag every member up front so other operators / mergedogs see the
     # whole stack is owned, then arrange to remove every label on any
     # exit path (success, halt, SIGTERM from ``mux cancel``, ctrl-c).
-    # Track which labels we actually applied so the cleanup is precise
-    # if some adds 502'd partway through.
     labelled: list[int] = []
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     try:
-        for m in members:
-            try:
-                github.add_label(m.pr, MERGEDOG_LABEL)
-                labelled.append(m.pr)
-            except Exception as e:
-                log(
-                    f"WARNING: failed to add {MERGEDOG_LABEL} to "
-                    f"PR #{m.pr}: {e}"
-                )
+        labelled = _add_mergedog_labels_parallel(members)
+
+        # One batched ``git fetch`` for every member's /head + /orig.
+        # _setup_member then reads SHAs out of this dict instead of
+        # making per-member round-trips.
+        ref_state = repo.fetch_stack_refs(
+            [(m.head_ref, m.orig_ref) for m in members]
+        )
 
         viewer = github.viewer_login()
         contexts: list[_MemberCtx] = []
@@ -675,6 +710,8 @@ def run_stack(
             ctx = _setup_member(
                 m,
                 pr_data_by_pr[m.pr],
+                origin_head_sha=ref_state[m.head_ref],
+                origin_orig_sha=ref_state[m.orig_ref],
                 accept_divergence=accept_divergence,
                 viewer=viewer,
             )
