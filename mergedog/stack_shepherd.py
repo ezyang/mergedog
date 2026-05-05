@@ -27,6 +27,7 @@ once the stack work has settled.
 from __future__ import annotations
 
 import signal
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -899,13 +900,26 @@ def run_stack(
             ctx.member.pr: [] for ctx in contexts
         }
         while True:
-            took_action = _scheduler_tick(
-                contexts,
-                worktree,
-                sessions_by_pr,
-                ignore_sev=ignore_sev,
-                force_ghstack=force_ghstack,
-            )
+            try:
+                took_action = _scheduler_tick(
+                    contexts,
+                    worktree,
+                    sessions_by_pr,
+                    ignore_sev=ignore_sev,
+                    force_ghstack=force_ghstack,
+                )
+            except subprocess.CalledProcessError as e:
+                # Transient gh/git subprocess failure (GraphQL 504, fetch
+                # hiccup, etc.). Don't crash the whole shepherd -- log,
+                # treat as "no action this tick", and re-tick after a
+                # sleep. die()-style halts raise SystemExit, which
+                # bypasses this handler.
+                cmd = e.cmd[0] if isinstance(e.cmd, list) and e.cmd else "?"
+                log(
+                    f"WARNING: tick failed transiently ({cmd} exit "
+                    f"{e.returncode}); will retry next tick"
+                )
+                took_action = False
             if _all_trunk_green_stable(contexts, time.time()):
                 log(
                     "all members trunk-green; posting handoff "
