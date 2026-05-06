@@ -26,6 +26,11 @@ STATE_DIR = ROOT / "state"
 CONTEXTS_DIR = ROOT / "contexts"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
 PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
+# Curated list of PRs the mux is tracking. Distinct from STATE_DIR --
+# the latter is per-PR shepherd state authored by the shepherd itself,
+# and includes PRs the mux has since dropped. This file is mux's own
+# subscription list and is the source of truth for ``--resume-known``.
+MUX_PRS_FILE = ROOT / "mux-prs.json"
 
 REPO_SSH_URL = "git@github.com:pytorch/pytorch.git"
 REPO_SLUG = "pytorch/pytorch"

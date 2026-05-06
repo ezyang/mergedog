@@ -25,6 +25,7 @@ Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import signal
@@ -65,8 +66,8 @@ from textual.widgets import DataTable, Input  # noqa: E402
 from mergedog import repo as repo_mod  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.paths import (  # noqa: E402
+    MUX_PRS_FILE,
     ROOT,
-    STATE_DIR,
     context_file,
     ensure_dirs,
     state_file,
@@ -85,16 +86,49 @@ def _last_log_line(path: Path) -> str:
     return tail.rstrip()
 
 
-def _known_prs() -> list[int]:
-    if not STATE_DIR.exists():
+def _read_mux_prs() -> list[int]:
+    """Curated list of PRs the mux is tracking.
+
+    Stored at ``MUX_PRS_FILE`` so a restart only resumes PRs the operator
+    explicitly added -- not every stale ``state/<pr>.json`` left behind
+    by a long-since-merged shepherd.
+    """
+    if not MUX_PRS_FILE.exists():
         return []
-    out: list[int] = []
-    for p in STATE_DIR.glob("*.json"):
+    try:
+        data = json.loads(MUX_PRS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    out: set[int] = set()
+    for x in data:
         try:
-            out.append(int(p.stem))
-        except ValueError:
+            out.add(int(x))
+        except (TypeError, ValueError):
             continue
     return sorted(out)
+
+
+def _write_mux_prs(prs: list[int]) -> None:
+    MUX_PRS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MUX_PRS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(sorted(set(prs))))
+    os.replace(tmp, MUX_PRS_FILE)
+
+
+def _add_mux_pr(pr: int) -> None:
+    prs = set(_read_mux_prs())
+    if pr in prs:
+        return
+    prs.add(pr)
+    _write_mux_prs(sorted(prs))
+
+
+def _remove_mux_pr(pr: int) -> None:
+    prs = set(_read_mux_prs())
+    if pr not in prs:
+        return
+    prs.discard(pr)
+    _write_mux_prs(sorted(prs))
 
 
 def _spawn(pr: int, extra: list[str]) -> tuple[subprocess.Popen, object, Path]:
@@ -189,6 +223,8 @@ class MuxApp(App):
             self.procs[pr] = _spawn(pr, self._shepherd_args(extra))
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
+            return
+        _add_mux_pr(pr)
 
     @work(thread=True, exclusive=True, group="rebase-all")
     def _do_rebase_all(self) -> None:
@@ -308,6 +344,7 @@ class MuxApp(App):
             repo_mod.wipe_worktree(pr)
         except Exception:
             pass
+        _remove_mux_pr(pr)
         self.notify(f"[{pr}] pruned (PR no longer open)")
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
@@ -399,7 +436,10 @@ def main() -> int:
     parser.add_argument(
         "--resume-known",
         action="store_true",
-        help="Start a shepherd for every PR with state on disk.",
+        help=(
+            "Start a shepherd for every PR in the mux-tracked list "
+            f"({MUX_PRS_FILE})."
+        ),
     )
     parser.add_argument(
         "--ignore-sev",
@@ -429,7 +469,7 @@ def main() -> int:
 
     initial: list[int] = []
     if args.resume_known:
-        initial.extend(_known_prs())
+        initial.extend(_read_mux_prs())
     for raw in args.prs:
         try:
             initial.append(_parse_pr(raw))
