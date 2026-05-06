@@ -697,17 +697,25 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
 def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> list[tuple[str, str]]:
     """Return ``(name, log_excerpt)`` pairs for failing jobs on the PR head."""
     checks = get_pr_checks_all(pr)
+    terminal_states = {"FAILURE", "STARTUP_FAILURE", "TIMED_OUT", "ERROR"}
     failed = [
         c
         for c in checks
         if c.get("bucket") in ("fail", "cancel")
-        or c.get("state") in ("FAILURE", "STARTUP_FAILURE", "TIMED_OUT")
+        or c.get("state") in terminal_states
     ]
     out: list[tuple[str, str]] = []
     for c in failed[:max_jobs]:
         link = c.get("link") or ""
         run_id, job_id = _parse_run_link(link)
         if run_id is None:
+            continue
+        # dr.ci may classify a check as bucket=fail before the Actions
+        # run finishes (pattern-based prediction).  gh run view --log-failed
+        # can't fetch logs for in-progress runs, so skip them and let the
+        # deferral loop retry once the run completes.
+        if c.get("state") not in terminal_states:
+            out.append((c.get("name", "<unknown>"), "<no log available>"))
             continue
         args = ["run", "view", str(run_id), "--repo", REPO, "--log-failed"]
         if job_id is not None:
