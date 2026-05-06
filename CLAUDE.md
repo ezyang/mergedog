@@ -1,3 +1,11 @@
+# Python environment
+
+If no virtual environment is active, activate `.venv` before running Python or installing packages:
+
+```
+source .venv/bin/activate
+```
+
 # Commit cadence
 
 Commit proactively at natural breakpoints — don't wait to be asked.

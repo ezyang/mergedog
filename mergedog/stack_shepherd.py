@@ -916,11 +916,18 @@ def run_stack(
             if not took_action:
                 time.sleep(POLL_INTERVAL_SEC)
     finally:
-        for pr_num in labelled:
-            try:
-                github.remove_label(pr_num, MERGEDOG_LABEL)
-            except Exception as e:
-                log(
-                    f"WARNING: failed to remove {MERGEDOG_LABEL} from "
-                    f"PR #{pr_num}: {e}"
-                )
+        if labelled:
+            with ThreadPoolExecutor(max_workers=len(labelled)) as ex:
+                futures = {
+                    ex.submit(github.remove_label, pr_num, MERGEDOG_LABEL): pr_num
+                    for pr_num in labelled
+                }
+                for fut in as_completed(futures):
+                    pr_num = futures[fut]
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        log(
+                            f"WARNING: failed to remove {MERGEDOG_LABEL} from "
+                            f"PR #{pr_num}: {e}"
+                        )
