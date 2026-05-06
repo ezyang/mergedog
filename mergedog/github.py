@@ -713,7 +713,10 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
         if job_id is not None:
             args += ["--job", str(job_id)]
         proc = _gh(args, check=False)
-        text = proc.stdout or proc.stderr or "<no log available>"
+        if proc.returncode != 0:
+            text = "<no log available>"
+        else:
+            text = proc.stdout or "<no log available>"
         text = _trim_log_for_prompt(text, max_chars)
         out.append((c.get("name", "<unknown>"), text))
     return out
