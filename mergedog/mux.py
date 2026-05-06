@@ -65,6 +65,46 @@ from textual import work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.widgets import DataTable, Input  # noqa: E402
 
+
+class HistoryInput(Input):
+    """Input widget with rlwrap-style command history (Up/Down arrows)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int = 0
+        self._saved_line: str = ""
+
+    def _on_key(self, event) -> None:
+        if event.key == "up":
+            event.prevent_default()
+            event.stop()
+            if not self._history:
+                return
+            if self._history_index == len(self._history):
+                self._saved_line = self.value
+            if self._history_index > 0:
+                self._history_index -= 1
+                self.value = self._history[self._history_index]
+                self.cursor_position = len(self.value)
+        elif event.key == "down":
+            event.prevent_default()
+            event.stop()
+            if self._history_index < len(self._history) - 1:
+                self._history_index += 1
+                self.value = self._history[self._history_index]
+                self.cursor_position = len(self.value)
+            elif self._history_index == len(self._history) - 1:
+                self._history_index = len(self._history)
+                self.value = self._saved_line
+                self.cursor_position = len(self.value)
+
+    def record(self, line: str) -> None:
+        if line and (not self._history or self._history[-1] != line):
+            self._history.append(line)
+        self._history_index = len(self._history)
+        self._saved_line = ""
+
 from mergedog import repo as repo_mod  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.paths import (  # noqa: E402
@@ -239,7 +279,7 @@ class MuxApp(App):
 
     def compose(self) -> ComposeResult:
         yield DataTable()
-        yield Input(
+        yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
                 "cancel <pr> | remove <pr> | log <pr> | ignore-sev [on|off] | quit"
@@ -253,7 +293,7 @@ class MuxApp(App):
             self._do_add(pr, [])
         self._refresh()
         self.set_interval(2.0, self._refresh)
-        self.query_one(Input).focus()
+        self.query_one(HistoryInput).focus()
 
     def _shepherd_args(self, extra: list[str]) -> list[str]:
         """Apply mux-wide defaults to a shepherd argv tail."""
@@ -413,6 +453,8 @@ class MuxApp(App):
     def on_input_submitted(self, message: Input.Submitted) -> None:
         line = message.value.strip()
         message.input.value = ""
+        if line:
+            message.input.record(line)
         if not line:
             return
         try:
