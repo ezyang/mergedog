@@ -701,12 +701,15 @@ def _scheduler_tick(
     Returns True if an action was taken (re-tick immediately); False
     if we should sleep before re-ticking.
     """
-    # Refresh local origin refs (single git fetch for all members'
-    # /head + /orig), then trust + metadata refresh per member.
-    _refresh_stack_refs(contexts)
+    # Check GitHub for head SHA changes + fresh metadata per member.
+    # Only git-fetch refs when a head actually moved -- avoids a
+    # redundant ``git fetch origin`` every tick while CI is pending.
+    prev_heads = {ctx.member.pr: ctx.head_sha for ctx in contexts}
     for ctx in contexts:
         _refresh_member_head(ctx)
         _refresh_member_pr_data(ctx)
+    if any(ctx.head_sha != prev_heads[ctx.member.pr] for ctx in contexts):
+        _refresh_stack_refs(contexts)
 
     # Approve any approval-pending workflow runs across the stack. If
     # we approved anything, re-tick after a short settle so the new
