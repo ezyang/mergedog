@@ -141,13 +141,24 @@ def post_handoff_comment(
 PYTORCHMERGEBOT_LOGIN = "pytorchmergebot"
 
 
+_RETRYABLE_FAILURE_PATTERNS = [
+    "HTTP Error 504",
+    "Gateway Timeout",
+]
+
+
+def is_retryable_merge_failure(body: str) -> bool:
+    """True when a pytorchmergebot "Merge failed" is an infra flake."""
+    return any(pat in body for pat in _RETRYABLE_FAILURE_PATTERNS)
+
+
 def _latest_mergebot_event(
     pr: int, since_iso: str
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str] | None:
     """Classify pytorchmergebot's reply to a `@pytorchbot merge` request.
 
     Looks at pytorchmergebot comments newer than ``since_iso`` and returns
-    ``(kind, created_at)`` for the most recent relevant comment, where
+    ``(kind, created_at, body)`` for the most recent relevant comment, where
     ``kind`` is one of:
       - ``"failed"``  -- comment carries "Merge failed"
       - ``"started"`` -- comment carries "Merge started" (merge in progress)
@@ -167,10 +178,10 @@ def _latest_mergebot_event(
     body = latest.get("body") or ""
     iso = latest.get("created_at") or ""
     if "Merge failed" in body:
-        return "failed", iso
+        return "failed", iso, body
     if "Merge started" in body:
-        return "started", iso
-    return "other", iso
+        return "started", iso, body
+    return "other", iso, body
 
 
 _POLL_INTERVAL_SEC = 60
@@ -200,17 +211,19 @@ def _merging_progress_line(pr: int) -> str:
     return body
 
 
-def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
+def watch_post_handoff(
+    pr: int, since_iso: str
+) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
     ``since_iso`` is the floor for "what counts as new pytorchmergebot
     activity": typically ``max(handoff_comment_iso, last_observed_failure_iso)``
     so a restart doesn't re-fire on a failure we already halted on.
 
-    Returns ``(kind, event_iso)``:
-      - ``("closed", None)``     -- PR is no longer ``OPEN`` (merged or
+    Returns ``(kind, event_iso, body)``:
+      - ``("closed", None, None)``     -- PR is no longer ``OPEN`` (merged or
         closed by hand); caller should auto-prune.
-      - ``("failed", event_iso)`` -- pytorchmergebot reported a merge
+      - ``("failed", event_iso, body)`` -- pytorchmergebot reported a merge
         failure; caller should persist ``event_iso`` so a future restart
         won't re-react to the same comment.
     """
@@ -223,12 +236,12 @@ def watch_post_handoff(pr: int, since_iso: str) -> tuple[str, str | None]:
         set_merging(merging)
         set_approved(approved)
         if pr_data.get("state") != "OPEN":
-            return "closed", None
+            return "closed", None, None
         event = _latest_mergebot_event(pr, since_iso)
         kind = event[0] if event else None
         if kind == "failed":
             log("pytorchmergebot reported merge failure; halting")
-            return "failed", event[1]
+            return "failed", event[1], event[2]
         if merging:
             msg = _merging_progress_line(pr)
             if msg != last_merging_msg:

@@ -15,6 +15,7 @@ from mergedog import context as context_mod
 from mergedog import github, interventions, labels, repo
 from mergedog.handoff import (
     ClaudeSession,
+    is_retryable_merge_failure,
     post_handoff_comment,
     utc_now_iso,
     watch_post_handoff,
@@ -87,6 +88,7 @@ TRUNK_LABEL = "ciflow/trunk"
 # exit path (success, HALT, SIGTERM from ``mux cancel``, ctrl-c).
 MERGEDOG_LABEL = "mergedog"
 MAX_FIX_COMMITS = 5  # safety cap; halt if claude keeps pushing fixes
+MAX_MERGE_AUTO_RETRIES = 3  # cap retries for infra-flake merge failures
 # When CI flips to failed, ``gh run view --log-failed`` often returns nothing
 # for the first few seconds because GitHub hasn't published the log yet.
 # Calling claude on a content-free prompt nearly guarantees a "spurious"
@@ -776,12 +778,8 @@ def _shepherd_body(
 
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
-    # Bumped each time pytorchmergebot reports "Merge failed" and we loop
-    # back into CI inspection. Used only to vary the handoff comment
-    # framing on subsequent passes; we don't cap recoveries -- each one
-    # requires a human to re-run ``@pytorchbot merge``, so a runaway loop
-    # is impossible without active human help.
     recovery_attempts = 0
+    auto_retries = 0
 
     # User-requested upfront merge of origin/main. Default behavior
     # otherwise is to never auto-rebase based on age -- mergedog only
@@ -1148,7 +1146,7 @@ def _shepherd_body(
             f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
         )
 
-        result, event_iso = watch_post_handoff(pr, since_iso)
+        result, event_iso, fail_body = watch_post_handoff(pr, since_iso)
         if result == "closed":
             die(
                 "PR is no longer open; pruning local shepherd state",
@@ -1157,12 +1155,29 @@ def _shepherd_body(
         # result == "failed": pytorchmergebot rejected the merge. Persist
         # the failure timestamp so we don't re-fire on this same comment,
         # then loop back to CI inspection -- claude can judge spurious or
-        # push a fix. mergedog never re-triggers ``@pytorchbot merge`` on
-        # its own; the next handoff comment cues the human to do that.
+        # push a fix.
         assert event_iso is not None
         trust.last_observed_failure_iso = event_iso
         trust.save()
         recovery_attempts += 1
+
+        if fail_body and is_retryable_merge_failure(fail_body):
+            if auto_retries < MAX_MERGE_AUTO_RETRIES:
+                auto_retries += 1
+                log(
+                    f"pytorchmergebot merge failure is retryable (infra flake); "
+                    f"auto-retrying `@pytorchbot merge` "
+                    f"({auto_retries}/{MAX_MERGE_AUTO_RETRIES})"
+                )
+                github.post_pr_comment(pr, "@pytorchbot merge")
+                pr_data = github.get_pr(pr)
+                continue
+            log(
+                f"retryable merge failure but exhausted "
+                f"{MAX_MERGE_AUTO_RETRIES} auto-retries; falling through "
+                f"to manual recovery"
+            )
+
         log(
             "pytorchmergebot reported merge failure; re-inspecting CI "
             "(mergedog will not retrigger merge -- a human owns the next "
