@@ -12,7 +12,7 @@ from pathlib import Path
 
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
-from mergedog import github, interventions, repo
+from mergedog import github, interventions, labels, repo
 from mergedog.handoff import (
     ClaudeSession,
     post_handoff_comment,
@@ -771,6 +771,8 @@ def _shepherd_body(
     else:
         log(f"  fork:       {fork_remote} -> {fork_url}")
     log(f"  worktree:   {worktree}")
+
+    labels.autolabel_if_needed(pr, pr_data)
 
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []

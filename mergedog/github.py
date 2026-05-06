@@ -386,6 +386,29 @@ def latest_mergedog_handoff_iso(pr: int) -> str | None:
     return max(matches) if matches else None
 
 
+def get_repo_labels(per_page: int = 100) -> list[dict]:
+    """Return all labels defined on the repo, with name and description."""
+    labels: list[dict] = []
+    page = 1
+    while True:
+        data = _gh_json(
+            [
+                "api",
+                f"repos/{REPO}/labels?per_page={per_page}&page={page}",
+            ]
+        )
+        if not data:
+            break
+        for l in data:
+            labels.append(
+                {"name": l.get("name", ""), "description": l.get("description") or ""}
+            )
+        if len(data) < per_page:
+            break
+        page += 1
+    return labels
+
+
 def get_commit_subject(sha: str) -> str:
     data = _gh_json(["api", f"repos/{REPO}/commits/{sha}"])
     msg = data.get("commit", {}).get("message", "")
