@@ -8,18 +8,52 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from typing import Any
 
+from mergedog.log import log
 from mergedog.paths import REPO_SLUG
 from mergedog.process import run
 
 REPO = REPO_SLUG
 
+_GH_TRANSIENT_CODES = ("502", "504", "503")
+_GH_MAX_RETRIES = 3
+_GH_RETRY_DELAY = 5  # seconds
+
+
+def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
+    """True if the gh CLI failed due to a transient HTTP error."""
+    if proc.returncode == 0:
+        return False
+    stderr = proc.stderr or ""
+    return any(code in stderr for code in _GH_TRANSIENT_CODES)
+
 
 def _gh(
     args: list[str], *, check: bool = True, loud: bool = False
 ) -> subprocess.CompletedProcess[str]:
-    return run(["gh", *args], check=check, loud=loud)
+    for attempt in range(_GH_MAX_RETRIES):
+        proc = run(["gh", *args], check=False, loud=(loud and attempt == 0))
+        if proc.returncode == 0 or not _is_transient_gh_failure(proc):
+            if check and proc.returncode != 0:
+                # Replicate the stderr logging that run(check=True) does.
+                err = (proc.stderr or "").rstrip()
+                if err:
+                    log(f"  ! gh {' '.join(args[:3])}")
+                    for line in err.splitlines():
+                        log(f"    stderr: {line}")
+                proc.check_returncode()
+            return proc
+        log(
+            f"  ! gh transient failure (attempt {attempt + 1}/{_GH_MAX_RETRIES}), "
+            f"retrying in {_GH_RETRY_DELAY}s"
+        )
+        time.sleep(_GH_RETRY_DELAY)
+    # All retries exhausted; let it through (raise if check=True).
+    if check:
+        proc.check_returncode()
+    return proc
 
 
 def _gh_json(args: list[str]) -> Any:
