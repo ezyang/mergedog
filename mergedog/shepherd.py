@@ -779,6 +779,8 @@ def _shepherd_body(
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
     recovery_attempts = 0
+    # Auto-retries for infra-flake merge failures (e.g. 504). Capped at
+    # MAX_MERGE_AUTO_RETRIES to prevent runaway commenting during outages.
     auto_retries = 0
 
     # User-requested upfront merge of origin/main. Default behavior
