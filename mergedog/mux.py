@@ -72,10 +72,49 @@ from mergedog.paths import (  # noqa: E402
     context_file,
     ensure_dirs,
     state_file,
+    worktree_dir,
 )
 from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
+
+TITLE_TRUNC = 20
+
+
+def _read_pr_title(pr: int) -> str:
+    """Best-effort PR title from the worktree's HEAD subject.
+
+    ``--invert-grep`` skips ``[MERGEDOG]`` commits so an in-flight
+    merge-main doesn't replace the actual contributor title with the
+    merge commit's subject. Returns "" if the worktree doesn't exist
+    yet (shepherd just spawned) or git fails -- the caller will retry.
+    """
+    wt = worktree_dir(pr)
+    if not wt.exists():
+        return ""
+    try:
+        proc = subprocess.run(
+            [
+                "git", "log", "-1", "--pretty=%s",
+                "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
+            ],
+            cwd=wt,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _truncate_title(title: str, n: int = TITLE_TRUNC) -> str:
+    if len(title) <= n:
+        return title
+    return title[: n - 1] + "…"
 
 
 def _last_log_line(path: Path) -> str:
@@ -184,6 +223,11 @@ class MuxApp(App):
     def __init__(self, initial: list[int], *, ignore_sev: bool = False) -> None:
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
+        # Cache of PR titles read from the worktree HEAD subject. Populated
+        # lazily on refresh once a shepherd has set up its worktree, and
+        # popped on any user-driven mutation (add/restart/rebase/cancel) so
+        # the next refresh picks up a possibly-changed title.
+        self._pr_titles: dict[int, str] = {}
         self._initial = initial
         # Mux-wide default for ``--ignore-sev``. When True, every shepherd
         # spawn gets the flag injected so newly added (or rebase-respawned)
@@ -203,7 +247,7 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "", "Last")
+        table.add_columns("PR", "Title", "", "Last")
         for pr in self._initial:
             self._do_add(pr, [])
         self._refresh()
@@ -225,6 +269,7 @@ class MuxApp(App):
         except Exception as e:
             self.notify(f"[{pr}] failed: {e}", severity="error")
             return
+        self._pr_titles.pop(pr, None)
         _add_mux_pr(pr)
 
     @work(thread=True, exclusive=True, group="rebase-all")
@@ -258,6 +303,7 @@ class MuxApp(App):
                 self.procs[pr] = _spawn(pr, rebase_args)
             except Exception as e:
                 self.notify(f"[{pr}] failed: {e}", severity="error")
+            self._pr_titles.pop(pr, None)
         self.notify(f"rebasing {len(prs)} PR(s)")
 
     def _do_ignore_sev(self, rest: list[str]) -> None:
@@ -312,6 +358,11 @@ class MuxApp(App):
             else:
                 state = "🔴"
             last = _last_log_line(log_path)
+            title = self._pr_titles.get(pr, "")
+            if not title:
+                title = _read_pr_title(pr)
+                if title:
+                    self._pr_titles[pr] = title
             # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
             # the worktree path is omitted from the table entirely now,
             # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
@@ -320,7 +371,7 @@ class MuxApp(App):
                 str(pr),
                 style=f"link https://github.com/pytorch/pytorch/pull/{pr}",
             )
-            table.add_row(pr_cell, state, last)
+            table.add_row(pr_cell, _truncate_title(title), state, last)
 
     def _prune_pr(self, pr: int) -> None:
         """Forget a shepherd and clean up its on-disk state.
@@ -346,6 +397,7 @@ class MuxApp(App):
         except Exception:
             pass
         _remove_mux_pr(pr)
+        self._pr_titles.pop(pr, None)
         self.notify(f"[{pr}] pruned (PR no longer open)")
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
