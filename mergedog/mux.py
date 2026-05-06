@@ -240,14 +240,14 @@ def _terminate_group(p: subprocess.Popen, *, grace: float = 5.0) -> None:
         return
     try:
         os.killpg(p.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        return
     try:
         p.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             p.wait(timeout=grace)
