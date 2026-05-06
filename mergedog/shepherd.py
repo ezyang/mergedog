@@ -818,6 +818,40 @@ def _shepherd_body(
                     reason="pushing merge-main commit", ignore_sev=ignore_sev,
                 )
 
+    # On restart, if the last observed failure was a merge conflict that
+    # we never resolved (e.g. old code didn't have conflict handling),
+    # proactively rebase now rather than waiting for a new failure.
+    if trust.last_observed_failure_body and is_merge_conflict_failure(
+        trust.last_observed_failure_body
+    ):
+        log(
+            "prior merge-conflict failure detected on restart; "
+            "rebasing onto main"
+        )
+        repo.fetch_origin()
+        if is_ghstack:
+            _rebase_ghstack_onto_main(
+                pr, worktree, branch, trust, ignore_sev=ignore_sev
+            )
+        else:
+            assert fork_remote is not None
+            new_sha = _merge_main_resolving_conflicts(
+                worktree, trust, branch, pr_data, sessions,
+                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+            )
+            if new_sha is not None:
+                log(
+                    f"pushing merge commit {new_sha[:12]} to "
+                    f"{fork_remote}/{branch}"
+                )
+                _safe_push(
+                    pr, worktree, fork_remote, branch, new_sha,
+                    reason="pushing merge-main commit after conflict",
+                    ignore_sev=ignore_sev,
+                )
+        trust.last_observed_failure_body = ""
+        trust.save()
+
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
 
     # Outer recovery loop: each iteration is one CI-inspect / claude-fix /
@@ -1187,6 +1221,7 @@ def _shepherd_body(
         # push a fix.
         assert event_iso is not None
         trust.last_observed_failure_iso = event_iso
+        trust.last_observed_failure_body = fail_body or ""
         trust.save()
         recovery_attempts += 1
 
@@ -1233,6 +1268,8 @@ def _shepherd_body(
                         reason="pushing merge-main commit after conflict",
                         ignore_sev=ignore_sev,
                     )
+            trust.last_observed_failure_body = ""
+            trust.save()
             last_status = None
             pr_data = github.get_pr(pr)
             continue

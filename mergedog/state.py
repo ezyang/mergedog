@@ -31,6 +31,9 @@ class TrustDB:
     # post-handoff watcher so a restart doesn't re-react to a failure we
     # already saw and exited on.
     last_observed_failure_iso: str = ""
+    # Body of the most recent pytorchmergebot failure comment, so that a
+    # restart can classify it (e.g. merge conflict) and act accordingly.
+    last_observed_failure_body: str = ""
     # Check names claude already judged spurious (unrelated to this PR).
     # Persisted so that a restart doesn't re-invoke claude for the same
     # failures. Cleared whenever a fix commit is pushed (fresh CI
@@ -50,6 +53,9 @@ class TrustDB:
                 head_repo_clone_url=data.get("head_repo_clone_url", ""),
                 last_observed_failure_iso=data.get(
                     "last_observed_failure_iso", ""
+                ),
+                last_observed_failure_body=data.get(
+                    "last_observed_failure_body", ""
                 ),
                 spurious_check_names=list(
                     data.get("spurious_check_names", [])
@@ -73,6 +79,7 @@ class TrustDB:
                 "head_branch": self.head_branch,
                 "head_repo_clone_url": self.head_repo_clone_url,
                 "last_observed_failure_iso": self.last_observed_failure_iso,
+                "last_observed_failure_body": self.last_observed_failure_body,
                 "spurious_check_names": self.spurious_check_names,
             },
             indent=2,
