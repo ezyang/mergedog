@@ -708,7 +708,7 @@ def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> No
 
 
 _PR_TRAILER_RE = __import__("re").compile(
-    r"Pull-Request(?:-Resolved)?:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
+    r"Pull[- ]Request(?:[- ][Rr]esolved)?:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
 )
 
 
