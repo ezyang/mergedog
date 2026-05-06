@@ -60,6 +60,18 @@ from mergedog.trust_seed import seed_trust_from_reviews
 
 
 @dataclass
+class _StackLogState:
+    """Tracks the last consolidated CI summary string for the whole stack.
+
+    Holding it stack-level (rather than per-ctx) lets us emit one log
+    line covering every member per tick instead of one line per member,
+    which is what mux's per-process pane needs to stay readable.
+    """
+
+    last_summary: str | None = None
+
+
+@dataclass
 class _MemberCtx:
     """Operational state for one stack member during a run.
 
@@ -263,22 +275,23 @@ def _refresh_context_for(ctx: _MemberCtx) -> tuple[Path, list[dict]]:
     return path, comments
 
 
-def _inspect_member(ctx: _MemberCtx) -> str:
-    """Update ctx with current CI status; return ``passed``/``failed``/``pending``.
+def _inspect_member(ctx: _MemberCtx) -> tuple[str, int, int]:
+    """Update ctx with current CI status; return ``(status, done, total)``.
 
     Also caches the post-spurious-override failing check names on the ctx
     so that other members' fix prompts can reference them as the "earlier
     stack" status block without making another checks API call.
+
+    Does not log; the consolidated stack-level summary is emitted by the
+    caller in ``_scheduler_tick``.
     """
     checks = github.get_pr_checks_all(ctx.member.pr)
     effective = _apply_spurious_overrides(checks, ctx.spurious_check_names)
     status = github.evaluate_checks(effective)
     done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
-    summary = f"{status} ({done}/{len(checks)} done)"
-    if summary != ctx.last_status:
-        log(f"PR #{ctx.member.pr} CI -> {summary}")
-        ctx.last_status = summary
-    observation = (status, len(checks))
+    total = len(checks)
+    ctx.last_status = f"{status} ({done}/{total} done)"
+    observation = (status, total)
     if ctx.stable_observation != observation:
         ctx.stable_observation = observation
         ctx.stable_since = time.time()
@@ -289,7 +302,27 @@ def _inspect_member(ctx: _MemberCtx) -> str:
         for c in effective
         if c.get("bucket") in {"fail", "cancel"} and c.get("name")
     )
-    return status
+    return status, done, total
+
+
+def _format_stack_summary(
+    inspections: list[tuple[_MemberCtx, str, int, int]],
+) -> str:
+    """Build one summary line covering the whole stack.
+
+    Headline status is worst-of: failed > pending > passed. Per-member
+    counts follow in stack order (bottom to top), since that matches the
+    natural ghstack reading order.
+    """
+    statuses = {s for _, s, _, _ in inspections}
+    if "failed" in statuses:
+        overall = "failed"
+    elif "pending" in statuses:
+        overall = "pending"
+    else:
+        overall = "passed"
+    counts = ", ".join(f"{done}/{total}" for _, _, done, total in inspections)
+    return f"{overall} ({counts} done)"
 
 
 def _reconstruct_stack_up_to(
@@ -657,6 +690,7 @@ def _scheduler_tick(
     contexts: list[_MemberCtx],
     worktree: Path,
     sessions_by_pr: dict[int, list[ClaudeSession]],
+    log_state: _StackLogState,
     *,
     ignore_sev: bool,
     force_ghstack: bool,
@@ -686,12 +720,21 @@ def _scheduler_tick(
         time.sleep(APPROVAL_SETTLE_SEC)
         return True
 
-    # Inspect every member. Bottom-first iteration order doesn't
-    # matter for inspection itself, but it makes the log line ordering
-    # match the natural stack reading order.
-    member_status: list[tuple[_MemberCtx, str]] = []
+    # Inspect every member. Bottom-first iteration order is what the
+    # consolidated summary line uses to lay out the per-member counts.
+    inspections: list[tuple[_MemberCtx, str, int, int]] = []
     for ctx in contexts:
-        member_status.append((ctx, _inspect_member(ctx)))
+        status, done, total = _inspect_member(ctx)
+        inspections.append((ctx, status, done, total))
+
+    summary = _format_stack_summary(inspections)
+    if summary != log_state.last_summary:
+        log(f"stack CI -> {summary}")
+        log_state.last_summary = summary
+
+    member_status: list[tuple[_MemberCtx, str]] = [
+        (ctx, status) for ctx, status, _, _ in inspections
+    ]
 
     # Bottom-up: take the lowest failing member with actionable logs
     # and try to fix it. We don't try to classify "child-only bug" up
@@ -831,12 +874,14 @@ def run_stack(
         sessions_by_pr: dict[int, list[ClaudeSession]] = {
             ctx.member.pr: [] for ctx in contexts
         }
+        log_state = _StackLogState()
         while True:
             try:
                 took_action = _scheduler_tick(
                     contexts,
                     worktree,
                     sessions_by_pr,
+                    log_state,
                     ignore_sev=ignore_sev,
                     force_ghstack=force_ghstack,
                     extra_context=extra_context,
