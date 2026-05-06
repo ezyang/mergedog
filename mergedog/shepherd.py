@@ -325,13 +325,18 @@ def _fork_ssh_url(pr_data: dict) -> str:
     return f"git@github.com:{owner}/{name}.git"
 
 
-def _refresh_context_file(pr_data: dict) -> tuple[Path, list[dict]]:
+def _refresh_context_file(
+    pr_data: dict, *, trusted: bool = True
+) -> tuple[Path, list[dict]]:
     """Rebuild the per-PR sidecar from the latest title/body/comments.
 
     Refreshed before each claude invocation so that comments added partway
     through a shepherd run show up in the agent's context. Returns both the
     sidecar path and the raw comments list so callers can pull out trusted
     snippets (e.g., dr. ci summary) without re-fetching.
+
+    When *trusted* is False (external contributor PR), the description and
+    non-bot comments are omitted to prevent prompt injection via PR text.
     """
     pr = pr_data["number"]
     comments = github.get_pr_comments(pr)
@@ -341,6 +346,7 @@ def _refresh_context_file(pr_data: dict) -> tuple[Path, list[dict]]:
         title=pr_data.get("title", ""),
         body=pr_data.get("body", "") or "",
         comments=comments,
+        trusted=trusted,
     )
     path = context_file(pr)
     context_mod.write_context_file(path, text)
@@ -589,6 +595,7 @@ def _merge_main_resolving_conflicts(
     sessions: list[ClaudeSession],
     *,
     ignore_sev: bool,
+    trusted_pr: bool = True,
 ) -> str | None:
     """Merge a known-good point on main into HEAD, resolving conflicts via claude.
 
@@ -617,7 +624,7 @@ def _merge_main_resolving_conflicts(
 
     if status == "conflict":
         log("merge produced conflicts; asking claude to resolve")
-        ctx_path, _ = _refresh_context_file(pr_data)
+        ctx_path, _ = _refresh_context_file(pr_data, trusted=trusted_pr)
         prompt = render_merge_conflict_prompt(
             url=pr_data.get("url", ""),
             branch=branch,
@@ -735,6 +742,7 @@ def _shepherd_body(
 
     viewer = github.viewer_login()
     self_pr = github.is_self_pr(pr_data, viewer)
+    trusted_pr = self_pr or is_ghstack
     if self_pr:
         log(f"PR authored by current user ({viewer}); skipping approval gate")
     seed_trust_from_reviews(
@@ -796,7 +804,8 @@ def _shepherd_body(
         else:
             log("user requested upfront rebase onto origin/main")
             new_sha = _merge_main_resolving_conflicts(
-                worktree, trust, branch, pr_data, sessions, ignore_sev=ignore_sev
+                worktree, trust, branch, pr_data, sessions,
+                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
             )
             if new_sha is not None:
                 log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
@@ -999,7 +1008,9 @@ def _shepherd_body(
                     continue
 
                 log(f"invoking claude on failing CI ({log_state})")
-                ctx_path, comments = _refresh_context_file(pr_data)
+                ctx_path, comments = _refresh_context_file(
+                    pr_data, trusted=trusted_pr
+                )
                 trunk_ctx = repo.trunk_revert_context(worktree)
                 effective_extra = extra_context or ""
                 if trunk_ctx:
@@ -1093,7 +1104,7 @@ def _shepherd_body(
                     # testing the fix against a stale base.
                     merge_sha = _merge_main_resolving_conflicts(
                         worktree, trust, branch, pr_data, sessions,
-                        ignore_sev=ignore_sev,
+                        ignore_sev=ignore_sev, trusted_pr=trusted_pr,
                     )
                     final_sha = merge_sha if merge_sha is not None else new_sha
                     log(

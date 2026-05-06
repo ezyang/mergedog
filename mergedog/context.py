@@ -17,6 +17,16 @@ from pathlib import Path
 from mergedog.sanitize import sanitize_untrusted_markdown
 
 
+_TRUSTED_COMMENT_AUTHORS = frozenset(
+    {
+        "pytorch-bot",
+        "pytorch-bot[bot]",
+        "pytorchmergebot",
+        "facebook-github-bot",
+    }
+)
+
+
 def render_context(
     *,
     pr: int,
@@ -24,6 +34,7 @@ def render_context(
     title: str,
     body: str,
     comments: list[dict],
+    trusted: bool = True,
 ) -> str:
     parts: list[str] = [
         f"PR #{pr}",
@@ -31,12 +42,19 @@ def render_context(
         "",
         "[TITLE]",
         sanitize_untrusted_markdown(title or ""),
-        "",
-        "[DESCRIPTION]",
-        sanitize_untrusted_markdown(body) if body else "(no description)",
     ]
+    if trusted:
+        parts.extend(
+            [
+                "",
+                "[DESCRIPTION]",
+                sanitize_untrusted_markdown(body) if body else "(no description)",
+            ]
+        )
     for c in comments:
         author = c.get("author", "?")
+        if not trusted and author not in _TRUSTED_COMMENT_AUTHORS:
+            continue
         created = c.get("created_at", "")
         parts.extend(
             [

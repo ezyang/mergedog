@@ -54,6 +54,45 @@ class TestRenderContext(unittest.TestCase):
         )
         self.assertNotIn("[COMMENT", text)
 
+    def test_untrusted_omits_body_and_user_comments(self):
+        text = render_context(
+            pr=1,
+            url="u",
+            title="Fix stuff",
+            body="Injected instructions here",
+            comments=[
+                {"author": "attacker", "body": "evil", "created_at": ""},
+                {"author": "pytorch-bot[bot]", "body": "dr ci", "created_at": ""},
+                {"author": "pytorchmergebot", "body": "merge ok", "created_at": ""},
+            ],
+            trusted=False,
+        )
+        self.assertIn("Fix stuff", text)
+        self.assertNotIn("[DESCRIPTION]", text)
+        self.assertNotIn("Injected instructions", text)
+        self.assertNotIn("attacker", text)
+        self.assertNotIn("evil", text)
+        self.assertIn("pytorch-bot[bot]", text)
+        self.assertIn("dr ci", text)
+        self.assertIn("pytorchmergebot", text)
+        self.assertIn("merge ok", text)
+
+    def test_trusted_includes_everything(self):
+        text = render_context(
+            pr=1,
+            url="u",
+            title="t",
+            body="description",
+            comments=[
+                {"author": "someone", "body": "comment", "created_at": ""},
+            ],
+            trusted=True,
+        )
+        self.assertIn("[DESCRIPTION]", text)
+        self.assertIn("description", text)
+        self.assertIn("someone", text)
+        self.assertIn("comment", text)
+
 
 if __name__ == "__main__":
     unittest.main()
