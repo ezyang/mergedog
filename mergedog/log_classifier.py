@@ -13,6 +13,7 @@ Algorithm (matching the Rust implementation):
 from __future__ import annotations
 
 import re
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,25 +65,50 @@ def _get_rules() -> list[Rule]:
     return _RULES
 
 
+_CLASSIFY_TIMEOUT_SEC = 5
+
+
+class _RegexTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum: int, frame: object) -> None:
+    raise _RegexTimeout
+
+
 def classify(lines: list[str]) -> Match | None:
     """Find the highest-priority rule match, scanning lines in reverse."""
     rules = _get_rules()
     best: Match | None = None
-    for rule in rules:
-        if best is not None and rule.priority >= best.priority:
-            # Can't beat current best — skip (rules are sorted by priority).
-            continue
-        for line_num in range(len(lines) - 1, -1, -1):
-            m = rule.pattern.search(lines[line_num])
-            if m:
-                captures = m.groups() if m.groups() else (m.group(0),)
-                candidate = Match(
-                    rule_name=rule.name,
-                    line=lines[line_num],
-                    line_num=line_num,
-                    captures=captures,
-                    priority=rule.priority,
-                )
-                best = candidate
-                break  # last match for this rule found; move to next rule
+    prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    try:
+        signal.alarm(_CLASSIFY_TIMEOUT_SEC)
+        for rule in rules:
+            if best is not None and rule.priority >= best.priority:
+                continue
+            try:
+                for line_num in range(len(lines) - 1, -1, -1):
+                    m = rule.pattern.search(lines[line_num])
+                    if m:
+                        captures = m.groups() if m.groups() else (m.group(0),)
+                        candidate = Match(
+                            rule_name=rule.name,
+                            line=lines[line_num],
+                            line_num=line_num,
+                            captures=captures,
+                            priority=rule.priority,
+                        )
+                        best = candidate
+                        break
+            except _RegexTimeout:
+                # Catastrophic backtracking on this rule; skip it and
+                # reset the alarm for remaining rules.
+                signal.alarm(_CLASSIFY_TIMEOUT_SEC)
+                continue
+        signal.alarm(0)
+    except _RegexTimeout:
+        pass
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev_handler)
     return best
