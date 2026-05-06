@@ -878,6 +878,29 @@ def _shepherd_body(
                 checks, spurious_check_names
             )
             status = github.evaluate_checks(effective_checks)
+
+            # Cross-check: gh pr checks (check-run API) can disagree
+            # with the workflow-run API.  When a failed job is re-run
+            # and the retry passes, gh pr checks shows the latest
+            # (passing) result, but the workflow conclusion stays
+            # "failure".  If any tracked workflow has conclusion=failure
+            # but no individual check is failing, fetch logs directly
+            # from the failed workflow runs instead.
+            workflow_failed_run_ids: list[int] = []
+            if status == "passed":
+                workflow_failed_run_ids = [
+                    run_id
+                    for run_id, (st, concl) in run_state_cache.items()
+                    if concl == "failure"
+                ]
+                if workflow_failed_run_ids:
+                    log(
+                        f"gh pr checks says passed but workflow run(s) "
+                        f"{workflow_failed_run_ids} have conclusion=failure; "
+                        f"treating as failed"
+                    )
+                    status = "failed"
+
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}
             )
@@ -917,11 +940,17 @@ def _shepherd_body(
                         f"intervention"
                     )
                 failed = github.get_failed_job_logs(pr)
+                if not failed and workflow_failed_run_ids:
+                    failed = github.get_failed_job_logs_for_runs(
+                        workflow_failed_run_ids
+                    )
                 failing_check_count = sum(
                     1
                     for c in checks
                     if c.get("bucket") in {"fail", "cancel"}
                 )
+                if not failing_check_count and workflow_failed_run_ids:
+                    failing_check_count = len(failed)
                 log_state = describe_log_state(failed, failing_check_count)
                 # GitHub publishes a job's log a few seconds after the job
                 # transitions to failed. Calling claude on an empty logs
@@ -968,7 +997,7 @@ def _shepherd_body(
                         for c in checks
                         if c.get("bucket") in {"fail", "cancel"}
                         and c.get("name")
-                    ),
+                    ) or [name for name, _ in failed],
                     is_ghstack=is_ghstack,
                     drci_summary=github.latest_drci_summary(
                         comments, head_sha=current

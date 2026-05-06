@@ -662,6 +662,54 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
     return out
 
 
+def get_failed_job_logs_for_runs(
+    run_ids: list[int], max_jobs: int = 8, max_chars: int = 30000
+) -> list[tuple[str, str]]:
+    """Return ``(name, log_excerpt)`` for failing jobs in specific workflow runs.
+
+    Used when the workflow-run API reports conclusion=failure but
+    ``gh pr checks`` disagrees (e.g. a re-run made the check-run API
+    show the latest passing attempt).
+    """
+    out: list[tuple[str, str]] = []
+    for run_id in run_ids:
+        proc = _gh(
+            ["run", "view", str(run_id), "--repo", REPO, "--log-failed"],
+            check=False,
+        )
+        if proc.returncode != 0 or not (proc.stdout or "").strip():
+            continue
+        jobs_proc = _gh(
+            ["api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"],
+            check=False,
+        )
+        if jobs_proc.returncode != 0:
+            continue
+        jobs_data = json.loads(jobs_proc.stdout)
+        failed_jobs = [
+            j
+            for j in (jobs_data.get("jobs") or [])
+            if j.get("conclusion") == "failure"
+        ]
+        for j in failed_jobs[:max_jobs - len(out)]:
+            name = j.get("name", f"<run {run_id}>")
+            job_id = j.get("id")
+            args = [
+                "run", "view", str(run_id), "--repo", REPO, "--log-failed",
+            ]
+            if job_id is not None:
+                args += ["--job", str(job_id)]
+            p = _gh(args, check=False)
+            text = p.stdout or p.stderr or "<no log available>"
+            text = _trim_log_for_prompt(text, max_chars)
+            out.append((name, text))
+            if len(out) >= max_jobs:
+                break
+        if len(out) >= max_jobs:
+            break
+    return out
+
+
 def _parse_run_link(link: str) -> tuple[int | None, int | None]:
     """Parse ``.../actions/runs/<run_id>[/job/<job_id>]`` out of a check link."""
     parts = link.rstrip("/").split("/")
