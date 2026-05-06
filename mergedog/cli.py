@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from mergedog import shepherd, stack_shepherd
+from mergedog import notify, shepherd, stack_shepherd
 
 
 def _parse_pr(value: str) -> int:
@@ -84,6 +84,15 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
             "inherited by every spawned shepherd automatically."
         ),
     )
+    parser.add_argument(
+        "--gchat-to",
+        metavar="USER",
+        help=(
+            "Send a Google Chat DM to USER (unixname) whenever the "
+            "shepherd HALTs and needs human intervention. Requires the "
+            "``meta`` CLI; silently skipped if ``meta`` is not installed."
+        ),
+    )
     extra = parser.add_mutually_exclusive_group()
     extra.add_argument(
         "--extra-context",
@@ -127,6 +136,8 @@ def _single_main(argv: list[str]) -> int:
     _add_common_flags(parser)
     args = parser.parse_args(argv)
 
+    notify.configure(pr=args.pr, gchat_to=args.gchat_to)
+
     try:
         shepherd.shepherd(
             args.pr,
@@ -165,6 +176,8 @@ def _stack_main(argv: list[str]) -> int:
         ),
     )
     args = parser.parse_args(argv)
+
+    notify.configure(pr=args.pr, gchat_to=args.gchat_to)
 
     try:
         stack_shepherd.run_stack(

@@ -263,7 +263,13 @@ class MuxApp(App):
 
     BINDINGS = [("ctrl+c", "quit", "Quit")]
 
-    def __init__(self, initial: list[int], *, ignore_sev: bool = False) -> None:
+    def __init__(
+        self,
+        initial: list[int],
+        *,
+        ignore_sev: bool = False,
+        gchat_to: str | None = None,
+    ) -> None:
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
         # Cache of PR titles read from the worktree HEAD subject. Populated
@@ -278,6 +284,7 @@ class MuxApp(App):
         # NOT auto-restarted on toggle -- use ``rebase all`` (or cancel +
         # add) to apply the new default to running PRs.
         self.ignore_sev = ignore_sev
+        self.gchat_to = gchat_to
 
     def compose(self) -> ComposeResult:
         yield DataTable()
@@ -299,9 +306,12 @@ class MuxApp(App):
 
     def _shepherd_args(self, extra: list[str]) -> list[str]:
         """Apply mux-wide defaults to a shepherd argv tail."""
-        if self.ignore_sev and "--ignore-sev" not in extra:
-            return ["--ignore-sev", *extra]
-        return list(extra)
+        out = list(extra)
+        if self.ignore_sev and "--ignore-sev" not in out:
+            out = ["--ignore-sev", *out]
+        if self.gchat_to and not any(a.startswith("--gchat-to") for a in out):
+            out = [f"--gchat-to={self.gchat_to}", *out]
+        return out
 
     def _do_add(self, pr: int, extra: list[str]) -> None:
         if pr in self.procs and self.procs[pr][0].poll() is None:
@@ -603,6 +613,16 @@ def main() -> int:
             "before any spawn, so every shepherd inherits it."
         ),
     )
+    parser.add_argument(
+        "--gchat-to",
+        metavar="USER",
+        help=(
+            "Send a Google Chat DM to USER (unixname) whenever a "
+            "shepherd HALTs and needs human intervention. Passed to "
+            "every spawned shepherd. Requires the ``meta`` CLI; "
+            "silently skipped if ``meta`` is not installed."
+        ),
+    )
     args = parser.parse_args()
 
     ensure_dirs()
@@ -620,7 +640,7 @@ def main() -> int:
 
     # ``mouse=False`` keeps the terminal's native selection / right-click
     # paste working. We don't actually click anything in the table.
-    app = MuxApp(initial, ignore_sev=args.ignore_sev)
+    app = MuxApp(initial, ignore_sev=args.ignore_sev, gchat_to=args.gchat_to)
     app.run(mouse=False)
     if hasattr(app, "_migrate_output"):
         print(app._migrate_output)

@@ -36,5 +36,8 @@ def log(msg: str) -> None:
 
 
 def die(msg: str, code: int = 1) -> None:
+    from mergedog import notify
+
+    notify.notify_halt(msg)
     log(f"HALT: {msg}")
     sys.exit(code)
