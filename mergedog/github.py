@@ -295,7 +295,7 @@ def get_pr_checks_all(pr: int) -> list[dict]:
             "--repo",
             REPO,
             "--json",
-            "name,state,workflow,link,bucket",
+            "name,state,workflow,link,bucket,completedAt",
         ]
     )
 

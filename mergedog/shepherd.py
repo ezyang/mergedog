@@ -7,6 +7,7 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from mergedog import claude as claude_mod
@@ -120,6 +121,31 @@ def _useful_log_chars(failed: list[tuple[str, str]]) -> int:
             continue
         total += len(stripped)
     return total
+
+
+def _latest_completed_at(checks: list[dict]) -> float | None:
+    """Latest ``completedAt`` across checks, as a unix timestamp.
+
+    Used to anchor the CI stability window to actual GitHub completion
+    time instead of "now we noticed". On a fresh mergedog start against
+    a PR whose CI finished hours ago, anchoring to ``time.time()`` would
+    needlessly burn a full ``CI_STABILITY_WINDOW_SEC`` before acting.
+    Returns ``None`` if any check lacks a parseable completion timestamp
+    (treat as "still moving"; fall back to ``time.time()``).
+    """
+    if not checks:
+        return None
+    timestamps: list[float] = []
+    for c in checks:
+        ts = c.get("completedAt") or ""
+        if not ts or ts.startswith("0001-01-01"):
+            return None
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        timestamps.append(dt.timestamp())
+    return max(timestamps) if timestamps else None
 
 
 def describe_log_state(
@@ -863,11 +889,17 @@ def _shepherd_body(
             # Track stability: any change in (status, check_count) restarts
             # the quiescence timer. We only gate on it for the "passed"
             # verdict, so genuine pending/failed states proceed without
-            # artificial delay.
+            # artificial delay. When we land on "passed", anchor to the
+            # latest GitHub-reported completedAt rather than "now" -- on
+            # a restart against long-finished CI, that lets us skip the
+            # stability wait that's only meaningful right after a push.
             observation = (status, len(checks))
             if stable_observation != observation:
                 stable_observation = observation
-                stable_since = time.time()
+                anchor: float | None = None
+                if status == "passed":
+                    anchor = _latest_completed_at(checks)
+                stable_since = anchor if anchor is not None else time.time()
 
             if status == "pending":
                 empty_log_defers = 0

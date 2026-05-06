@@ -1,8 +1,10 @@
 import unittest
+from datetime import datetime, timezone
 
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     _failed_logs_are_content_free,
+    _latest_completed_at,
     describe_log_state,
 )
 
@@ -68,6 +70,44 @@ class TestDescribeLogState(unittest.TestCase):
                 failing_check_count=2,
             ),
             "2 run(s), 4 chars",
+        )
+
+
+class TestLatestCompletedAt(unittest.TestCase):
+    def test_empty_returns_none(self):
+        self.assertIsNone(_latest_completed_at([]))
+
+    def test_picks_max_timestamp(self):
+        result = _latest_completed_at(
+            [
+                {"completedAt": "2026-05-06T10:00:00Z"},
+                {"completedAt": "2026-05-06T11:30:00Z"},
+                {"completedAt": "2026-05-06T09:15:00Z"},
+            ]
+        )
+        expected = datetime(2026, 5, 6, 11, 30, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(result, expected)
+
+    def test_missing_completed_at_returns_none(self):
+        self.assertIsNone(
+            _latest_completed_at(
+                [
+                    {"completedAt": "2026-05-06T10:00:00Z"},
+                    {"completedAt": ""},
+                ]
+            )
+        )
+
+    def test_zero_placeholder_returns_none(self):
+        self.assertIsNone(
+            _latest_completed_at(
+                [{"completedAt": "0001-01-01T00:00:00Z"}]
+            )
+        )
+
+    def test_unparseable_returns_none(self):
+        self.assertIsNone(
+            _latest_completed_at([{"completedAt": "not-a-date"}])
         )
 
 
