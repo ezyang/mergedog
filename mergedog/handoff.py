@@ -152,6 +152,11 @@ def is_retryable_merge_failure(body: str) -> bool:
     return any(pat in body for pat in _RETRYABLE_FAILURE_PATTERNS)
 
 
+def is_merge_conflict_failure(body: str) -> bool:
+    """True when pytorchmergebot failed because of a merge conflict with main."""
+    return "CONFLICT" in body and "Merge conflict" in body
+
+
 def _latest_mergebot_event(
     pr: int, since_iso: str
 ) -> tuple[str, str, str] | None:
