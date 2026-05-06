@@ -1126,6 +1126,10 @@ def _shepherd_body(
 
             # Either CI passed (and is stable), or claude said "spurious".
             # Advance.
+            # TODO: when trunk failures were judged spurious, assess whether
+            # the PR's own critical signal actually ran before handing off.
+            # A trunk failure that masks a job carrying the PR's signal is
+            # worse than one on an unrelated job.
             if not trunk_applied:
                 # Adding ciflow/trunk kicks off a fresh wave of trunk
                 # workflows; gate on SEV so we don't pile on broken trunk.
