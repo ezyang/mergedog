@@ -11,6 +11,7 @@ Commands typed at the bottom (enter to submit):
 
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
+    restart <pr>                      kill and re-spawn a shepherd
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked PR with --rebase
     cancel <pr>                       SIGTERM a shepherd
@@ -195,7 +196,7 @@ class MuxApp(App):
         yield DataTable()
         yield Input(
             placeholder=(
-                "<pr> | add <pr> | rebase <pr|all> | reassess <pr> | "
+                "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
                 "cancel <pr> | log <pr> | ignore-sev [on|off] | quit"
             )
         )
@@ -374,6 +375,13 @@ class MuxApp(App):
                     self._do_rebase_all()
                 else:
                     self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
+            elif cmd in ("restart", "r"):
+                if not rest:
+                    self.notify("usage: restart <pr>", severity="warning")
+                else:
+                    pr = _parse_pr(rest[0])
+                    self._do_cancel(pr)
+                    self._do_add(pr, rest[1:])
             elif cmd == "reassess":
                 if not rest:
                     self.notify("usage: reassess <pr>", severity="warning")
