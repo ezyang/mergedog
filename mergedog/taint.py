@@ -4,6 +4,65 @@ Strings from external sources (GitHub API responses) are wrapped in
 TaintedStr. Prompt construction sites call assert_untainted() to crash
 if tainted data leaks through without explicit declassification via
 untaint().
+
+Architecture
+============
+
+There are three roles in the system:
+
+  Sources (TCB):  github.py wraps API return values in taint().
+  Sinks:          Prompt construction (prompts.py, labels.py) calls
+                  assert_untainted() on every interpolated value.
+  Declassifiers:  Specific call sites that strip taint via untaint(),
+                  each with a documented justification for why it's safe.
+
+The *only* code you need to audit for correctness is: (1) the sources
+in github.py (did we label everything that came from an external user?)
+and (2) the untaint() call sites (is the justification still valid?).
+
+Handling TaintError
+===================
+
+If you hit a TaintError, it means untrusted data from a GitHub API
+response is reaching a prompt without being deliberately declassified.
+This is the system working as intended — DO NOT just add untaint() to
+silence the error.
+
+Instead:
+
+  1. Trace where the tainted value originates (the error message
+     includes the ``source`` label, e.g. "pr_comment", "ci_log").
+
+  2. Decide how the value should reach the prompt:
+
+     a) Through the sidecar file — the existing pattern for PR
+        title/body/comments. Pass it through
+        sanitize_untrusted_markdown(), then untaint(), then write it
+        to the sidecar. The prompt already tells Claude to treat the
+        sidecar as untrusted data.
+
+     b) Direct interpolation with output constraints — the pattern
+        used by autolabel (labels.py). The LLM output is validated
+        against a known set, so injection can only cause a wrong
+        label, not arbitrary actions. Document this justification
+        in a comment at the untaint() call.
+
+     c) Direct interpolation as data, not instructions — the pattern
+        used for CI log excerpts. The prompt frames them as log
+        output to analyze, not as directives. Document this.
+
+     d) Don't interpolate it at all — if there's no safe way to
+        include the data, restructure the code so it doesn't reach
+        the prompt.
+
+  3. Add untaint() at the appropriate boundary with a comment
+     explaining which pattern (a/b/c) applies and why.
+
+  4. If none of the above fit, the right fix is probably to route
+     the data through the sidecar (pattern a).
+
+Adding a bare ``untaint()`` without justification defeats the purpose
+of the entire system.
 """
 from __future__ import annotations
 
