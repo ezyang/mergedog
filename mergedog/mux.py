@@ -371,7 +371,7 @@ class MuxApp(App):
                 str(pr),
                 style=f"link https://github.com/pytorch/pytorch/pull/{pr}",
             )
-            table.add_row(pr_cell, _truncate_title(title), state, last)
+            table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 
     def _prune_pr(self, pr: int) -> None:
         """Forget a shepherd and clean up its on-disk state.
