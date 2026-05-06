@@ -959,9 +959,20 @@ def _shepherd_body(
                 # block (with a stale dr. ci that may still say "no
                 # failures") almost always produces a "spurious" verdict;
                 # defer a few cycles to let logs land.
+                #
+                # Skip deferral if the checks completed long enough ago
+                # that logs would already be available (e.g. fresh start
+                # against a PR whose CI failed hours ago).
+                completed_at = _latest_completed_at(checks)
+                logs_should_exist = (
+                    completed_at is not None
+                    and time.time() - completed_at
+                    > MAX_EMPTY_LOG_DEFERS * POLL_INTERVAL_SEC
+                )
                 if (
                     _failed_logs_are_content_free(failed)
                     and empty_log_defers < MAX_EMPTY_LOG_DEFERS
+                    and not logs_should_exist
                 ):
                     empty_log_defers += 1
                     log(
