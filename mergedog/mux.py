@@ -14,7 +14,8 @@ Commands typed at the bottom (enter to submit):
     restart <pr>                      kill and re-spawn a shepherd
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked PR with --rebase
-    cancel <pr>                       SIGTERM a shepherd
+    cancel <pr>                       SIGTERM a shepherd (keeps state)
+    remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
@@ -241,7 +242,7 @@ class MuxApp(App):
         yield Input(
             placeholder=(
                 "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
-                "cancel <pr> | log <pr> | ignore-sev [on|off] | quit"
+                "cancel <pr> | remove <pr> | log <pr> | ignore-sev [on|off] | quit"
             )
         )
 
@@ -336,6 +337,15 @@ class MuxApp(App):
         _terminate_group(entry[0])
         self.notify(f"[{pr}] terminated")
 
+    def _do_remove(self, pr: int) -> None:
+        entry = self.procs.get(pr)
+        if entry is None:
+            self.notify(f"[{pr}] unknown", severity="warning")
+            return
+        if entry[0].poll() is None:
+            _terminate_group(entry[0])
+        self._prune_pr(pr, reason="removed")
+
     def _refresh(self) -> None:
         # Detect any shepherds that exited with the "PR not actionable"
         # code and prune them before redrawing the table. We do this here
@@ -373,13 +383,13 @@ class MuxApp(App):
             )
             table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 
-    def _prune_pr(self, pr: int) -> None:
+    def _prune_pr(self, pr: int, *, reason: str = "PR no longer open") -> None:
         """Forget a shepherd and clean up its on-disk state.
 
-        Used when the shepherd exits with ``EXIT_PR_NOT_ACTIONABLE`` (PR
-        closed/merged) -- there's no recovery, no reason to keep the
-        worktree, trust DB, or context file around. The log file is kept
-        so the operator can audit why the shepherd quit.
+        Triggered automatically when the shepherd exits with
+        ``EXIT_PR_NOT_ACTIONABLE`` (PR closed/merged), or manually via the
+        ``remove`` command. The log file is kept so the operator can audit
+        why the shepherd quit.
         """
         entry = self.procs.pop(pr, None)
         if entry is not None:
@@ -398,7 +408,7 @@ class MuxApp(App):
             pass
         _remove_mux_pr(pr)
         self._pr_titles.pop(pr, None)
-        self.notify(f"[{pr}] pruned (PR no longer open)")
+        self.notify(f"[{pr}] pruned ({reason})")
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         line = message.value.strip()
@@ -439,11 +449,16 @@ class MuxApp(App):
                     self.notify("usage: reassess <pr>", severity="warning")
                 else:
                     self._do_add(_parse_pr(rest[0]), ["--reassess", *rest[1:]])
-            elif cmd in ("cancel", "c", "kill", "rm"):
+            elif cmd in ("cancel", "c", "kill"):
                 if not rest:
                     self.notify("usage: cancel <pr>", severity="warning")
                 else:
                     self._do_cancel(_parse_pr(rest[0]))
+            elif cmd in ("remove", "rm", "forget"):
+                if not rest:
+                    self.notify("usage: remove <pr>", severity="warning")
+                else:
+                    self._do_remove(_parse_pr(rest[0]))
             elif cmd == "log":
                 if not rest:
                     self.notify("usage: log <pr>", severity="warning")
