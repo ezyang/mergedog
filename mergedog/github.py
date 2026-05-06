@@ -245,6 +245,43 @@ def approve_workflow_run(run_id: int | str) -> tuple[bool, str]:
     return False, msg
 
 
+def rerun_failed_jobs(run_id: int | str) -> tuple[bool, str]:
+    """Re-run only the failed jobs in a workflow run via ``gh run rerun --failed``.
+
+    Used by the intervention path when a transient upstream failure
+    (e.g. GitHub GraphQL 5xx) calls for a retry rather than a fix.
+    Returns ``(ok, message)``; on failure ``message`` is the last line
+    of stderr/stdout for the log.
+    """
+    proc = _gh(
+        [
+            "run",
+            "rerun",
+            str(run_id),
+            "--repo",
+            REPO,
+            "--failed",
+        ],
+        check=False,
+        loud=True,
+    )
+    if proc.returncode == 0:
+        return True, ""
+    err = (proc.stderr or proc.stdout or "").strip().splitlines()
+    msg = err[-1] if err else f"exit {proc.returncode}"
+    return False, msg
+
+
+def run_id_for_check(check: dict) -> int | None:
+    """Extract the workflow run id from a check dict's ``link`` field.
+
+    Returns None if the link is missing or doesn't carry a run id (e.g.
+    status-only checks like Dr. CI).
+    """
+    run_id, _ = _parse_run_link(check.get("link") or "")
+    return run_id
+
+
 def get_pr_checks_all(pr: int) -> list[dict]:
     """Return the latest-commit checks for a PR.
 

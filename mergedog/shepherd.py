@@ -11,7 +11,7 @@ from pathlib import Path
 
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
-from mergedog import github, repo
+from mergedog import github, interventions, repo
 from mergedog.handoff import (
     ClaudeSession,
     post_handoff_comment,
@@ -141,6 +141,56 @@ def describe_log_state(
         )
     chars = _useful_log_chars(failed)
     return f"{len(failed)} run(s), {chars} chars"
+
+
+def _try_interventions(
+    failed: list[tuple[str, str]],
+    checks: list[dict],
+    intervened_run_ids: set[int],
+) -> bool:
+    """Re-run failed jobs whose logs match a known-transient pattern.
+
+    Iterates over ``failed`` (the trimmed log excerpts the shepherd would
+    otherwise pass to claude), matches each against
+    :data:`mergedog.interventions.INTERVENTIONS`, and on a hit calls
+    ``gh run rerun --failed`` for the underlying workflow run. Records
+    the run id in ``intervened_run_ids`` so we don't repeatedly rerun
+    the same run -- if the failure persists past one rerun, claude
+    takes over.
+
+    Returns True if at least one rerun was successfully kicked off, so
+    the caller can reset its status cache and resume polling instead of
+    invoking claude.
+    """
+    triggered = False
+    for name, log_text in failed:
+        itv = interventions.find_intervention(log_text)
+        if itv is None:
+            continue
+        check = next((c for c in checks if c.get("name") == name), None)
+        if check is None:
+            continue
+        run_id = github.run_id_for_check(check)
+        if run_id is None:
+            continue
+        if run_id in intervened_run_ids:
+            log(
+                f"intervention {itv.name!r} matched again on {name!r} "
+                f"(run {run_id}); already retried this run, falling "
+                f"through to claude"
+            )
+            continue
+        log(
+            f"intervention {itv.name!r} matched on {name!r}; "
+            f"re-running failed jobs in run {run_id}"
+        )
+        ok, msg = github.rerun_failed_jobs(run_id)
+        if ok:
+            intervened_run_ids.add(run_id)
+            triggered = True
+        else:
+            log(f"  -> rerun failed for run {run_id}: {msg}")
+    return triggered
 
 
 def _apply_spurious_overrides(
@@ -760,6 +810,11 @@ def _shepherd_body(
         # content-free logs from gh. Reset whenever we either pull useful
         # logs or leave the failed branch.
         empty_log_defers = 0
+        # Workflow run ids we've already triggered an intervention rerun
+        # for in this recovery pass. Bounds the retry to one rerun per
+        # run_id so a persistent (non-transient) failure that happens to
+        # match an intervention pattern still falls through to claude.
+        intervened_run_ids: set[int] = set()
 
         # Poll CI, fix or judge spurious until ready for handoff. Breaks
         # out (via the handoff path) when CI is green and the trunk
@@ -855,6 +910,20 @@ def _shepherd_body(
                     time.sleep(POLL_INTERVAL_SEC)
                     continue
                 empty_log_defers = 0
+
+                # Pre-claude pass: any failing job whose log matches a
+                # known-transient pattern gets a single ``gh run rerun
+                # --failed`` instead of being handed to claude. Capped at
+                # one retry per run_id, so a persistent failure that
+                # happens to match still falls through.
+                if _try_interventions(
+                    failed, checks, intervened_run_ids
+                ):
+                    last_status = None
+                    stable_observation = None
+                    time.sleep(APPROVAL_SETTLE_SEC)
+                    continue
+
                 log(f"invoking claude on failing CI ({log_state})")
                 ctx_path, comments = _refresh_context_file(pr_data)
                 prompt = render_fix_prompt(
