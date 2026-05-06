@@ -14,6 +14,7 @@ from typing import Any
 from mergedog.log import log
 from mergedog.paths import REPO_SLUG
 from mergedog.process import run
+from mergedog.taint import taint, taint_dict
 
 REPO = REPO_SLUG
 
@@ -92,7 +93,7 @@ def _gh_pr_checks_json(args: list[str]) -> list[dict]:
 
 
 def get_pr(pr: int) -> dict:
-    return _gh_json(
+    data = _gh_json(
         [
             "pr",
             "view",
@@ -120,6 +121,7 @@ def get_pr(pr: int) -> dict:
             ),
         ]
     )
+    return taint_dict(data, "pr_metadata", ["title", "body", "headRefName"])
 
 
 def viewer_login() -> str:
@@ -157,8 +159,8 @@ def get_pr_comments(pr: int) -> list[dict]:
         author = (c.get("author") or {}).get("login") or "?"
         out.append(
             {
-                "author": author,
-                "body": c.get("body", "") or "",
+                "author": taint(author, "pr_comment"),
+                "body": taint(c.get("body", "") or "", "pr_comment"),
                 "created_at": c.get("createdAt", "") or "",
             }
         )
@@ -190,7 +192,13 @@ def latest_drci_summary(
     failure summary. When ``head_sha`` is provided, also requires the body
     to reference that SHA -- otherwise the summary is dropped (treated as
     stale) so it can't override the live check list.
+
+    The author + trailer filter is the trust boundary — the returned
+    string is declassified (untainted) because it is bot-generated from
+    CI metadata, not user-authored.
     """
+    from mergedog.taint import untaint
+
     matches = [
         c
         for c in comments
@@ -201,11 +209,11 @@ def latest_drci_summary(
         return None
     body = matches[-1].get("body") or None
     if body is None or head_sha is None:
-        return body
+        return untaint(body) if body is not None else None
     m = _DRCI_COMMIT_RE.search(body)
     if m is None:
         return None
-    return body if head_sha.startswith(m.group(1)) else None
+    return untaint(body) if head_sha.startswith(m.group(1)) else None
 
 
 def get_pr_head_sha(pr: int) -> str:
@@ -446,7 +454,8 @@ def get_repo_labels(per_page: int = 100) -> list[dict]:
 def get_commit_subject(sha: str) -> str:
     data = _gh_json(["api", f"repos/{REPO}/commits/{sha}"])
     msg = data.get("commit", {}).get("message", "")
-    return msg.splitlines()[0] if msg else ""
+    subject = msg.splitlines()[0] if msg else ""
+    return taint(subject, "commit_message")
 
 
 # Author associations that we treat as "real maintainer" for review-approval
@@ -717,7 +726,7 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
         else:
             text = proc.stdout or "<no log available>"
         text = _trim_log_for_prompt(text, max_chars)
-        out.append((c.get("name", "<unknown>"), text))
+        out.append((taint(c.get("name", "<unknown>"), "ci_log"), taint(text, "ci_log")))
     return out
 
 
@@ -761,7 +770,7 @@ def get_failed_job_logs_for_runs(
             p = _gh(args, check=False)
             text = p.stdout or p.stderr or "<no log available>"
             text = _trim_log_for_prompt(text, max_chars)
-            out.append((name, text))
+            out.append((taint(name, "ci_log"), taint(text, "ci_log")))
             if len(out) >= max_jobs:
                 break
         if len(out) >= max_jobs:

@@ -1,6 +1,8 @@
 """Prompts handed to claude when shelling out for fixes."""
 from __future__ import annotations
 
+from mergedog.taint import assert_untainted, untaint
+
 
 _UNTRUSTED_CONTEXT_BLURB = """\
 A sidecar file at ``{context_path}`` contains the PR's title, description, \
@@ -231,9 +233,13 @@ def render_fix_prompt(
     drci_summary: str | None = None,
     extra_context: str | None = None,
 ) -> str:
+    assert_untainted(url, context_path)
+    branch = untaint(branch)  # short identifier, used for context not instructions
+    # CI logs are interpolated directly into the prompt, framed as log
+    # excerpts (not instructions).  Declassify here.
     sections = []
     for name, log_text in failed_jobs:
-        sections.append(f"=== {name} ===\n{log_text}\n")
+        sections.append(f"=== {untaint(name)} ===\n{untaint(log_text)}\n")
     drci_section = (
         _DRCI_SECTION_TEMPLATE.format(drci_body=drci_summary.strip())
         if drci_summary
@@ -380,6 +386,8 @@ def render_rebase_conflict_prompt(
     branch: str,
     context_path: str,
 ) -> str:
+    assert_untainted(url, context_path)
+    branch = untaint(branch)
     return REBASE_CONFLICT_PROMPT.format(
         url=url,
         branch=branch,
@@ -394,6 +402,8 @@ def render_merge_conflict_prompt(
     context_path: str,
     merge_subject: str,
 ) -> str:
+    assert_untainted(url, context_path, merge_subject)
+    branch = untaint(branch)
     return MERGE_CONFLICT_PROMPT.format(
         url=url,
         branch=branch,

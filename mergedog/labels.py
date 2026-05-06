@@ -17,6 +17,7 @@ import time
 from mergedog import github
 from mergedog.log import log
 from mergedog.paths import REPO_SLUG, ROOT
+from mergedog.taint import taint, untaint
 
 _LABEL_CACHE_TTL_SEC = 24 * 60 * 60
 _LABEL_CACHE_PATH = ROOT / "label-cache.json"
@@ -135,7 +136,7 @@ def _get_changed_files(pr: int) -> list[str]:
             check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip().splitlines()
+            return [taint(f, "pr_diff") for f in proc.stdout.strip().splitlines()]
     except Exception:
         pass
     return []
@@ -210,12 +211,14 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
     if len(changed_files) > 200:
         files_str += f"\n    ... and {len(changed_files) - 200} more files"
 
+    # Declassify: output is constrained to validated label names, limiting
+    # blast radius of any injection in title/body/filenames.
     prompt = _LABEL_PROMPT.format(
         labels_section=_format_labels_section(ciflow, release_notes, topic),
-        title=pr_data.get("title", ""),
+        title=untaint(pr_data.get("title", "")),
         url=pr_data.get("url", ""),
-        body=body,
-        changed_files=files_str or "    (unavailable)",
+        body=untaint(body),
+        changed_files=untaint(files_str) if files_str else "    (unavailable)",
     )
 
     suggested = _invoke_claude_for_labels(prompt)

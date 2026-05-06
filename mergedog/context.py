@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from mergedog.sanitize import sanitize_untrusted_markdown
+from mergedog.taint import untaint
 
 
 _TRUSTED_COMMENT_AUTHORS = frozenset(
@@ -41,14 +42,14 @@ def render_context(
         f"URL: {url}",
         "",
         "[TITLE]",
-        sanitize_untrusted_markdown(title or ""),
+        untaint(sanitize_untrusted_markdown(title or "")),
     ]
     if trusted:
         parts.extend(
             [
                 "",
                 "[DESCRIPTION]",
-                sanitize_untrusted_markdown(body) if body else "(no description)",
+                untaint(sanitize_untrusted_markdown(body)) if body else "(no description)",
             ]
         )
     for c in comments:
@@ -59,8 +60,8 @@ def render_context(
         parts.extend(
             [
                 "",
-                f"[COMMENT by {author} at {created}]",
-                sanitize_untrusted_markdown(c.get("body", "")),
+                f"[COMMENT by {untaint(author)} at {created}]",
+                untaint(sanitize_untrusted_markdown(c.get("body", ""))),
             ]
         )
     return "\n".join(parts) + "\n"
