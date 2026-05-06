@@ -13,9 +13,10 @@ Algorithm (matching the Rust implementation):
 from __future__ import annotations
 
 import re
-import signal
 from dataclasses import dataclass
 from pathlib import Path
+
+import re2
 
 try:
     import tomllib
@@ -29,7 +30,7 @@ _RULESET_PATH = Path(__file__).parent / "ruleset.toml"
 @dataclass(frozen=True)
 class Rule:
     name: str
-    pattern: re.Pattern[str]
+    pattern: object
     priority: int
 
 
@@ -48,9 +49,12 @@ def _load_rules(path: Path = _RULESET_PATH) -> list[Rule]:
     rules: list[Rule] = []
     for i, entry in enumerate(data.get("rule", [])):
         try:
-            pat = re.compile(entry["pattern"])
-        except re.error:
-            continue
+            pat = re2.compile(entry["pattern"])
+        except re2.error:
+            try:
+                pat = re.compile(entry["pattern"])
+            except re.error:
+                continue
         rules.append(Rule(name=entry["name"], pattern=pat, priority=i))
     return rules
 
@@ -65,50 +69,24 @@ def _get_rules() -> list[Rule]:
     return _RULES
 
 
-_CLASSIFY_TIMEOUT_SEC = 5
-
-
-class _RegexTimeout(Exception):
-    pass
-
-
-def _alarm_handler(signum: int, frame: object) -> None:
-    raise _RegexTimeout
-
-
 def classify(lines: list[str]) -> Match | None:
     """Find the highest-priority rule match, scanning lines in reverse."""
     rules = _get_rules()
     best: Match | None = None
-    prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-    try:
-        signal.alarm(_CLASSIFY_TIMEOUT_SEC)
-        for rule in rules:
-            if best is not None and rule.priority >= best.priority:
-                continue
-            try:
-                for line_num in range(len(lines) - 1, -1, -1):
-                    m = rule.pattern.search(lines[line_num])
-                    if m:
-                        captures = m.groups() if m.groups() else (m.group(0),)
-                        candidate = Match(
-                            rule_name=rule.name,
-                            line=lines[line_num],
-                            line_num=line_num,
-                            captures=captures,
-                            priority=rule.priority,
-                        )
-                        best = candidate
-                        break
-            except _RegexTimeout:
-                # Catastrophic backtracking on this rule; skip it and
-                # reset the alarm for remaining rules.
-                signal.alarm(_CLASSIFY_TIMEOUT_SEC)
-                continue
-        signal.alarm(0)
-    except _RegexTimeout:
-        pass
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, prev_handler)
+    for rule in rules:
+        if best is not None and rule.priority >= best.priority:
+            continue
+        for line_num in range(len(lines) - 1, -1, -1):
+            m = rule.pattern.search(lines[line_num])
+            if m:
+                captures = m.groups() if m.groups() else (m.group(0),)
+                candidate = Match(
+                    rule_name=rule.name,
+                    line=lines[line_num],
+                    line_num=line_num,
+                    captures=captures,
+                    priority=rule.priority,
+                )
+                best = candidate
+                break
     return best
