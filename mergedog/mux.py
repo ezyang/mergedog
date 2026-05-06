@@ -20,6 +20,8 @@ Commands typed at the bottom (enter to submit):
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
                                       every shepherd spawn
+    migrate                            print commands to resume on another
+                                      server, then quit
     quit                              terminate everything and exit
 
 Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
@@ -282,7 +284,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
-                "cancel <pr> | remove <pr> | log <pr> | ignore-sev [on|off] | quit"
+                "cancel <pr> | remove <pr> | log <pr> | migrate | quit"
             )
         )
 
@@ -346,6 +348,25 @@ class MuxApp(App):
                 self.notify(f"[{pr}] failed: {e}", severity="error")
             self._pr_titles.pop(pr, None)
         self.notify(f"rebasing {len(prs)} PR(s)")
+
+    def _do_migrate(self, rest: list[str]) -> None:
+        """Print the command to resume this session, then quit."""
+        prs = sorted(self.procs)
+        if not prs:
+            self.notify("no PRs tracked", severity="warning")
+            return
+        state_files = [
+            str(state_file(pr)) for pr in prs if state_file(pr).exists()
+        ]
+        pr_args = " ".join(str(pr) for pr in prs)
+        lines = [
+            "# Copy state files to the new server:",
+            f"scp {shlex.join(state_files)} NEW_HOST:~/.mergedog/state/",
+            "# Then start the mux there:",
+            f"python -m mergedog.mux {pr_args}",
+        ]
+        self._migrate_output = "\n".join(lines)
+        self.exit()
 
     def _do_ignore_sev(self, rest: list[str]) -> None:
         if not rest:
@@ -511,6 +532,8 @@ class MuxApp(App):
                         self.notify(str(entry[2]))
                     else:
                         self.notify(f"[{pr}] unknown", severity="warning")
+            elif cmd == "migrate":
+                self._do_migrate(rest)
             elif cmd in ("ignore-sev", "ignore_sev"):
                 self._do_ignore_sev(rest)
             elif cmd in ("quit", "q", "exit"):
@@ -597,7 +620,10 @@ def main() -> int:
 
     # ``mouse=False`` keeps the terminal's native selection / right-click
     # paste working. We don't actually click anything in the table.
-    MuxApp(initial, ignore_sev=args.ignore_sev).run(mouse=False)
+    app = MuxApp(initial, ignore_sev=args.ignore_sev)
+    app.run(mouse=False)
+    if hasattr(app, "_migrate_output"):
+        print(app._migrate_output)
     return 0
 
 
