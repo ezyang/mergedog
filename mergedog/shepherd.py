@@ -4,6 +4,7 @@ One process per PR. Synchronous. Halts on any sign of an untrusted change.
 """
 from __future__ import annotations
 
+import faulthandler
 import signal
 import sys
 import time
@@ -691,6 +692,8 @@ def shepherd(
     except Exception as e:
         log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
+    faulthandler.enable()
+    faulthandler.register(signal.SIGUSR1)
     try:
         _shepherd_body(
             pr,

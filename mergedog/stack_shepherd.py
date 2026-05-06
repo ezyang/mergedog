@@ -23,6 +23,7 @@ uses the same cherry-pick reconstruction followed by a full-stack
 """
 from __future__ import annotations
 
+import faulthandler
 import signal
 import subprocess
 import sys
@@ -834,6 +835,8 @@ def run_stack(
     # exit path (success, halt, SIGTERM from ``mux cancel``, ctrl-c).
     labelled: list[int] = []
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
+    faulthandler.enable()
+    faulthandler.register(signal.SIGUSR1)
     try:
         labelled = _add_mergedog_labels_parallel(members)
 
