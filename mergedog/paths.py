@@ -25,6 +25,7 @@ WORKTREES_DIR = ROOT / "worktrees"
 STATE_DIR = ROOT / "state"
 CONTEXTS_DIR = ROOT / "contexts"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
+PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
 
 REPO_SSH_URL = "git@github.com:pytorch/pytorch.git"
 REPO_SLUG = "pytorch/pytorch"

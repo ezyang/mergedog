@@ -36,7 +36,7 @@ from mergedog import context as context_mod
 from mergedog import github, repo
 from mergedog.handoff import ClaudeSession, post_handoff_comment, utc_now_iso
 from mergedog.log import die, log
-from mergedog.paths import REPO_SSH_URL, context_file
+from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, context_file
 from mergedog.prompts import render_fix_prompt
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
@@ -90,6 +90,22 @@ class _MemberCtx:
     spurious_check_names: set[str] = field(default_factory=set)
     run_state_cache: dict = field(default_factory=dict)
     failing_check_names: list[str] = field(default_factory=list)
+
+
+def _record_pushed_commit(kind: str, pr: int, sha: str, subject: str) -> None:
+    """Append one line to ``~/.mergedog/pushed-commits.log``.
+
+    A skim-friendly, append-only log of every commit a stack-mode shepherd
+    publishes. Separate from the per-PR shepherd logs so the operator can
+    review "what has mergedog pushed?" across the whole stack at a glance
+    without grepping multiple files.
+    """
+    PUSHED_COMMITS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    subject_line = subject.splitlines()[0] if subject else ""
+    line = f"{ts}  {kind:<6}  PR#{pr}  {sha[:12]}  {subject_line}\n"
+    with open(PUSHED_COMMITS_LOG, "a", encoding="utf-8") as f:
+        f.write(line)
 
 
 def _validate_member(pr_data: dict) -> None:
@@ -456,6 +472,7 @@ def _try_fix(
         ignore_sev=ignore_sev,
         force_ghstack=force_ghstack,
     )
+    _record_pushed_commit("fix", pr, ctx.head_sha, fix_message)
     ctx.fix_commits_pushed += 1
     ctx.last_status = None
     return True
@@ -547,6 +564,9 @@ def _propagate_stack(
             log(
                 f"  PR #{ctx.member.pr}: /head -> {new_head[:12]} "
                 f"(rebased; cleared spurious)"
+            )
+            _record_pushed_commit(
+                "rebase", ctx.member.pr, new_head, "(propagated rebase)"
             )
         ctx.stable_observation = None
 
