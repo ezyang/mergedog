@@ -414,7 +414,9 @@ def _invoke(
         return False, None, transcript
 
     subject = head_subject(worktree)
-    if not subject.startswith(MERGEDOG_PREFIX):
+    # Rebase resolution preserves the original commit message — don't
+    # require the [MERGEDOG] prefix.
+    if not expect_rebase_resolution and not subject.startswith(MERGEDOG_PREFIX):
         log(
             f"claude's commit {after[:12]} subject does not start "
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
@@ -424,10 +426,9 @@ def _invoke(
     # Run lintrunner -a and fold any auto-fixes into claude's commit.
     # Catches autoformat misses (clang-format, ruff format, ...) before
     # they'd cause a wasted fix-CI cycle on a follow-up lint failure.
-    # Skipped for merge resolver: HEAD~1 there is just one parent of the
-    # merge, so lintrunner's "what changed" view would include everything
-    # brought in from main -- too broad and too slow to be useful.
-    if not expect_merge_commit:
+    # Skipped for merge/rebase resolver: the diff view would include
+    # everything brought in from main — too broad and too slow.
+    if not expect_merge_commit and not expect_rebase_resolution:
         amended = _run_lintrunner_amend(worktree)
         if amended is not None:
             after = amended
@@ -435,6 +436,8 @@ def _invoke(
 
     if expect_merge_commit:
         log(f"claude resolved the merge: {after[:12]}: {subject}")
+    elif expect_rebase_resolution:
+        log(f"claude resolved the rebase: {after[:12]}: {subject}")
     else:
         log(f"claude produced fix commit {after[:12]}: {subject}")
     return True, after, transcript
