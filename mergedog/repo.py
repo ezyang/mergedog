@@ -425,12 +425,12 @@ def fetch_stack_refs(
         for ref in (head_ref, orig_ref):
             refspecs.append(f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
             refs.append(ref)
+    log(f"$ git fetch origin <{len(refs)} stack refs>")
     with _fetch_lock():
         run(
             ["git", "fetch", "origin", *refspecs],
             cwd=REPO_DIR,
             capture=False,
-            loud=True,
         )
     out: dict[str, str] = {}
     for ref in refs:
