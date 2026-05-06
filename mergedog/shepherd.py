@@ -24,7 +24,11 @@ from mergedog.handoff import (
 )
 from mergedog.log import die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
-from mergedog.prompts import render_fix_prompt, render_merge_conflict_prompt
+from mergedog.prompts import (
+    render_fix_prompt,
+    render_merge_conflict_prompt,
+    render_rebase_conflict_prompt,
+)
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
 from mergedog.trust_seed import seed_trust_from_reviews
@@ -460,6 +464,8 @@ def _rebase_ghstack_onto_main(
     trust: TrustDB,
     *,
     ignore_sev: bool,
+    pr_data: dict | None = None,
+    sessions: list[ClaudeSession] | None = None,
 ) -> None:
     """Rebase /orig onto a known-good point on main and re-publish via ghstack.
 
@@ -484,11 +490,39 @@ def _rebase_ghstack_onto_main(
         return
 
     if status == "conflict":
-        repo.abort_rebase(worktree)
-        die(
-            "rebase produced conflicts; halting for human intervention "
-            "(claude-assisted rebase resolution is not yet wired for ghstack)"
+        if pr_data is None or sessions is None:
+            repo.abort_rebase(worktree)
+            die(
+                "rebase produced conflicts; halting for human intervention "
+                "(no pr_data/sessions available for claude resolution)"
+            )
+        log("rebase produced conflicts; asking claude to resolve")
+        ctx_path, _ = _refresh_context_file(pr_data, trusted=True)
+        prompt = render_rebase_conflict_prompt(
+            url=pr_data.get("url", ""),
+            branch=head_ref,
+            context_path=str(ctx_path),
         )
+        sha_before = repo.head_sha(worktree)
+        started_at = utc_now_iso()
+        ran_cleanly, new_orig_sha, transcript = claude_mod.invoke_rebase_resolver(
+            worktree, prompt
+        )
+        _record_claude_session(
+            sessions,
+            mode="rebase-resolver",
+            sha_before=sha_before,
+            started_at=started_at,
+            ran_cleanly=ran_cleanly,
+            new_sha=new_orig_sha,
+            transcript=transcript,
+            on_commit="resolved rebase conflicts in commit {sha}",
+            on_clean_noop="aborted the rebase",
+        )
+        if not ran_cleanly:
+            die("claude failed to resolve the rebase conflict cleanly")
+        if new_orig_sha is None:
+            die("claude aborted the rebase; halting for human intervention")
 
     assert new_orig_sha is not None
     log(f"rebased /orig to {new_orig_sha[:12]}; re-publishing via ghstack")
@@ -803,7 +837,8 @@ def _shepherd_body(
         if is_ghstack:
             log("user requested upfront rebase of /orig onto origin/main")
             _rebase_ghstack_onto_main(
-                pr, worktree, branch, trust, ignore_sev=ignore_sev
+                pr, worktree, branch, trust, ignore_sev=ignore_sev,
+                pr_data=pr_data, sessions=sessions,
             )
         else:
             log("user requested upfront rebase onto origin/main")
@@ -831,7 +866,8 @@ def _shepherd_body(
         repo.fetch_origin()
         if is_ghstack:
             _rebase_ghstack_onto_main(
-                pr, worktree, branch, trust, ignore_sev=ignore_sev
+                pr, worktree, branch, trust, ignore_sev=ignore_sev,
+                pr_data=pr_data, sessions=sessions,
             )
         else:
             assert fork_remote is not None

@@ -335,13 +335,15 @@ def _invoke(
     *,
     mode: str,
     expect_merge_commit: bool,
+    expect_rebase_resolution: bool = False,
 ) -> tuple[bool, str | None, list[str]]:
     """Run claude in ``worktree`` and validate that its output meets the contract.
 
-    Shared by ``invoke_fixer`` and ``invoke_merge_resolver``. The two modes
-    differ only in two extra checks gated on ``expect_merge_commit``:
-    a leftover mid-merge state is rejected, and the new commit (if any)
-    must have exactly two parents.
+    Shared by ``invoke_fixer``, ``invoke_merge_resolver``, and
+    ``invoke_rebase_resolver``. The modes differ in post-run checks:
+    ``expect_merge_commit`` rejects leftover mid-merge state and requires
+    two parents; ``expect_rebase_resolution`` rejects leftover mid-rebase
+    state.
 
     Returns ``(ran_cleanly, new_sha, transcript)``:
     - ``ran_cleanly`` is False if claude exited non-zero, left a dirty
@@ -368,6 +370,10 @@ def _invoke(
         log("claude exited but the merge is still in progress; refusing to push")
         return False, None, transcript
 
+    if expect_rebase_resolution and repo_mod.is_rebase_in_progress(worktree):
+        log("claude exited but the rebase is still in progress; refusing to push")
+        return False, None, transcript
+
     inconclusive_path = worktree / ".mergedog-inconclusive"
     inconclusive = inconclusive_path.exists()
     if inconclusive:
@@ -384,6 +390,8 @@ def _invoke(
             return False, None, transcript
         if expect_merge_commit:
             log("claude aborted the merge without committing")
+        elif expect_rebase_resolution:
+            log("claude aborted the rebase without committing")
         else:
             log("claude made no commit (treating as: failures are spurious / no-op)")
         return True, None, transcript
@@ -442,3 +450,13 @@ def invoke_merge_resolver(
 ) -> tuple[bool, str | None, list[str]]:
     """Run claude in a mid-merge worktree to resolve conflicts."""
     return _invoke(worktree, prompt, mode="merge-resolver", expect_merge_commit=True)
+
+
+def invoke_rebase_resolver(
+    worktree: Path, prompt: str
+) -> tuple[bool, str | None, list[str]]:
+    """Run claude in a mid-rebase worktree to resolve conflicts."""
+    return _invoke(
+        worktree, prompt, mode="rebase-resolver",
+        expect_merge_commit=False, expect_rebase_resolution=True,
+    )
