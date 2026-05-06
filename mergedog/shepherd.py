@@ -109,13 +109,38 @@ def _failed_logs_are_content_free(
     """
     if not failed:
         return True
+    return _useful_log_chars(failed) < MIN_USEFUL_LOG_CHARS
+
+
+def _useful_log_chars(failed: list[tuple[str, str]]) -> int:
     total = 0
     for _, text in failed:
         stripped = (text or "").strip()
         if stripped == "<no log available>":
             continue
         total += len(stripped)
-    return total < MIN_USEFUL_LOG_CHARS
+    return total
+
+
+def describe_log_state(
+    failed: list[tuple[str, str]], failing_check_count: int
+) -> str:
+    """Short diagnostic for the failed-job logs we got back from gh.
+
+    Disambiguates the two ways ``_failed_logs_are_content_free`` can fire:
+    failing checks with no Actions run link (status-only checks like Dr. CI
+    -- nothing for ``gh run view`` to fetch) vs Actions runs whose logs
+    haven't been published yet. Also used in the non-defer path so the
+    "invoking claude" line records how much log content went into the
+    prompt.
+    """
+    if not failed:
+        return (
+            f"0 of {failing_check_count} failing checks have Actions logs "
+            f"(status-only checks?)"
+        )
+    chars = _useful_log_chars(failed)
+    return f"{len(failed)} run(s), {chars} chars"
 
 
 def _apply_spurious_overrides(
@@ -805,6 +830,12 @@ def _shepherd_body(
                         f"intervention"
                     )
                 failed = github.get_failed_job_logs(pr)
+                failing_check_count = sum(
+                    1
+                    for c in checks
+                    if c.get("bucket") in {"fail", "cancel"}
+                )
+                log_state = describe_log_state(failed, failing_check_count)
                 # GitHub publishes a job's log a few seconds after the job
                 # transitions to failed. Calling claude on an empty logs
                 # block (with a stale dr. ci that may still say "no
@@ -818,11 +849,13 @@ def _shepherd_body(
                     log(
                         f"failed-job logs not yet available from gh "
                         f"(defer {empty_log_defers}/{MAX_EMPTY_LOG_DEFERS}); "
+                        f"{log_state}; "
                         f"waiting for logs to publish before invoking claude"
                     )
                     time.sleep(POLL_INTERVAL_SEC)
                     continue
                 empty_log_defers = 0
+                log(f"invoking claude on failing CI ({log_state})")
                 ctx_path, comments = _refresh_context_file(pr_data)
                 prompt = render_fix_prompt(
                     url=pr_data.get("url", ""),

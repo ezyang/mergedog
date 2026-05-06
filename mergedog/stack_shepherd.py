@@ -52,6 +52,7 @@ from mergedog.shepherd import (
     _failed_logs_are_content_free,
     _record_claude_session,
     _wait_for_no_active_sev,
+    describe_log_state,
 )
 from mergedog.stack import StackMember, resolve_stack
 from mergedog.state import TrustDB
@@ -349,6 +350,7 @@ def _try_fix(
         )
 
     failed = github.get_failed_job_logs(pr)
+    log_state = describe_log_state(failed, len(ctx.failing_check_names))
     if (
         _failed_logs_are_content_free(failed)
         and ctx.empty_log_defers < MAX_EMPTY_LOG_DEFERS
@@ -356,10 +358,12 @@ def _try_fix(
         ctx.empty_log_defers += 1
         log(
             f"PR #{pr}: failed-job logs not yet available "
-            f"(defer {ctx.empty_log_defers}/{MAX_EMPTY_LOG_DEFERS})"
+            f"(defer {ctx.empty_log_defers}/{MAX_EMPTY_LOG_DEFERS}); "
+            f"{log_state}"
         )
         return False
     ctx.empty_log_defers = 0
+    log(f"PR #{pr}: invoking claude on failing CI ({log_state})")
 
     ctx_path, comments = _refresh_context_for(ctx)
     checks = github.get_pr_checks_all(pr)
@@ -682,11 +686,11 @@ def _scheduler_tick(
     # the lower PR's fix later propagates. Better than sleeping a full
     # poll interval just because the bottom-most failure happened to
     # transition first.
-    any_failing = False
+    failing_count = 0
     for i, (ctx, status) in enumerate(member_status):
         if status != "failed":
             continue
-        any_failing = True
+        failing_count += 1
         took_action = _try_fix(
             ctx,
             contexts,
@@ -702,9 +706,13 @@ def _scheduler_tick(
         # Fix deferred for this member (logs not ready). Try higher
         # failing members in case one of them has logs we can act on.
 
-    if any_failing:
+    if failing_count:
         # All failures deferred. Don't fall through to propagation /
         # trunk -- a member is failing, parent fixes need to land first.
+        log(
+            f"tick: {failing_count} failing member(s) deferred this tick; "
+            f"sleeping {POLL_INTERVAL_SEC}s"
+        )
         return False
 
     now = time.time()
