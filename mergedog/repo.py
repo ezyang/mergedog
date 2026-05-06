@@ -148,10 +148,14 @@ def _fetch_lock() -> Iterator[None]:
 
 
 def fetch_main() -> None:
-    """Fetch just ``origin/main`` -- much faster than a full ``fetch_origin``."""
+    """Fetch ``origin/main`` and ``origin/viable/strict``.
+
+    Much faster than a full ``fetch_origin`` but gives
+    ``select_rebase_target`` what it needs.
+    """
     with _fetch_lock():
         run(
-            ["git", "fetch", "origin", "main"],
+            ["git", "fetch", "origin", "main", "viable/strict"],
             cwd=REPO_DIR,
             capture=False,
             loud=True,
@@ -497,6 +501,123 @@ def merge_base_age_seconds(worktree: Path, ref: str = "origin/main") -> int:
     base = run(["git", "merge-base", "HEAD", ref], cwd=worktree).stdout.strip()
     ts = run(["git", "show", "-s", "--format=%ct", base], cwd=worktree).stdout.strip()
     return int(time.time()) - int(ts)
+
+
+VIABLE_STRICT_REF = "origin/viable/strict"
+
+
+def _resolve_ref(ref: str) -> str | None:
+    """Return the SHA for ``ref``, or None if it doesn't exist locally."""
+    proc = run(["git", "rev-parse", "--verify", ref], cwd=REPO_DIR, check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip()
+
+
+def _is_ancestor(ancestor: str, descendant: str) -> bool:
+    proc = run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _find_latest_revert(since: str, until: str) -> str | None:
+    """Find the most recent revert commit on ``until`` after ``since``.
+
+    Looks for commits whose subject starts with "Revert " in the
+    ``since..until`` range, returns the SHA of the newest one.
+    """
+    proc = run(
+        ["git", "log", "--oneline", "--format=%H %s", f"{since}..{until}"],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.strip().splitlines():
+        if not line:
+            continue
+        sha, _, subject = line.partition(" ")
+        if subject.startswith("Revert "):
+            return sha
+    return None
+
+
+def select_rebase_target(worktree: Path) -> tuple[str, str]:
+    """Pick the best ref to merge/rebase onto.
+
+    Returns ``(ref, reason)`` where ``ref`` is a git ref or SHA and
+    ``reason`` is a human-readable explanation for logging.
+
+    Policy:
+      - Never target raw trunk tip; only move to known-good points.
+      - Prefer viable/strict as the default safe target.
+      - If a revert commit exists on main ahead of viable/strict, prefer
+        it (reverts restore trunk to a known-good state and are closer
+        to tip, reducing land-race risk).
+      - If neither viable/strict nor a revert is ahead of us, stay put
+        by returning the current merge-base (which will noop the merge).
+    """
+    merge_base = run(
+        ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
+    ).stdout.strip()
+
+    viable = _resolve_ref(VIABLE_STRICT_REF)
+    viable_ahead = viable is not None and _is_ancestor(merge_base, viable) and merge_base != viable
+
+    revert = _find_latest_revert(merge_base, "origin/main")
+    revert_ahead_of_viable = (
+        revert is not None
+        and viable is not None
+        and _is_ancestor(viable, revert)
+        and viable != revert
+    )
+
+    if revert is not None and revert_ahead_of_viable:
+        return revert, f"revert commit {revert[:12]} (ahead of viable/strict)"
+    if viable_ahead:
+        return VIABLE_STRICT_REF, "viable/strict"
+    if revert is not None and _is_ancestor(merge_base, revert) and merge_base != revert:
+        return revert, f"revert commit {revert[:12]}"
+    return merge_base, "already at best known-good point (staying put)"
+
+
+def trunk_revert_context(worktree: Path) -> str | None:
+    """If trunk has recent reverts ahead of the PR's base, describe them.
+
+    Used to inject "known trunk failures" context into Claude's prompt
+    when we choose NOT to rebase (CI in flight) so Claude doesn't try
+    to fix breakage that trunk already reverted.
+    """
+    merge_base = run(
+        ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
+    ).stdout.strip()
+    proc = run(
+        ["git", "log", "--oneline", "--format=%H %s", f"{merge_base}..origin/main"],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    reverts = []
+    for line in proc.stdout.strip().splitlines():
+        if not line:
+            continue
+        sha, _, subject = line.partition(" ")
+        if subject.startswith("Revert "):
+            reverts.append(subject)
+    if not reverts:
+        return None
+    header = (
+        "The following commits were recently reverted on trunk (main). "
+        "If any CI failure you see matches the area affected by these "
+        "reverts, it is likely a known trunk issue -- not a problem with "
+        "this PR. Judge such failures as spurious (option 2)."
+    )
+    body = "\n".join(f"- {s}" for s in reverts)
+    return f"{header}\n\n{body}"
 
 
 MERGE_COMMIT_SUBJECT = "[MERGEDOG] Merge main into PR branch"

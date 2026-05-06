@@ -453,27 +453,26 @@ def _rebase_ghstack_onto_main(
     *,
     ignore_sev: bool,
 ) -> None:
-    """Rebase /orig onto origin/main and re-publish via ghstack.
+    """Rebase /orig onto a known-good point on main and re-publish via ghstack.
 
-    The ghstack analogue of ``_merge_main_resolving_conflicts``: for ghstack
-    PRs we can't make a merge commit on /orig (it's a single-commit branch
-    by construction), so refreshing the base means rewriting the commit via
-    ``git rebase`` and letting ``ghstack submit`` rebuild /head with the new
-    base. Conflict resolution isn't wired here yet -- if the rebase hits one,
-    we abort and halt for human intervention.
+    Target selection mirrors ``_merge_main_resolving_conflicts``: we pick
+    viable/strict or a recent revert rather than raw trunk tip.
     """
     if _wait_for_no_active_sev(
-        "rebasing /orig onto origin/main", ignore_sev=ignore_sev
+        "rebasing /orig onto main", ignore_sev=ignore_sev
     ):
         repo.fetch_origin()
 
+    target, reason = repo.select_rebase_target(worktree)
+    log(f"rebase target: {reason}")
+
     try:
-        status, new_orig_sha = repo.attempt_rebase_main(worktree)
+        status, new_orig_sha = repo.attempt_rebase_main(worktree, ref=target)
     except RuntimeError as e:
         die(str(e))
 
     if status == "noop":
-        log("rebase produced no new commit (already on top of origin/main)")
+        log("rebase produced no new commit (already at target)")
         return
 
     if status == "conflict":
@@ -591,23 +590,24 @@ def _merge_main_resolving_conflicts(
     *,
     ignore_sev: bool,
 ) -> str | None:
-    """Merge origin/main into HEAD, asking claude to resolve any conflicts.
+    """Merge a known-good point on main into HEAD, resolving conflicts via claude.
 
     Returns the new head SHA if a merge commit was made, else None
     (already up to date). Trusts the new SHA. Caller is responsible
     for pushing.
 
-    Park on a CI SEV BEFORE merging, not after. If we merged first and
-    parked second, the merge's base would be hours stale when the SEV
-    finally clears -- and likely *missing* the very fix that let trunk
-    recover. Refetch origin if we waited so the merge picks up
-    everything that landed during the SEV.
+    Target selection: we never merge raw trunk tip. Instead we pick the
+    best known-good ref via ``select_rebase_target`` -- viable/strict,
+    a recent revert commit, or stay put if nothing is ahead of us.
     """
-    if _wait_for_no_active_sev("merging origin/main", ignore_sev=ignore_sev):
+    if _wait_for_no_active_sev("merging main", ignore_sev=ignore_sev):
         repo.fetch_origin()
 
+    target, reason = repo.select_rebase_target(worktree)
+    log(f"rebase target: {reason}")
+
     try:
-        status, new_sha = repo.attempt_merge_main(worktree)
+        status, new_sha = repo.attempt_merge_main(worktree, ref=target)
     except RuntimeError as e:
         die(str(e))
 
@@ -1000,6 +1000,14 @@ def _shepherd_body(
 
                 log(f"invoking claude on failing CI ({log_state})")
                 ctx_path, comments = _refresh_context_file(pr_data)
+                trunk_ctx = repo.trunk_revert_context(worktree)
+                effective_extra = extra_context or ""
+                if trunk_ctx:
+                    log("injecting trunk revert context into claude prompt")
+                    effective_extra = (
+                        f"{trunk_ctx}\n\n{effective_extra}" if effective_extra
+                        else trunk_ctx
+                    )
                 prompt = render_fix_prompt(
                     url=pr_data.get("url", ""),
                     branch=branch,
@@ -1015,7 +1023,7 @@ def _shepherd_body(
                     drci_summary=github.latest_drci_summary(
                         comments, head_sha=current
                     ),
-                    extra_context=extra_context,
+                    extra_context=effective_extra or None,
                 )
                 session_failed_jobs = [name for name, _ in failed]
                 sha_before = current
