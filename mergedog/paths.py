@@ -31,6 +31,8 @@ PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
 # and includes PRs the mux has since dropped. This file is mux's own
 # subscription list and is the source of truth for ``--resume-known``.
 MUX_PRS_FILE = ROOT / "mux-prs.json"
+MUX_LOCK_FILE = ROOT / "mux.lock"
+MUX_SOCKET = ROOT / "mux.sock"
 
 REPO_SSH_URL = "git@github.com:pytorch/pytorch.git"
 REPO_SLUG = "pytorch/pytorch"

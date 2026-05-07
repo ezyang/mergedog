@@ -29,6 +29,7 @@ Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shlex
@@ -109,8 +110,10 @@ class HistoryInput(Input):
 
 from mergedog import repo as repo_mod  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
+from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
     MUX_PRS_FILE,
+    MUX_SOCKET,
     ROOT,
     context_file,
     ensure_dirs,
@@ -269,22 +272,16 @@ class MuxApp(App):
         *,
         ignore_sev: bool = False,
         gchat_to: str | None = None,
+        lock_fd: int = -1,
     ) -> None:
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
-        # Cache of PR titles read from the worktree HEAD subject. Populated
-        # lazily on refresh once a shepherd has set up its worktree, and
-        # popped on any user-driven mutation (add/restart/rebase/cancel) so
-        # the next refresh picks up a possibly-changed title.
         self._pr_titles: dict[int, str] = {}
         self._initial = initial
-        # Mux-wide default for ``--ignore-sev``. When True, every shepherd
-        # spawn gets the flag injected so newly added (or rebase-respawned)
-        # PRs don't park on an open CI SEV. Existing parked shepherds are
-        # NOT auto-restarted on toggle -- use ``rebase all`` (or cancel +
-        # add) to apply the new default to running PRs.
         self.ignore_sev = ignore_sev
         self.gchat_to = gchat_to
+        self._lock_fd = lock_fd
+        self._ipc_server: asyncio.AbstractServer | None = None
 
     def compose(self) -> ComposeResult:
         yield DataTable()
@@ -303,6 +300,7 @@ class MuxApp(App):
         self._refresh()
         self.set_interval(2.0, self._refresh)
         self.query_one(HistoryInput).focus()
+        self._start_ipc_server()
 
     def _shepherd_args(self, extra: list[str]) -> list[str]:
         """Apply mux-wide defaults to a shepherd argv tail."""
@@ -313,17 +311,16 @@ class MuxApp(App):
             out = [f"--gchat-to={self.gchat_to}", *out]
         return out
 
-    def _do_add(self, pr: int, extra: list[str]) -> None:
+    def _do_add(self, pr: int, extra: list[str]) -> str:
         if pr in self.procs and self.procs[pr][0].poll() is None:
-            self.notify(f"[{pr}] already running", severity="warning")
-            return
+            return f"[{pr}] already running"
         try:
             self.procs[pr] = _spawn(pr, self._shepherd_args(extra))
         except Exception as e:
-            self.notify(f"[{pr}] failed: {e}", severity="error")
-            return
+            return f"[{pr}] spawn failed: {e}"
         self._pr_titles.pop(pr, None)
         _add_mux_pr(pr)
+        return f"[{pr}] started"
 
     @work(thread=True, exclusive=True, group="rebase-all")
     def _do_rebase_all(self) -> None:
@@ -359,30 +356,10 @@ class MuxApp(App):
             self._pr_titles.pop(pr, None)
         self.notify(f"rebasing {len(prs)} PR(s)")
 
-    def _do_migrate(self, rest: list[str]) -> None:
-        """Print the command to resume this session, then quit."""
-        prs = sorted(self.procs)
-        if not prs:
-            self.notify("no PRs tracked", severity="warning")
-            return
-        state_files = [
-            str(state_file(pr)) for pr in prs if state_file(pr).exists()
-        ]
-        pr_args = " ".join(str(pr) for pr in prs)
-        lines = [
-            "# Copy state files to the new server:",
-            f"scp {shlex.join(state_files)} NEW_HOST:~/.mergedog/state/",
-            "# Then start the mux there:",
-            f"python -m mergedog.mux {pr_args}",
-        ]
-        self._migrate_output = "\n".join(lines)
-        self.exit()
-
-    def _do_ignore_sev(self, rest: list[str]) -> None:
+    def _do_ignore_sev(self, rest: list[str]) -> str:
         if not rest:
             state = "on" if self.ignore_sev else "off"
-            self.notify(f"ignore-sev is {state}")
-            return
+            return f"ignore-sev is {state}"
         arg = rest[0].lower()
         if arg in ("on", "true", "1", "yes"):
             new = True
@@ -391,31 +368,29 @@ class MuxApp(App):
         elif arg == "toggle":
             new = not self.ignore_sev
         else:
-            self.notify(f"usage: ignore-sev [on|off|toggle]", severity="warning")
-            return
+            return "usage: ignore-sev [on|off|toggle]"
         self.ignore_sev = new
         state = "on" if new else "off"
-        self.notify(
+        return (
             f"ignore-sev {state} (applies to future spawns; "
             f"use `rebase all` to apply to running PRs)"
         )
 
-    def _do_cancel(self, pr: int) -> None:
+    def _do_cancel(self, pr: int) -> str:
         entry = self.procs.get(pr)
         if entry is None:
-            self.notify(f"[{pr}] unknown", severity="warning")
-            return
+            return f"[{pr}] unknown"
         _terminate_group(entry[0])
-        self.notify(f"[{pr}] terminated")
+        return f"[{pr}] terminated"
 
-    def _do_remove(self, pr: int) -> None:
+    def _do_remove(self, pr: int) -> str:
         entry = self.procs.get(pr)
         if entry is None:
-            self.notify(f"[{pr}] unknown", severity="warning")
-            return
+            return f"[{pr}] unknown"
         if entry[0].poll() is None:
             _terminate_group(entry[0])
-        self._prune_pr(pr, reason="removed")
+        self._prune_pr(pr)
+        return f"[{pr}] removed"
 
     def _refresh(self) -> None:
         # Detect any shepherds that exited with the "PR not actionable"
@@ -426,6 +401,7 @@ class MuxApp(App):
             p = self.procs[pr][0]
             if p.poll() == EXIT_PR_NOT_ACTIONABLE:
                 self._prune_pr(pr)
+                self.notify(f"[{pr}] pruned (PR no longer open)")
 
         table = self.query_one(DataTable)
         table.clear()
@@ -454,13 +430,10 @@ class MuxApp(App):
             )
             table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 
-    def _prune_pr(self, pr: int, *, reason: str = "PR no longer open") -> None:
+    def _prune_pr(self, pr: int) -> None:
         """Forget a shepherd and clean up its on-disk state.
 
-        Triggered automatically when the shepherd exits with
-        ``EXIT_PR_NOT_ACTIONABLE`` (PR closed/merged), or manually via the
-        ``remove`` command. The log file is kept so the operator can audit
-        why the shepherd quit.
+        The log file is kept so the operator can audit why the shepherd quit.
         """
         entry = self.procs.pop(pr, None)
         if entry is not None:
@@ -479,7 +452,115 @@ class MuxApp(App):
             pass
         _remove_mux_pr(pr)
         self._pr_titles.pop(pr, None)
-        self.notify(f"[{pr}] pruned ({reason})")
+
+    # ------------------------------------------------------------------
+    # Command dispatch (shared by TUI input and IPC server)
+    # ------------------------------------------------------------------
+
+    def _dispatch_command(self, line: str) -> str:
+        """Parse and execute a mux command.  Returns a response string."""
+        if not line.strip():
+            return ""
+        try:
+            args = shlex.split(line)
+        except ValueError as e:
+            return f"parse error: {e}"
+        cmd, rest = args[0], args[1:]
+        if cmd.isdigit() or "/pull/" in cmd:
+            cmd, rest = "add", args
+        try:
+            if cmd in ("add", "a"):
+                if not rest:
+                    return "usage: add <pr> [flags]"
+                return self._do_add(_parse_pr(rest[0]), rest[1:])
+            elif cmd == "rebase":
+                if not rest:
+                    return "usage: rebase <pr> | rebase all"
+                if rest[0] == "all":
+                    n = len(self.procs)
+                    if not n:
+                        return "no PRs to rebase"
+                    self._do_rebase_all()
+                    return f"rebasing {n} PR(s)"
+                return self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
+            elif cmd in ("restart", "r"):
+                if not rest:
+                    return "usage: restart <pr>"
+                pr = _parse_pr(rest[0])
+                self._do_cancel(pr)
+                return self._do_add(pr, rest[1:])
+            elif cmd == "reassess":
+                if not rest:
+                    return "usage: reassess <pr>"
+                return self._do_add(_parse_pr(rest[0]), ["--reassess", *rest[1:]])
+            elif cmd in ("cancel", "c", "kill"):
+                if not rest:
+                    return "usage: cancel <pr>"
+                return self._do_cancel(_parse_pr(rest[0]))
+            elif cmd in ("remove", "rm", "forget"):
+                if not rest:
+                    return "usage: remove <pr>"
+                return self._do_remove(_parse_pr(rest[0]))
+            elif cmd == "log":
+                if not rest:
+                    return "usage: log <pr>"
+                pr = _parse_pr(rest[0])
+                entry = self.procs.get(pr)
+                if entry is not None:
+                    return str(entry[2])
+                return f"[{pr}] unknown"
+            elif cmd == "migrate":
+                return self._format_migrate()
+            elif cmd in ("ignore-sev", "ignore_sev"):
+                return self._do_ignore_sev(rest)
+            elif cmd == "status":
+                return self._format_status()
+            elif cmd in ("quit", "q", "exit"):
+                return "use the TUI to quit the mux"
+            else:
+                return f"unknown command: {cmd!r}"
+        except Exception as e:
+            return f"error: {e}"
+
+    def _format_status(self) -> str:
+        """JSON status of all tracked PRs (consumed by MCP server)."""
+        rows = []
+        for pr in sorted(self.procs):
+            p, _, log_path = self.procs[pr]
+            rc = p.poll()
+            if rc is None:
+                state = "running"
+            elif rc == 0:
+                state = "exited_ok"
+            elif rc == EXIT_PR_NOT_ACTIONABLE:
+                state = "prunable"
+            else:
+                state = "exited_error"
+            last = _last_log_line(log_path)
+            title = self._pr_titles.get(pr, "") or _read_pr_title(pr)
+            rows.append({
+                "pr": pr,
+                "title": title,
+                "state": state,
+                "last_log": last,
+            })
+        return json.dumps(rows, indent=2)
+
+    def _format_migrate(self) -> str:
+        prs = sorted(self.procs)
+        if not prs:
+            return "no PRs tracked"
+        state_files = [
+            str(state_file(pr)) for pr in prs if state_file(pr).exists()
+        ]
+        pr_args = " ".join(str(pr) for pr in prs)
+        lines = [
+            "# Copy state files to the new server:",
+            f"scp {shlex.join(state_files)} NEW_HOST:~/.mergedog/state/",
+            "# Then start the mux there:",
+            f"python -m mergedog.mux {pr_args}",
+        ]
+        return "\n".join(lines)
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         line = message.value.strip()
@@ -488,77 +569,78 @@ class MuxApp(App):
             message.input.record(line)
         if not line:
             return
+        # TUI-only: quit and migrate have side effects beyond a response
         try:
-            args = shlex.split(line)
-        except ValueError as e:
-            self.notify(f"parse error: {e}", severity="error")
+            first = shlex.split(line)[0]
+        except (ValueError, IndexError):
+            first = ""
+        if first in ("quit", "q", "exit"):
+            self.exit()
             return
-        cmd, rest = args[0], args[1:]
-        # Bare PR number or PR URL → treat as ``add <pr>``.
-        if cmd.isdigit() or "/pull/" in cmd:
-            cmd, rest = "add", args
-        try:
-            if cmd in ("add", "a"):
-                if not rest:
-                    self.notify("usage: add <pr> [flags]", severity="warning")
-                else:
-                    self._do_add(_parse_pr(rest[0]), rest[1:])
-            elif cmd == "rebase":
-                if not rest:
-                    self.notify("usage: rebase <pr> | rebase all", severity="warning")
-                elif rest[0] == "all":
-                    self._do_rebase_all()
-                else:
-                    self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
-            elif cmd in ("restart", "r"):
-                if not rest:
-                    self.notify("usage: restart <pr>", severity="warning")
-                else:
-                    pr = _parse_pr(rest[0])
-                    self._do_cancel(pr)
-                    self._do_add(pr, rest[1:])
-            elif cmd == "reassess":
-                if not rest:
-                    self.notify("usage: reassess <pr>", severity="warning")
-                else:
-                    self._do_add(_parse_pr(rest[0]), ["--reassess", *rest[1:]])
-            elif cmd in ("cancel", "c", "kill"):
-                if not rest:
-                    self.notify("usage: cancel <pr>", severity="warning")
-                else:
-                    self._do_cancel(_parse_pr(rest[0]))
-            elif cmd in ("remove", "rm", "forget"):
-                if not rest:
-                    self.notify("usage: remove <pr>", severity="warning")
-                else:
-                    self._do_remove(_parse_pr(rest[0]))
-            elif cmd == "log":
-                if not rest:
-                    self.notify("usage: log <pr>", severity="warning")
-                else:
-                    pr = _parse_pr(rest[0])
-                    entry = self.procs.get(pr)
-                    if entry is not None:
-                        self.notify(str(entry[2]))
-                    else:
-                        self.notify(f"[{pr}] unknown", severity="warning")
-            elif cmd == "migrate":
-                self._do_migrate(rest)
-            elif cmd in ("ignore-sev", "ignore_sev"):
-                self._do_ignore_sev(rest)
-            elif cmd in ("quit", "q", "exit"):
-                self.exit()
-                return
+        if first == "migrate":
+            text = self._format_migrate()
+            if text == "no PRs tracked":
+                self.notify(text, severity="warning")
             else:
-                self.notify(f"unknown command: {cmd!r}", severity="warning")
-        except Exception as e:
-            self.notify(f"error: {e}", severity="error")
+                self._migrate_output = text
+                self.exit()
+            return
+        result = self._dispatch_command(line)
+        if result:
+            self.notify(result)
         self._refresh()
 
+    # ------------------------------------------------------------------
+    # IPC server (Unix socket, same commands as TUI input)
+    # ------------------------------------------------------------------
+
+    @work(thread=False)
+    async def _start_ipc_server(self) -> None:
+        sock_path = str(MUX_SOCKET)
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
+        server = await asyncio.start_unix_server(
+            self._handle_ipc_connection, path=sock_path,
+        )
+        self._ipc_server = server
+        async with server:
+            await server.serve_forever()
+
+    async def _handle_ipc_connection(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            if not raw:
+                return
+            command = raw.decode().strip()
+            result = self._dispatch_command(command)
+            payload = json.dumps({"ok": True, "message": result})
+            writer.write(payload.encode() + b"\n")
+            await writer.drain()
+        except Exception as e:
+            try:
+                payload = json.dumps({"ok": False, "message": str(e)})
+                writer.write(payload.encode() + b"\n")
+                await writer.drain()
+            except Exception:
+                pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
     def on_unmount(self) -> None:
-        # Fan out SIGTERM first so the per-PR grace windows in
-        # ``_terminate_group`` overlap instead of serializing -- otherwise
-        # quitting with N tracked PRs blocks for up to ~4*N seconds.
+        if self._ipc_server is not None:
+            self._ipc_server.close()
+        if self._lock_fd >= 0:
+            release_lock(self._lock_fd)
         for _pr, (p, _f, _) in self.procs.items():
             if p.poll() is None:
                 try:
@@ -627,6 +709,12 @@ def main() -> int:
 
     ensure_dirs()
 
+    try:
+        lock_fd = acquire_lock()
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
     initial: list[int] = []
     if args.resume_known:
         initial.extend(_read_mux_prs())
@@ -638,9 +726,12 @@ def main() -> int:
     seen: set[int] = set()
     initial = [pr for pr in initial if not (pr in seen or seen.add(pr))]
 
-    # ``mouse=False`` keeps the terminal's native selection / right-click
-    # paste working. We don't actually click anything in the table.
-    app = MuxApp(initial, ignore_sev=args.ignore_sev, gchat_to=args.gchat_to)
+    app = MuxApp(
+        initial,
+        ignore_sev=args.ignore_sev,
+        gchat_to=args.gchat_to,
+        lock_fd=lock_fd,
+    )
     app.run(mouse=False)
     if hasattr(app, "_migrate_output"):
         print(app._migrate_output)
