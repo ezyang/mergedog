@@ -971,8 +971,23 @@ def _shepherd_body(
             # "failure".  If any tracked workflow has conclusion=failure
             # but no individual check is failing, fetch logs directly
             # from the failed workflow runs instead.
+            #
+            # Skip this cross-check when the only reason status is
+            # "passed" is that all failing checks were already judged
+            # spurious -- the workflow conclusion is permanently stale
+            # in that case and re-introducing it would loop forever.
+            raw_failure_names = {
+                c.get("name")
+                for c in checks
+                if c.get("bucket") in {"fail", "cancel"}
+                and c.get("name")
+            }
+            all_failures_spurious = (
+                bool(raw_failure_names)
+                and raw_failure_names <= spurious_check_names
+            )
             workflow_failed_run_ids: list[int] = []
-            if status == "passed":
+            if status == "passed" and not all_failures_spurious:
                 workflow_failed_run_ids = [
                     run_id
                     for run_id, (st, concl) in run_state_cache.items()
