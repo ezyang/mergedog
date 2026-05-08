@@ -24,6 +24,7 @@ uses the same cherry-pick reconstruction followed by a full-stack
 from __future__ import annotations
 
 import faulthandler
+import re
 import signal
 import subprocess
 import sys
@@ -68,6 +69,9 @@ from mergedog.shepherd import (
 from mergedog.stack import StackMember, resolve_stack
 from mergedog.state import TrustDB
 from mergedog.trust_seed import seed_trust_from_reviews
+
+
+_SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
 
 
 @dataclass
@@ -734,6 +738,7 @@ def _latest_unhandled_stack_failure(
     persisted locally. On restart we should recover from it instead of treating
     stale CI as the next thing to fix.
     """
+    current_orig_shas = {ctx.orig_sha for ctx in contexts}
     failures: list[tuple[str, _MemberCtx, str]] = []
     for ctx in contexts:
         pr = ctx.member.pr
@@ -742,7 +747,15 @@ def _latest_unhandled_stack_failure(
         )
         if event is None:
             continue
-        failures.append((event[0], ctx, event[1]))
+        body = event[1]
+        mentioned_shas = set(_SHA_RE.findall(body))
+        if not (mentioned_shas & current_orig_shas):
+            log(
+                f"PR #{pr}: ignoring prior mergebot failure; no current "
+                f"stack /orig SHA mentioned"
+            )
+            continue
+        failures.append((event[0], ctx, body))
     if not failures:
         return None
     event_iso, ctx, body = max(failures, key=lambda item: item[0])

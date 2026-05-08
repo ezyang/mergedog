@@ -305,12 +305,14 @@ class TestRebaseStackPrefix(unittest.TestCase):
 
 class TestLatestUnhandledStackFailure(unittest.TestCase):
     def test_finds_newest_post_handoff_failure(self):
-        bottom = _mk_ctx(orig_sha="A", status=None)
+        bottom_sha = "a" * 40
+        top_sha = "b" * 40
+        bottom = _mk_ctx(orig_sha=bottom_sha, status=None)
         bottom.member = StackMember(
             pr=101, head_ref="gh/u/101/head", orig_ref="gh/u/101/orig"
         )
         bottom.trust.last_observed_failure_iso = ""
-        top = _mk_ctx(orig_sha="B", status=None)
+        top = _mk_ctx(orig_sha=top_sha, status=None)
         top.member = StackMember(
             pr=102, head_ref="gh/u/102/head", orig_ref="gh/u/102/orig"
         )
@@ -326,7 +328,9 @@ class TestLatestUnhandledStackFailure(unittest.TestCase):
             if pr == 102:
                 return (
                     "2026-05-08T14:00:00Z",
-                    "## Merge failed\nCONFLICT (content): Merge conflict",
+                    "## Merge failed\n"
+                    f"Command `git cherry-pick -x {bottom_sha}` failed\n"
+                    "CONFLICT (content): Merge conflict",
                 )
             return None
 
@@ -343,6 +347,37 @@ class TestLatestUnhandledStackFailure(unittest.TestCase):
         self.assertIs(ctx, top)
         self.assertEqual(event_iso, "2026-05-08T14:00:00Z")
         self.assertIn("Merge failed", body)
+
+    def test_ignores_failure_for_old_stack_sha(self):
+        bottom = _mk_ctx(orig_sha="a" * 40, status=None)
+        bottom.member = StackMember(
+            pr=101, head_ref="gh/u/101/head", orig_ref="gh/u/101/orig"
+        )
+        bottom.trust.last_observed_failure_iso = ""
+        top = _mk_ctx(orig_sha="b" * 40, status=None)
+        top.member = StackMember(
+            pr=102, head_ref="gh/u/102/head", orig_ref="gh/u/102/orig"
+        )
+        top.trust.last_observed_failure_iso = ""
+
+        def mergebot_failure_event(pr, since_iso):
+            if pr == 102:
+                return (
+                    "2026-05-08T14:00:00Z",
+                    "## Merge failed\n"
+                    f"Command `git cherry-pick -x {'c' * 40}` failed\n"
+                    "CONFLICT (content): Merge conflict",
+                )
+            return None
+
+        with mock.patch.object(
+            stack_shepherd,
+            "latest_mergebot_failure_event",
+            side_effect=mergebot_failure_event,
+        ):
+            result = stack_shepherd._latest_unhandled_stack_failure([bottom, top])
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
