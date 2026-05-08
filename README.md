@@ -77,6 +77,23 @@ TUI commands (type in the input bar at the bottom):
 | `migrate` | Print resume instructions for moving to another host |
 | `quit` | Terminate everything |
 
+### Natural-language interface (Claude Code)
+
+Talk to a running mux in plain English via Claude Code:
+
+```
+python -m mergedog.chat
+```
+
+This launches Claude Code with the mergedog MCP server pre-configured.
+You can say things like "watch PR 182367", "what's happening with my
+PRs?", "rebase everything", or "why did 182500 fail?" and Claude
+translates that into mux commands and log reads.  It shows you the
+deterministic command it ran, so you gradually learn the CLI.
+
+Requires `claude` on your PATH and a running mux instance.  Honors
+`--root` / `MERGEDOG_ROOT` if you're using a non-default root.
+
 ### Single PR (one-off)
 
 Run a shepherd for a single PR in the foreground:
@@ -148,6 +165,8 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── contexts/<pr>.md          # sidecar: PR title/body/comments (untrusted, fed to Claude)
 ├── logs/<pr>.log             # per-PR shepherd stdout/stderr (written by mux)
 ├── mux-prs.json              # mux's tracked PR list
+├── mux.lock                  # flock'd by the running mux (IPC discovery)
+├── mux.sock                  # Unix socket for IPC (same commands as TUI)
 ├── label-cache.json          # cached repo labels for autolabeling (24h TTL)
 ├── lintrunner-venv/          # shared lintrunner virtualenv
 └── pushed-commits.log        # append-only log of pushed commits (stack mode)
