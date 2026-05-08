@@ -38,6 +38,8 @@ from mergedog import github, repo
 from mergedog.handoff import (
     ClaudeSession,
     is_merge_conflict_failure,
+    latest_mergebot_failure_event,
+    latest_mergebot_event,
     post_handoff_comment,
     utc_now_iso,
     watch_stack_post_handoff,
@@ -57,6 +59,7 @@ from mergedog.shepherd import (
     _apply_spurious_overrides,
     _approve_pending_runs,
     _failed_logs_are_content_free,
+    _llm_label,
     _record_claude_session,
     _wait_for_pr_head,
     _wait_for_no_active_sev,
@@ -420,7 +423,7 @@ def _try_fix(
         )
         return False
     ctx.empty_log_defers = 0
-    log(f"PR #{pr}: invoking claude on failing CI ({log_state})")
+    log(f"PR #{pr}: invoking {_llm_label()} on failing CI ({log_state})")
 
     ctx_path, comments = _refresh_context_for(ctx)
     checks = github.get_pr_checks_all(pr)
@@ -481,7 +484,7 @@ def _try_fix(
         ),
     )
     if not ran_cleanly:
-        die(f"PR #{pr}: claude exited abnormally or produced an invalid commit")
+        die(f"PR #{pr}: {_llm_label()} exited abnormally or produced an invalid commit")
 
     if new_sha is None:
         newly_spurious = {
@@ -493,7 +496,7 @@ def _try_fix(
         ctx.trust.spurious_check_names = sorted(ctx.spurious_check_names)
         ctx.trust.save()
         log(
-            f"PR #{pr}: claude judged {len(newly_spurious)} failure"
+            f"PR #{pr}: {_llm_label()} judged {len(newly_spurious)} failure"
             f"{'' if len(newly_spurious) == 1 else 's'} spurious; continuing"
         )
         ctx.last_status = None
@@ -662,7 +665,7 @@ def _rebase_stack_prefix_onto_main(
         return
 
     if status == "conflict":
-        log("stack rebase produced conflicts; asking claude to resolve")
+        log(f"stack rebase produced conflicts; asking {_llm_label()} to resolve")
         ctx_path, _ = _refresh_context_for(target_ctx)
         prompt = render_rebase_conflict_prompt(
             url=target_ctx.pr_data.get("url", ""),
@@ -686,9 +689,9 @@ def _rebase_stack_prefix_onto_main(
             on_clean_noop="aborted the stack rebase",
         )
         if not ran_cleanly:
-            die("claude failed to resolve the stack rebase conflict cleanly")
+            die(f"{_llm_label()} failed to resolve the stack rebase conflict cleanly")
         if new_top_sha is None:
-            die("claude aborted the stack rebase; halting for human intervention")
+            die(f"{_llm_label()} aborted the stack rebase; halting for human intervention")
 
     assert new_top_sha is not None
     log(
@@ -719,6 +722,31 @@ def _rebase_stack_prefix_onto_main(
                 "rebase", ctx.member.pr, new_head, "Rebase stack onto origin/main"
             )
             _wait_for_pr_head(ctx.member.pr, new_head)
+
+
+def _latest_unhandled_stack_failure(
+    contexts: list[_MemberCtx],
+) -> tuple[_MemberCtx, str, str] | None:
+    """Return the newest unhandled post-handoff mergebot failure in the stack.
+
+    This covers stack shepherds that exited before they had a watch loop: the
+    failure comment exists on GitHub, but ``last_observed_failure_*`` was never
+    persisted locally. On restart we should recover from it instead of treating
+    stale CI as the next thing to fix.
+    """
+    failures: list[tuple[str, _MemberCtx, str]] = []
+    for ctx in contexts:
+        pr = ctx.member.pr
+        event = latest_mergebot_failure_event(
+            pr, ctx.trust.last_observed_failure_iso
+        )
+        if event is None:
+            continue
+        failures.append((event[0], ctx, event[1]))
+    if not failures:
+        return None
+    event_iso, ctx, body = max(failures, key=lambda item: item[0])
+    return ctx, event_iso, body
 
 
 def _is_green_stable(ctx: _MemberCtx, now: float) -> bool:
@@ -1033,6 +1061,29 @@ def run_stack(
             )
             prior_conflict.trust.last_observed_failure_body = ""
             prior_conflict.trust.save()
+
+        unhandled_failure = _latest_unhandled_stack_failure(contexts)
+        if unhandled_failure is not None:
+            failed_ctx, event_iso, fail_body = unhandled_failure
+            failed_ctx.trust.last_observed_failure_iso = event_iso
+            failed_ctx.trust.last_observed_failure_body = fail_body
+            failed_ctx.trust.save()
+            if is_merge_conflict_failure(fail_body):
+                log(
+                    f"unhandled prior merge-conflict failure detected on PR "
+                    f"#{failed_ctx.member.pr}; rebasing stack onto main"
+                )
+                repo.fetch_origin()
+                _rebase_stack_prefix_onto_main(
+                    contexts,
+                    contexts.index(failed_ctx),
+                    worktree,
+                    sessions_by_pr[failed_ctx.member.pr],
+                    ignore_sev=ignore_sev,
+                    force_ghstack=force_ghstack,
+                )
+                failed_ctx.trust.last_observed_failure_body = ""
+                failed_ctx.trust.save()
 
         log_state = _StackLogState()
         while True:

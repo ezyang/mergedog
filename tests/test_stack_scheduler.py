@@ -303,5 +303,47 @@ class TestRebaseStackPrefix(unittest.TestCase):
         )
 
 
+class TestLatestUnhandledStackFailure(unittest.TestCase):
+    def test_finds_newest_post_handoff_failure(self):
+        bottom = _mk_ctx(orig_sha="A", status=None)
+        bottom.member = StackMember(
+            pr=101, head_ref="gh/u/101/head", orig_ref="gh/u/101/orig"
+        )
+        bottom.trust.last_observed_failure_iso = ""
+        top = _mk_ctx(orig_sha="B", status=None)
+        top.member = StackMember(
+            pr=102, head_ref="gh/u/102/head", orig_ref="gh/u/102/orig"
+        )
+        top.trust.last_observed_failure_iso = "2026-05-08T13:00:00Z"
+
+        def mergebot_failure_event(pr, since_iso):
+            expected_since = (
+                "2026-05-08T13:00:00Z"
+                if pr == 102
+                else ""
+            )
+            self.assertEqual(since_iso, expected_since)
+            if pr == 102:
+                return (
+                    "2026-05-08T14:00:00Z",
+                    "## Merge failed\nCONFLICT (content): Merge conflict",
+                )
+            return None
+
+        with mock.patch.object(
+            stack_shepherd,
+            "latest_mergebot_failure_event",
+            side_effect=mergebot_failure_event,
+        ):
+            result = stack_shepherd._latest_unhandled_stack_failure([bottom, top])
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        ctx, event_iso, body = result
+        self.assertIs(ctx, top)
+        self.assertEqual(event_iso, "2026-05-08T14:00:00Z")
+        self.assertIn("Merge failed", body)
+
+
 if __name__ == "__main__":
     unittest.main()

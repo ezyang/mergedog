@@ -1,7 +1,8 @@
 """Post-handoff PR comment + watcher loop.
 
 Once CI is green and the trunk label is on, the shepherd posts a summary
-of what claude did during the run, then sits in :func:`watch_post_handoff`
+of what the configured LLM did during the run, then sits in
+:func:`watch_post_handoff`
 until either the PR closes/merges or pytorchmergebot reports a merge
 failure (which kicks the shepherd into a recovery cycle).
 """
@@ -17,12 +18,12 @@ from mergedog.log import log, set_approved, set_merging
 
 @dataclass
 class ClaudeSession:
-    """One claude invocation, captured for the handoff comment."""
+    """One LLM invocation, captured for the handoff comment."""
 
     mode: str  # "fix-CI" or "merge-resolver"
     started_at: str  # UTC ISO 8601
     sha_before: str
-    sha_after: str | None  # ``None`` when claude judged the situation a no-op
+    sha_after: str | None  # ``None`` when the LLM judged the situation a no-op
     verdict: str  # human-readable summary
     transcript: list[str] = field(default_factory=list)
 
@@ -71,14 +72,14 @@ def _format_handoff_comment(
         ]
     if n == 0:
         head.append(
-            "claude was not invoked during this run (CI was green from the "
+            "No LLM was invoked during this run (CI was green from the "
             "start; no merge or fix needed)."
         )
         return marker + "\n".join(head) + "\n"
 
     head.append(
-        f"During shepherding, claude was invoked **{n}** time"
-        f"{'' if n == 1 else 's'}. If any CI shows red, claude judged that "
+        f"During shepherding, the configured LLM was invoked **{n}** time"
+        f"{'' if n == 1 else 's'}. If any CI shows red, it judged that "
         "failure unrelated to this PR's changes — please verify below before "
         "merging."
     )
@@ -95,7 +96,7 @@ def _format_handoff_comment(
             section.append(f"- **After:** `{s.sha_after[:12]}`")
         section.append(f"- **Verdict:** {s.verdict}")
         section.append("")
-        section.append("<details><summary>claude transcript</summary>")
+        section.append("<details><summary>LLM transcript</summary>")
         section.append("")
         section.append("```")
         section.extend(s.transcript)
@@ -157,7 +158,7 @@ def is_merge_conflict_failure(body: str) -> bool:
     return "CONFLICT" in body and "Merge conflict" in body
 
 
-def _latest_mergebot_event(
+def latest_mergebot_event(
     pr: int, since_iso: str
 ) -> tuple[str, str, str] | None:
     """Classify pytorchmergebot's reply to a `@pytorchbot merge` request.
@@ -187,6 +188,23 @@ def _latest_mergebot_event(
     if "Merge started" in body:
         return "started", iso, body
     return "other", iso, body
+
+
+def latest_mergebot_failure_event(
+    pr: int, since_iso: str
+) -> tuple[str, str] | None:
+    """Return the latest pytorchmergebot ``Merge failed`` event after ``since_iso``."""
+    relevant = [
+        c
+        for c in github.get_pr_comments(pr)
+        if c.get("author") == PYTORCHMERGEBOT_LOGIN
+        and (c.get("created_at") or "") > since_iso
+        and "Merge failed" in (c.get("body") or "")
+    ]
+    if not relevant:
+        return None
+    latest = max(relevant, key=lambda c: c.get("created_at") or "")
+    return latest.get("created_at") or "", latest.get("body") or ""
 
 
 _POLL_INTERVAL_SEC = 60
@@ -242,7 +260,7 @@ def watch_post_handoff(
         set_approved(approved)
         if pr_data.get("state") != "OPEN":
             return "closed", None, None
-        event = _latest_mergebot_event(pr, since_iso)
+        event = latest_mergebot_event(pr, since_iso)
         kind = event[0] if event else None
         if kind == "failed":
             log("pytorchmergebot reported merge failure; halting")
@@ -317,7 +335,7 @@ def watch_stack_post_handoff(
             if merging:
                 merging_prs.append(pr)
 
-            event = _latest_mergebot_event(pr, prs_since_iso[pr])
+            event = latest_mergebot_event(pr, prs_since_iso[pr])
             kind = event[0] if event else None
             if kind == "failed":
                 set_merging(any_merging)
