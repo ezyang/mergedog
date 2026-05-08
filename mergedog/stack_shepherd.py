@@ -915,6 +915,29 @@ def run_stack(
                         ctx.pr_data,
                         sessions_by_pr[ctx.member.pr],
                     )
+                # TODO: stack shepherd exits here without watching for
+                # pytorchmergebot "Merge failed" replies. The single-PR
+                # shepherd has watch_post_handoff() (shepherd.py:1263)
+                # that blocks until pytorchmergebot responds and loops
+                # back to CI inspection on failure. Stacks need an
+                # analogous loop that watches ALL member PRs for
+                # "Merge failed" comments, then rebases the stack
+                # (via _rebase_ghstack_onto_main or similar) and
+                # re-enters the scheduler tick loop.
+                #
+                # Diagnosing stack issues:
+                # - State files: ~/.mergedog/state/<pr>.json for each
+                #   member; last_observed_failure_iso=="" means no
+                #   failure was ever seen (watch loop never ran).
+                # - Worktree: ~/.mergedog/worktrees/stack-<bottom_pr>/
+                #   (shared across all members, unlike per-PR dirs).
+                # - Stack membership: resolve_stack() walks /orig
+                #   commit ancestry. If a member was added/removed
+                #   from the stack after the shepherd started, the
+                #   running shepherd won't see the change.
+                # - Merge failures land on whichever PR had
+                #   @pytorchbot merge posted; for stacks this is
+                #   usually one specific member, not all of them.
                 return
             if not took_action:
                 time.sleep(POLL_INTERVAL_SEC)
