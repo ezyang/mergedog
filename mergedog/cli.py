@@ -195,6 +195,43 @@ def _stack_main(argv: list[str]) -> int:
     return 0
 
 
+def _rage_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mergedog rage",
+        description=(
+            "Create a private paste with redacted diagnostics for a PR, "
+            "including logs and persisted mergedog state."
+        ),
+    )
+    parser.add_argument(
+        "pr",
+        type=_parse_pr,
+        help="PR number (or full PR URL) on pytorch/pytorch",
+    )
+    parser.add_argument(
+        "--root",
+        metavar="DIR",
+        type=Path,
+        help=(
+            "Override the on-disk root to inspect (default: ``~/.mergedog`` "
+            "or the ``MERGEDOG_ROOT`` env var)."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    from mergedog import rage as rage_mod
+    from mergedog.paths import ROOT
+
+    root = args.root if args.root is not None else ROOT
+    try:
+        paste = rage_mod.rage(args.pr, root=root)
+    except Exception as e:
+        print(f"rage failed: {e}", file=sys.stderr)
+        return 1
+    print(paste)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -203,4 +240,6 @@ def main(argv: list[str] | None = None) -> int:
     # ``mergedog <pr>`` invocations (and ``mux.py`` spawns) keep working.
     if argv and argv[0] == "stack":
         return _stack_main(argv[1:])
+    if argv and argv[0] == "rage":
+        return _rage_main(argv[1:])
     return _single_main(argv)

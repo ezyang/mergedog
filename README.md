@@ -117,6 +117,18 @@ Discovers the full stack from the PR body and drives every PR bottom-up in
 a single process.  Additional flag: `--force-ghstack` bypasses ghstack's
 anti-clobber check.
 
+### Rage bundle
+
+```
+mergedog rage <pr_number_or_url> [--root DIR]
+```
+
+Creates a private markdown paste with redacted diagnostics for the PR.  The
+bundle includes the mux/shepherd log, persisted trust/state JSON, context
+sidecar, mux tracking list, pushed-commit records for that PR, and a local
+worktree branch/HEAD/status summary.  Before upload, mergedog applies a
+best-effort credential scrub over the entire bundle.
+
 ### Common flags
 
 These work on both the single-PR and stack entry points:
