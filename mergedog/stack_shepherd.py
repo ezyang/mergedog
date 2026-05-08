@@ -975,6 +975,7 @@ def run_stack(
     ignore_sev: bool = False,
     reassess: bool = False,
     force_ghstack: bool = False,
+    manage_mergedog_label: bool = False,
     extra_context: str | None = None,
 ) -> None:
     repo.ensure_clone()
@@ -989,15 +990,15 @@ def run_stack(
     for i, m in enumerate(members):
         log(f"  [{i}] PR #{m.pr}  head={m.head_ref}  orig={m.orig_ref}")
 
-    # Tag every member up front so other operators / mergedogs see the
-    # whole stack is owned, then arrange to remove every label on any
-    # exit path (success, halt, SIGTERM from ``mux cancel``, ctrl-c).
+    # Optionally tag every member up front so other operators / mergedogs see
+    # the whole stack is owned, then remove labels on any exit path.
     labelled: list[int] = []
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     faulthandler.enable()
     faulthandler.register(signal.SIGUSR1)
     try:
-        labelled = _add_mergedog_labels_parallel(members)
+        if manage_mergedog_label:
+            labelled = _add_mergedog_labels_parallel(members)
 
         # One batched ``git fetch`` for every member's /head + /orig.
         # _setup_member then reads SHAs out of this dict instead of

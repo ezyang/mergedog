@@ -69,6 +69,7 @@ mcp = FastMCP(
         "  rebase all         — rebase every tracked PR\n"
         "  reassess <pr>      — restart with --reassess\n"
         "  ignore-sev [on|off] — toggle mux-wide --ignore-sev\n"
+        "  mergedog-label [on|off] — toggle mux-wide --manage-mergedog-label\n"
         "  log <pr>           — show log file path\n"
         "  status             — JSON status of all PRs\n"
     ),

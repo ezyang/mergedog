@@ -719,6 +719,7 @@ def shepherd(
     ignore_sev: bool = False,
     reassess: bool = False,
     extra_context: str | None = None,
+    manage_mergedog_label: bool = False,
 ) -> None:
     repo.ensure_clone()
     repo.fetch_origin()
@@ -726,15 +727,15 @@ def shepherd(
     pr_data = github.get_pr(pr)
     _validate_pr(pr_data)
 
-    # Past validation: we're committed to running. Tag the PR so other
-    # operators / mergedogs see it's already being handled, and arrange for
-    # the tag to come off no matter how we exit. The label is purely a
-    # coordination signal -- if GitHub returns a transient 5xx (we've seen
-    # 502s here), shepherd anyway rather than aborting before any real work.
-    try:
-        github.add_label(pr, MERGEDOG_LABEL)
-    except Exception as e:
-        log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
+    # Optional coordination signal. Keep best-effort semantics so a transient
+    # GitHub label failure does not abort the actual shepherding work.
+    labelled = False
+    if manage_mergedog_label:
+        try:
+            github.add_label(pr, MERGEDOG_LABEL)
+            labelled = True
+        except Exception as e:
+            log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     faulthandler.enable()
     faulthandler.register(signal.SIGUSR1)
@@ -749,10 +750,11 @@ def shepherd(
             extra_context,
         )
     finally:
-        try:
-            github.remove_label(pr, MERGEDOG_LABEL)
-        except Exception as e:
-            log(f"WARNING: failed to remove {MERGEDOG_LABEL} label: {e}")
+        if labelled:
+            try:
+                github.remove_label(pr, MERGEDOG_LABEL)
+            except Exception as e:
+                log(f"WARNING: failed to remove {MERGEDOG_LABEL} label: {e}")
 
 
 def _shepherd_body(

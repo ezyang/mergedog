@@ -21,6 +21,8 @@ user when the PR is ready for `@pytorchbot merge`.
   - `remove <pr>` — stop and forget (wipes worktree + state)
   - `restart <pr>` — cancel + add
   - `ignore-sev on|off` — toggle whether shepherds ignore CI SEVs
+  - `mergedog-label on|off` — toggle whether future shepherds manage the
+    `mergedog` coordination label
 - **mergedog_log** — read a PR's shepherd log.  Use `lines=` to control
   how much you read (default 100).  The log is the primary diagnostic
   tool when something goes wrong.

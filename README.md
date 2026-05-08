@@ -54,11 +54,14 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--resume-known] [--ignore-sev] [--root DIR]
+python -m mergedog.mux [<pr>...] [--resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
 ```
 
 - `--resume-known` restarts every PR in the tracked list (`~/.mergedog/mux-prs.json`).
 - `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
+- `--manage-mergedog-label` tells all spawned shepherds to add the `mergedog`
+  label at startup and remove it on exit. By default, shepherds do not mutate
+  this label.
 - `--root DIR` redirects all on-disk state to a different directory (also
   settable via `MERGEDOG_ROOT` env var).
 
@@ -75,6 +78,7 @@ TUI commands (type in the input bar at the bottom):
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
 | `log <pr>` | Print the log file path |
 | `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
+| `mergedog-label [on\|off]` | Toggle `mergedog` label management for future spawns |
 | `migrate` | Print resume instructions for moving to another host |
 | `quit` | Terminate everything |
 
@@ -149,6 +153,7 @@ These work on both the single-PR and stack entry points:
 | `--accept-divergence` | Proceed even if PR head differs from the approval commit |
 | `--ignore-sev` | Don't park on open `ci: sev` issues |
 | `--reassess` | Re-invoke Claude for failures previously judged spurious |
+| `--manage-mergedog-label` | Add the `mergedog` label at startup and remove it on exit |
 | `--extra-context TEXT` | Operator hint injected into Claude's fix prompt (trusted) |
 | `--extra-context-file PATH` | Same, but reads from a file (mutually exclusive with above) |
 | `--root DIR` | Override on-disk root (`~/.mergedog`) |

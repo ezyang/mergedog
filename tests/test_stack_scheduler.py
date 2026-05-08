@@ -38,6 +38,52 @@ def _mk_ctx(
     return ctx
 
 
+class TestStackMergedogLabelManagement(unittest.TestCase):
+    def _run_until_after_optional_label(self, **kwargs):
+        member = StackMember(
+            pr=101,
+            head_ref="gh/user/101/head",
+            orig_ref="gh/user/101/orig",
+        )
+        pr_data_by_pr = {101: {"number": 101}}
+        with mock.patch.object(
+            stack_shepherd.repo, "ensure_clone"
+        ), mock.patch.object(
+            stack_shepherd.repo, "fetch_main"
+        ), mock.patch.object(
+            stack_shepherd, "resolve_stack", return_value=([member], pr_data_by_pr)
+        ), mock.patch.object(
+            stack_shepherd, "configure_log_file"
+        ), mock.patch.object(
+            stack_shepherd.signal, "signal"
+        ), mock.patch.object(
+            stack_shepherd.faulthandler, "enable"
+        ), mock.patch.object(
+            stack_shepherd.faulthandler, "register"
+        ), mock.patch.object(
+            stack_shepherd, "_add_mergedog_labels_parallel", return_value=[101]
+        ) as add_labels, mock.patch.object(
+            stack_shepherd.repo, "fetch_stack_refs", side_effect=SystemExit
+        ), mock.patch.object(
+            stack_shepherd.github, "remove_label"
+        ) as remove_label:
+            with self.assertRaises(SystemExit):
+                stack_shepherd.run_stack(101, **kwargs)
+        return add_labels, remove_label
+
+    def test_default_does_not_touch_mergedog_labels(self):
+        add_labels, remove_label = self._run_until_after_optional_label()
+        add_labels.assert_not_called()
+        remove_label.assert_not_called()
+
+    def test_explicit_flag_adds_and_removes_mergedog_labels(self):
+        add_labels, remove_label = self._run_until_after_optional_label(
+            manage_mergedog_label=True
+        )
+        add_labels.assert_called_once()
+        remove_label.assert_called_once_with(101, stack_shepherd.MERGEDOG_LABEL)
+
+
 class TestInspectMember(unittest.TestCase):
     def _ctx(self, *, spurious=()):
         ctx = _mk_ctx(orig_sha="A", status=None)

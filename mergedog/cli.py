@@ -74,6 +74,15 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--manage-mergedog-label",
+        action="store_true",
+        help=(
+            "Add the ``mergedog`` coordination label at startup and remove "
+            "it on exit. Disabled by default because label churn mutates the "
+            "PR even when no CI/fix action is otherwise needed."
+        ),
+    )
+    parser.add_argument(
         "--root",
         metavar="DIR",
         help=(
@@ -146,6 +155,7 @@ def _single_main(argv: list[str]) -> int:
             accept_divergence=args.accept_divergence,
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
+            manage_mergedog_label=args.manage_mergedog_label,
             extra_context=_resolve_extra_context(args),
         )
     except KeyboardInterrupt:
@@ -188,6 +198,7 @@ def _stack_main(argv: list[str]) -> int:
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
             force_ghstack=args.force_ghstack,
+            manage_mergedog_label=args.manage_mergedog_label,
             extra_context=_resolve_extra_context(args),
         )
     except KeyboardInterrupt:

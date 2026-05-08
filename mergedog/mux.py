@@ -20,6 +20,9 @@ Commands typed at the bottom (enter to submit):
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
                                       every shepherd spawn
+    mergedog-label [on|off]           toggle (or show) the mux-wide
+                                      ``--manage-mergedog-label`` default
+                                      applied to every shepherd spawn
     migrate                            print commands to resume on another
                                       server, then quit
     quit                              terminate everything and exit
@@ -271,6 +274,7 @@ class MuxApp(App):
         initial: list[int],
         *,
         ignore_sev: bool = False,
+        manage_mergedog_label: bool = False,
         gchat_to: str | None = None,
         lock_fd: int = -1,
     ) -> None:
@@ -279,6 +283,7 @@ class MuxApp(App):
         self._pr_titles: dict[int, str] = {}
         self._initial = initial
         self.ignore_sev = ignore_sev
+        self.manage_mergedog_label = manage_mergedog_label
         self.gchat_to = gchat_to
         self._lock_fd = lock_fd
         self._ipc_server: asyncio.AbstractServer | None = None
@@ -288,7 +293,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
-                "cancel <pr> | remove <pr> | log <pr> | migrate | quit"
+                "cancel <pr> | remove <pr> | log <pr> | mergedog-label | migrate | quit"
             )
         )
 
@@ -307,6 +312,11 @@ class MuxApp(App):
         out = list(extra)
         if self.ignore_sev and "--ignore-sev" not in out:
             out = ["--ignore-sev", *out]
+        if (
+            self.manage_mergedog_label
+            and "--manage-mergedog-label" not in out
+        ):
+            out = ["--manage-mergedog-label", *out]
         if self.gchat_to and not any(a.startswith("--gchat-to") for a in out):
             out = [f"--gchat-to={self.gchat_to}", *out]
         return out
@@ -373,6 +383,26 @@ class MuxApp(App):
         state = "on" if new else "off"
         return (
             f"ignore-sev {state} (applies to future spawns; "
+            f"use `rebase all` to apply to running PRs)"
+        )
+
+    def _do_mergedog_label(self, rest: list[str]) -> str:
+        if not rest:
+            state = "on" if self.manage_mergedog_label else "off"
+            return f"mergedog-label is {state}"
+        arg = rest[0].lower()
+        if arg in ("on", "true", "1", "yes"):
+            new = True
+        elif arg in ("off", "false", "0", "no"):
+            new = False
+        elif arg == "toggle":
+            new = not self.manage_mergedog_label
+        else:
+            return "usage: mergedog-label [on|off|toggle]"
+        self.manage_mergedog_label = new
+        state = "on" if new else "off"
+        return (
+            f"mergedog-label {state} (applies to future spawns; "
             f"use `rebase all` to apply to running PRs)"
         )
 
@@ -515,6 +545,8 @@ class MuxApp(App):
                 return self._format_migrate()
             elif cmd in ("ignore-sev", "ignore_sev"):
                 return self._do_ignore_sev(rest)
+            elif cmd in ("mergedog-label", "mergedog_label"):
+                return self._do_mergedog_label(rest)
             elif cmd == "status":
                 return self._format_status()
             elif cmd in ("quit", "q", "exit"):
@@ -685,6 +717,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--manage-mergedog-label",
+        action="store_true",
+        help=(
+            "Mux-wide default: pass --manage-mergedog-label to every spawned "
+            "shepherd so it adds the ``mergedog`` label at startup and "
+            "removes it on exit. Toggle at runtime with the "
+            "``mergedog-label on|off`` command."
+        ),
+    )
+    parser.add_argument(
         "--root",
         metavar="DIR",
         help=(
@@ -731,6 +773,7 @@ def main() -> int:
     app = MuxApp(
         initial,
         ignore_sev=args.ignore_sev,
+        manage_mergedog_label=args.manage_mergedog_label,
         gchat_to=args.gchat_to,
         lock_fd=lock_fd,
     )
