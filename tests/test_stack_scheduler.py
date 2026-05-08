@@ -241,5 +241,67 @@ class TestAllTrunkGreenStable(unittest.TestCase):
         )
 
 
+class TestRebaseStackPrefix(unittest.TestCase):
+    def test_rebases_and_submits_full_stack(self):
+        bottom = _mk_ctx(orig_sha="A", status="passed", stable_for=999)
+        bottom.member = StackMember(
+            pr=101, head_ref="gh/u/101/head", orig_ref="gh/u/101/orig"
+        )
+        top = _mk_ctx(orig_sha="B", status="passed", stable_for=999)
+        top.member = StackMember(
+            pr=102, head_ref="gh/u/102/head", orig_ref="gh/u/102/orig"
+        )
+        contexts = [bottom, top]
+        refs = {
+            "gh/u/101/head": "A_HEAD2",
+            "gh/u/101/orig": "A_ORIG2",
+            "gh/u/102/head": "B_HEAD2",
+            "gh/u/102/orig": "B_ORIG2",
+        }
+        with mock.patch.object(
+            stack_shepherd, "_wait_for_no_active_sev", return_value=False
+        ), mock.patch.object(
+            stack_shepherd.repo,
+            "select_rebase_target",
+            return_value=("origin/main", "origin/main"),
+        ), mock.patch.object(
+            stack_shepherd, "_reconstruct_stack_up_to"
+        ) as reconstruct, mock.patch.object(
+            stack_shepherd.repo,
+            "attempt_rebase_main",
+            return_value=("ok", "B_REBASED"),
+        ), mock.patch.object(
+            stack_shepherd.repo, "ghstack_submit"
+        ) as submit, mock.patch.object(
+            stack_shepherd.repo, "fetch_stack_refs", return_value=refs
+        ), mock.patch.object(
+            stack_shepherd, "_record_pushed_commit"
+        ) as record, mock.patch.object(
+            stack_shepherd, "_wait_for_pr_head"
+        ) as wait_head:
+            stack_shepherd._rebase_stack_prefix_onto_main(
+                contexts,
+                1,
+                mock.Mock(),
+                [],
+                ignore_sev=False,
+                force_ghstack=True,
+            )
+
+        reconstruct.assert_called_once_with(contexts, 1, mock.ANY)
+        submit.assert_called_once_with(
+            mock.ANY,
+            "Rebase stack onto origin/main",
+            no_stack=False,
+            force=True,
+        )
+        self.assertEqual(bottom.head_sha, "A_HEAD2")
+        self.assertEqual(top.head_sha, "B_HEAD2")
+        self.assertEqual(record.call_count, 2)
+        wait_head.assert_has_calls(
+            [mock.call(101, "A_HEAD2"), mock.call(102, "B_HEAD2")]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,10 +35,16 @@ from pathlib import Path
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
 from mergedog import github, repo
-from mergedog.handoff import ClaudeSession, post_handoff_comment, utc_now_iso
+from mergedog.handoff import (
+    ClaudeSession,
+    is_merge_conflict_failure,
+    post_handoff_comment,
+    utc_now_iso,
+    watch_stack_post_handoff,
+)
 from mergedog.log import die, log
 from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, context_file
-from mergedog.prompts import render_fix_prompt
+from mergedog.prompts import render_fix_prompt, render_rebase_conflict_prompt
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
     CI_STABILITY_WINDOW_SEC,
@@ -52,6 +58,7 @@ from mergedog.shepherd import (
     _approve_pending_runs,
     _failed_logs_are_content_free,
     _record_claude_session,
+    _wait_for_pr_head,
     _wait_for_no_active_sev,
     describe_log_state,
 )
@@ -605,6 +612,115 @@ def _propagate_stack(
         ctx.stable_observation = None
 
 
+def _reset_after_head_change(ctx: _MemberCtx, new_head: str, new_orig: str) -> None:
+    ctx.orig_sha = new_orig
+    if new_head == ctx.head_sha:
+        return
+    ctx.trust.trust(new_head)
+    ctx.spurious_check_names.clear()
+    ctx.trust.spurious_check_names = []
+    ctx.trust.save()
+    ctx.head_sha = new_head
+    ctx.last_status = None
+    ctx.empty_log_defers = 0
+    ctx.stable_observation = None
+
+
+def _rebase_stack_prefix_onto_main(
+    contexts: list[_MemberCtx],
+    target_idx: int,
+    worktree: Path,
+    sessions: list[ClaudeSession],
+    *,
+    ignore_sev: bool,
+    force_ghstack: bool,
+) -> None:
+    """Rebase the stack prefix ending at ``target_idx`` onto main.
+
+    This is the stack-mode equivalent of the single-PR ``--rebase`` recovery:
+    reconstruct the canonical /orig stack, rebase it onto the selected
+    known-good main ref, resolve conflicts with Claude if necessary, and push
+    the rebased stack with a full ghstack submit.
+    """
+    target_ctx = contexts[target_idx]
+    if _wait_for_no_active_sev(
+        "rebasing stack onto main", ignore_sev=ignore_sev
+    ):
+        repo.fetch_origin()
+
+    target, reason = repo.select_rebase_target(worktree)
+    log(f"rebase target: {reason}")
+    _reconstruct_stack_up_to(contexts, target_idx, worktree)
+
+    try:
+        status, new_top_sha = repo.attempt_rebase_main(worktree, ref=target)
+    except RuntimeError as e:
+        die(str(e))
+
+    if status == "noop":
+        log("stack rebase produced no new commit (already at target)")
+        return
+
+    if status == "conflict":
+        log("stack rebase produced conflicts; asking claude to resolve")
+        ctx_path, _ = _refresh_context_for(target_ctx)
+        prompt = render_rebase_conflict_prompt(
+            url=target_ctx.pr_data.get("url", ""),
+            branch=target_ctx.member.head_ref,
+            context_path=str(ctx_path),
+        )
+        sha_before = repo.head_sha(worktree)
+        started_at = utc_now_iso()
+        ran_cleanly, new_top_sha, transcript = claude_mod.invoke_rebase_resolver(
+            worktree, prompt
+        )
+        _record_claude_session(
+            sessions,
+            mode=f"rebase-resolver #{target_ctx.member.pr}",
+            sha_before=sha_before,
+            started_at=started_at,
+            ran_cleanly=ran_cleanly,
+            new_sha=new_top_sha,
+            transcript=transcript,
+            on_commit="resolved stack rebase conflicts in commit {sha}",
+            on_clean_noop="aborted the stack rebase",
+        )
+        if not ran_cleanly:
+            die("claude failed to resolve the stack rebase conflict cleanly")
+        if new_top_sha is None:
+            die("claude aborted the stack rebase; halting for human intervention")
+
+    assert new_top_sha is not None
+    log(
+        f"rebased stack through PR #{target_ctx.member.pr} to "
+        f"{new_top_sha[:12]}; re-publishing via ghstack"
+    )
+    _wait_for_no_active_sev(
+        "re-publishing rebased stack via ghstack submit", ignore_sev=ignore_sev
+    )
+    repo.ghstack_submit(
+        worktree,
+        "Rebase stack onto origin/main",
+        no_stack=False,
+        force=force_ghstack,
+    )
+
+    refs = repo.fetch_stack_refs(
+        [(ctx.member.head_ref, ctx.member.orig_ref) for ctx in contexts]
+    )
+    for ctx in contexts:
+        old_head = ctx.head_sha
+        new_head = refs[ctx.member.head_ref]
+        new_orig = refs[ctx.member.orig_ref]
+        _reset_after_head_change(ctx, new_head, new_orig)
+        if new_head != old_head:
+            log(f"  PR #{ctx.member.pr}: /head -> {new_head[:12]} (rebased)")
+            _record_pushed_commit(
+                "rebase", ctx.member.pr, new_head, "Rebase stack onto origin/main"
+            )
+            _wait_for_pr_head(ctx.member.pr, new_head)
+
+
 def _is_green_stable(ctx: _MemberCtx, now: float) -> bool:
     """True iff ctx's CI verdict is ``passed`` and has held for the window.
 
@@ -880,6 +996,44 @@ def run_stack(
         sessions_by_pr: dict[int, list[ClaudeSession]] = {
             ctx.member.pr: [] for ctx in contexts
         }
+        if rebase:
+            log("user requested upfront rebase of stack onto origin/main")
+            _rebase_stack_prefix_onto_main(
+                contexts,
+                len(contexts) - 1,
+                worktree,
+                sessions_by_pr[contexts[-1].member.pr],
+                ignore_sev=ignore_sev,
+                force_ghstack=force_ghstack,
+            )
+            for ctx in contexts:
+                ctx.last_status = None
+
+        prior_conflict = next(
+            (
+                ctx
+                for ctx in reversed(contexts)
+                if ctx.trust.last_observed_failure_body
+                and is_merge_conflict_failure(ctx.trust.last_observed_failure_body)
+            ),
+            None,
+        )
+        if prior_conflict is not None:
+            log(
+                f"prior merge-conflict failure detected on PR "
+                f"#{prior_conflict.member.pr}; rebasing stack onto main"
+            )
+            _rebase_stack_prefix_onto_main(
+                contexts,
+                contexts.index(prior_conflict),
+                worktree,
+                sessions_by_pr[prior_conflict.member.pr],
+                ignore_sev=ignore_sev,
+                force_ghstack=force_ghstack,
+            )
+            prior_conflict.trust.last_observed_failure_body = ""
+            prior_conflict.trust.save()
+
         log_state = _StackLogState()
         while True:
             try:
@@ -915,30 +1069,67 @@ def run_stack(
                         ctx.pr_data,
                         sessions_by_pr[ctx.member.pr],
                     )
-                # TODO: stack shepherd exits here without watching for
-                # pytorchmergebot "Merge failed" replies. The single-PR
-                # shepherd has watch_post_handoff() (shepherd.py:1263)
-                # that blocks until pytorchmergebot responds and loops
-                # back to CI inspection on failure. Stacks need an
-                # analogous loop that watches ALL member PRs for
-                # "Merge failed" comments, then rebases the stack
-                # (via _rebase_ghstack_onto_main or similar) and
-                # re-enters the scheduler tick loop.
-                #
-                # Diagnosing stack issues:
-                # - State files: ~/.mergedog/state/<pr>.json for each
-                #   member; last_observed_failure_iso=="" means no
-                #   failure was ever seen (watch loop never ran).
-                # - Worktree: ~/.mergedog/worktrees/stack-<bottom_pr>/
-                #   (shared across all members, unlike per-PR dirs).
-                # - Stack membership: resolve_stack() walks /orig
-                #   commit ancestry. If a member was added/removed
-                #   from the stack after the shepherd started, the
-                #   running shepherd won't see the change.
-                # - Merge failures land on whichever PR had
-                #   @pytorchbot merge posted; for stacks this is
-                #   usually one specific member, not all of them.
-                return
+
+                since_by_pr: dict[int, str] = {}
+                for ctx in contexts:
+                    handoff_iso = (
+                        github.latest_mergedog_handoff_iso(ctx.member.pr)
+                        or utc_now_iso()
+                    )
+                    since_by_pr[ctx.member.pr] = max(
+                        handoff_iso, ctx.trust.last_observed_failure_iso
+                    )
+                log(
+                    "Hand off stack to a human reviewer; have them comment "
+                    f"`@pytorchbot merge` on PR #{contexts[-1].member.pr}."
+                )
+
+                result, event_pr, event_iso, fail_body = watch_stack_post_handoff(
+                    since_by_pr
+                )
+                if result == "closed":
+                    die(
+                        f"PR #{event_pr} is no longer open; pruning local "
+                        "stack shepherd state",
+                        code=EXIT_PR_NOT_ACTIONABLE,
+                    )
+
+                failed_ctx = next(
+                    ctx for ctx in contexts if ctx.member.pr == event_pr
+                )
+                assert event_iso is not None
+                failed_ctx.trust.last_observed_failure_iso = event_iso
+                failed_ctx.trust.last_observed_failure_body = fail_body or ""
+                failed_ctx.trust.save()
+
+                if fail_body and is_merge_conflict_failure(fail_body):
+                    log(
+                        f"pytorchmergebot merge failed on PR #{event_pr} "
+                        "due to merge conflict; rebasing stack onto main"
+                    )
+                    repo.fetch_origin()
+                    _rebase_stack_prefix_onto_main(
+                        contexts,
+                        contexts.index(failed_ctx),
+                        worktree,
+                        sessions_by_pr[failed_ctx.member.pr],
+                        ignore_sev=ignore_sev,
+                        force_ghstack=force_ghstack,
+                    )
+                    failed_ctx.trust.last_observed_failure_body = ""
+                    failed_ctx.trust.save()
+                    log_state.last_summary = None
+                    continue
+
+                log(
+                    "pytorchmergebot reported stack merge failure; "
+                    "re-inspecting CI"
+                )
+                for ctx in contexts:
+                    _refresh_member_pr_data(ctx)
+                    ctx.last_status = None
+                log_state.last_summary = None
+                continue
             if not took_action:
                 time.sleep(POLL_INTERVAL_SEC)
     finally:

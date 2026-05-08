@@ -278,3 +278,90 @@ def watch_post_handoff(
                     )
                 last_state = new_state
         time.sleep(_POLL_INTERVAL_SEC)
+
+
+def watch_stack_post_handoff(
+    prs_since_iso: dict[int, str],
+) -> tuple[str, int, str | None, str | None]:
+    """Stack analogue of :func:`watch_post_handoff`.
+
+    Watches every stack member because pytorchmergebot comments land on the PR
+    where the human typed ``@pytorchbot merge`` -- usually the stack top, but
+    not guaranteed.
+
+    Returns ``(kind, pr, event_iso, body)``:
+      - ``("closed", pr, None, None)`` -- one member is no longer open.
+      - ``("failed", pr, event_iso, body)`` -- mergebot failed that member.
+    """
+    last_state: str | None = None
+    last_merging_msg: str | None = None
+    prs = sorted(prs_since_iso)
+    while True:
+        any_merging = False
+        any_approved = False
+        started_prs: list[int] = []
+        merging_prs: list[int] = []
+        for pr in prs:
+            pr_data = github.get_pr(pr)
+            if pr_data.get("state") != "OPEN":
+                set_merging(False)
+                set_approved(False)
+                return "closed", pr, None, None
+
+            merging = github.has_label(pr_data, github.MERGING_LABEL)
+            approved = (
+                (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
+            )
+            any_merging = any_merging or merging
+            any_approved = any_approved or approved
+            if merging:
+                merging_prs.append(pr)
+
+            event = _latest_mergebot_event(pr, prs_since_iso[pr])
+            kind = event[0] if event else None
+            if kind == "failed":
+                set_merging(any_merging)
+                set_approved(any_approved)
+                log(f"pytorchmergebot reported merge failure on PR #{pr}")
+                return "failed", pr, event[1], event[2]
+            if kind == "started":
+                started_prs.append(pr)
+
+        set_merging(any_merging)
+        set_approved(any_approved)
+        if merging_prs:
+            msg = "waiting for stack merge on " + ", ".join(
+                f"PR #{pr}" for pr in merging_prs
+            )
+            if len(merging_prs) == 1:
+                msg += f"; {_merging_progress_line(merging_prs[0])}"
+            if msg != last_merging_msg:
+                log(msg)
+                last_merging_msg = msg
+            last_state = "merging"
+        else:
+            last_merging_msg = None
+            if started_prs:
+                new_state = "started"
+            elif any_approved:
+                new_state = "awaiting_merge"
+            else:
+                new_state = "awaiting_approval"
+            if new_state != last_state:
+                if new_state == "started":
+                    log(
+                        "pytorchmergebot picked up a stack merge; "
+                        "waiting for outcome"
+                    )
+                elif new_state == "awaiting_merge":
+                    log(
+                        "handed off stack; awaiting `@pytorchbot merge`. "
+                        "Will recover on a Merge failed reply."
+                    )
+                else:
+                    log(
+                        "handed off stack; awaiting approval. Will recover "
+                        "on a Merge failed reply."
+                    )
+                last_state = new_state
+        time.sleep(_POLL_INTERVAL_SEC)
