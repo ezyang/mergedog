@@ -6,6 +6,10 @@ If no virtual environment is active, activate `.venv` before running Python or i
 source .venv/bin/activate
 ```
 
+# Project memories
+
+Before doing repo-specific operations, check for matching project memories under `~/.codex/memories/` (for example, push command shapes or local workflow exceptions).
+
 # Commit cadence
 
 Commit proactively at natural breakpoints — don't wait to be asked.
