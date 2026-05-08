@@ -23,6 +23,7 @@ ROOT = _resolve_root()
 REPO_DIR = ROOT / "repo"
 WORKTREES_DIR = ROOT / "worktrees"
 STATE_DIR = ROOT / "state"
+STATUS_DIR = ROOT / "status"
 CONTEXTS_DIR = ROOT / "contexts"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
 PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
@@ -58,6 +59,10 @@ def state_file(pr: int) -> Path:
     return STATE_DIR / f"{pr}.json"
 
 
+def status_file(pr: int) -> Path:
+    return STATUS_DIR / f"{pr}.json"
+
+
 def context_file(pr: int) -> Path:
     return CONTEXTS_DIR / f"{pr}.md"
 
@@ -66,4 +71,5 @@ def ensure_dirs() -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
     CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)

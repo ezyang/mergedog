@@ -121,9 +121,11 @@ from mergedog.paths import (  # noqa: E402
     context_file,
     ensure_dirs,
     state_file,
+    status_file,
     worktree_dir,
 )
 from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE  # noqa: E402
+from mergedog.status import read_status  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 
@@ -281,6 +283,7 @@ class MuxApp(App):
         super().__init__()
         self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
         self._pr_titles: dict[int, str] = {}
+        self._pr_status: dict[int, dict] = {}
         self._initial = initial
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
@@ -445,6 +448,11 @@ class MuxApp(App):
             else:
                 state = "🔴"
             last = _last_log_line(log_path)
+            structured = read_status(pr)
+            if structured is None:
+                self._pr_status.pop(pr, None)
+            else:
+                self._pr_status[pr] = structured
             title = self._pr_titles.get(pr, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -471,7 +479,7 @@ class MuxApp(App):
                 entry[1].close()  # type: ignore[attr-defined]
             except Exception:
                 pass
-        for path in (state_file(pr), context_file(pr)):
+        for path in (state_file(pr), context_file(pr), status_file(pr)):
             try:
                 path.unlink(missing_ok=True)
             except Exception:
@@ -572,11 +580,13 @@ class MuxApp(App):
                 state = "exited_error"
             last = _last_log_line(log_path)
             title = self._pr_titles.get(pr, "") or _read_pr_title(pr)
+            structured = read_status(pr)
             rows.append({
                 "pr": pr,
                 "title": title,
                 "state": state,
                 "last_log": last,
+                "shepherd_status": structured,
             })
         return json.dumps(rows, indent=2)
 

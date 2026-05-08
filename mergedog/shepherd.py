@@ -32,6 +32,7 @@ from mergedog.prompts import (
 )
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
+from mergedog.status import write_status
 from mergedog.trust_seed import seed_trust_from_reviews
 
 
@@ -254,7 +255,14 @@ def _apply_spurious_overrides(
     return out
 
 
-def _refresh_status_prefix(pr: int) -> None:
+def _write_status_best_effort(pr: int, **fields) -> None:
+    try:
+        write_status(pr, **fields)
+    except Exception:
+        pass
+
+
+def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
     Called once per main-poll iteration. The prefix is the only signal
@@ -269,9 +277,12 @@ def _refresh_status_prefix(pr: int) -> None:
     try:
         labels, decision = github.get_pr_status_fields(pr)
     except Exception:
-        return
-    set_merging(github.MERGING_LABEL in labels)
-    set_approved((decision or "").upper() == "APPROVED")
+        return None, None
+    merging = github.MERGING_LABEL in labels
+    approved = (decision or "").upper() == "APPROVED"
+    set_merging(merging)
+    set_approved(approved)
+    return approved, merging
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -836,6 +847,16 @@ def _shepherd_body(
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
     recovery_attempts = 0
+    last_approved: bool | None = None
+    last_merging: bool | None = None
+    _write_status_best_effort(
+        pr,
+        phase="starting",
+        approved=last_approved,
+        merging=last_merging,
+        fix_attempts=fix_commits_pushed,
+        max_fix_attempts=MAX_FIX_COMMITS,
+    )
     # Auto-retries for infra-flake merge failures (e.g. 504). Capped at
     # MAX_MERGE_AUTO_RETRIES to prevent runaway commenting during outages.
     auto_retries = 0
@@ -942,7 +963,11 @@ def _shepherd_body(
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            _refresh_status_prefix(pr)
+            approved, merging = _refresh_status_prefix(pr)
+            if approved is not None:
+                last_approved = approved
+            if merging is not None:
+                last_merging = merging
             # 1. Verify the PR head is still trusted.
             current = github.get_pr_head_sha(pr)
             if self_pr:
@@ -1015,6 +1040,22 @@ def _shepherd_body(
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}
             )
+            failed_count = sum(
+                1 for c in checks if c.get("bucket") in {"fail", "cancel"}
+            )
+            if status == "failed" and not failed_count and workflow_failed_run_ids:
+                failed_count = len(workflow_failed_run_ids)
+            _write_status_best_effort(
+                pr,
+                phase="polling_ci",
+                approved=last_approved,
+                merging=last_merging,
+                ci_done=done,
+                ci_total=len(checks),
+                ci_failed=failed_count,
+                fix_attempts=fix_commits_pushed,
+                max_fix_attempts=MAX_FIX_COMMITS,
+            )
             summary = f"{status} ({done}/{len(checks)} done)"
             if summary != last_status:
                 log(f"CI status -> {summary}")
@@ -1055,11 +1096,7 @@ def _shepherd_body(
                     failed = github.get_failed_job_logs_for_runs(
                         workflow_failed_run_ids
                     )
-                failing_check_count = sum(
-                    1
-                    for c in checks
-                    if c.get("bucket") in {"fail", "cancel"}
-                )
+                failing_check_count = failed_count
                 if not failing_check_count and workflow_failed_run_ids:
                     failing_check_count = len(failed)
                 log_state = describe_log_state(failed, failing_check_count)
@@ -1108,6 +1145,17 @@ def _shepherd_body(
                     continue
 
                 log(f"invoking {_llm_label()} on failing CI ({log_state})")
+                _write_status_best_effort(
+                    pr,
+                    phase="fixing_ci",
+                    approved=last_approved,
+                    merging=last_merging,
+                    ci_done=done,
+                    ci_total=len(checks),
+                    ci_failed=failed_count,
+                    fix_attempts=fix_commits_pushed,
+                    max_fix_attempts=MAX_FIX_COMMITS,
+                )
                 ctx_path, comments = _refresh_context_file(
                     pr_data, trusted=trusted_pr
                 )
@@ -1257,6 +1305,17 @@ def _shepherd_body(
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
             log("ALL CI GREEN.")
+            _write_status_best_effort(
+                pr,
+                phase="ready",
+                approved=last_approved,
+                merging=last_merging,
+                ci_done=done,
+                ci_total=len(checks),
+                ci_failed=failed_count,
+                fix_attempts=fix_commits_pushed,
+                max_fix_attempts=MAX_FIX_COMMITS,
+            )
             break
 
         post_handoff_comment(
@@ -1272,6 +1331,14 @@ def _shepherd_body(
         log(
             f"Hand off to a human reviewer; have them comment "
             f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
+        )
+        _write_status_best_effort(
+            pr,
+            phase="watching_merge",
+            approved=last_approved,
+            merging=last_merging,
+            fix_attempts=fix_commits_pushed,
+            max_fix_attempts=MAX_FIX_COMMITS,
         )
 
         result, event_iso, fail_body = watch_post_handoff(pr, since_iso)

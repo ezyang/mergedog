@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
+from mergedog.status import write_status
 
 
 @dataclass
@@ -210,6 +211,18 @@ def latest_mergebot_failure_event(
 _POLL_INTERVAL_SEC = 60
 
 
+def _write_handoff_status(pr: int, *, approved: bool, merging: bool) -> None:
+    try:
+        write_status(
+            pr,
+            phase="watching_merge" if merging else "ready",
+            approved=approved,
+            merging=merging,
+        )
+    except Exception:
+        pass
+
+
 def _merging_progress_line(pr: int) -> str:
     """Build the body of a [MERGING]-phase log line: CI progress + failures.
 
@@ -258,6 +271,7 @@ def watch_post_handoff(
         approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
         set_approved(approved)
+        _write_handoff_status(pr, approved=approved, merging=merging)
         if pr_data.get("state") != "OPEN":
             return "closed", None, None
         event = latest_mergebot_event(pr, since_iso)
