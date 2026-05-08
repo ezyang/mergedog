@@ -434,6 +434,7 @@ def _invoke(
     mode: str,
     expect_merge_commit: bool,
     expect_rebase_resolution: bool = False,
+    allow_multiple_commits: bool = False,
 ) -> tuple[bool, str | None, list[str]]:
     """Run the configured LLM and validate that its output meets the contract.
 
@@ -445,9 +446,9 @@ def _invoke(
 
     Returns ``(ran_cleanly, new_sha, transcript)``:
     - ``ran_cleanly`` is False if the LLM exited non-zero, left a dirty
-      working tree (or unfinished merge), made multiple commits, or
-      violated the commit-message contract -- the harness should halt
-      in any of those cases.
+      working tree (or unfinished merge), made an unexpected number of
+      commits, or violated the commit-message contract -- the harness
+      should halt in any of those cases.
     - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if the LLM
       made one, else None. ``(True, None, ...)`` means "the LLM judged
       it a no-op" (spurious failures, or merge aborted).
@@ -498,13 +499,16 @@ def _invoke(
         return True, None, transcript
 
     n = _commits_between(worktree, before, after)
-    if n != 1:
+    if n != 1 and not allow_multiple_commits:
         expected = (
             "a merge resolution should be exactly one"
             if expect_merge_commit
             else "mergedog only allows one per pass"
         )
         log(f"{agent} produced {n} commits but {expected}")
+        return False, None, transcript
+    if n < 1:
+        log(f"{agent} produced no commits but HEAD moved unexpectedly")
         return False, None, transcript
 
     if expect_merge_commit and repo_mod.parent_count(worktree, after) != 2:
@@ -557,10 +561,11 @@ def invoke_merge_resolver(
 
 
 def invoke_rebase_resolver(
-    worktree: Path, prompt: str
+    worktree: Path, prompt: str, *, allow_multiple_commits: bool = False
 ) -> tuple[bool, str | None, list[str]]:
     """Run the configured LLM in a mid-rebase worktree to resolve conflicts."""
     return _invoke(
         worktree, prompt, mode="rebase-resolver",
         expect_merge_commit=False, expect_rebase_resolution=True,
+        allow_multiple_commits=allow_multiple_commits,
     )

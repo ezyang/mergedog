@@ -302,6 +302,65 @@ class TestRebaseStackPrefix(unittest.TestCase):
             [mock.call(101, "A_HEAD2"), mock.call(102, "B_HEAD2")]
         )
 
+    def test_conflict_resolver_allows_multiple_rebased_commits(self):
+        bottom = _mk_ctx(orig_sha="A", status="passed", stable_for=999)
+        bottom.member = StackMember(
+            pr=101, head_ref="gh/u/101/head", orig_ref="gh/u/101/orig"
+        )
+        bottom.pr_data = {"url": "https://github.com/pytorch/pytorch/pull/101"}
+        top = _mk_ctx(orig_sha="B", status="passed", stable_for=999)
+        top.member = StackMember(
+            pr=102, head_ref="gh/u/102/head", orig_ref="gh/u/102/orig"
+        )
+        top.pr_data = {"url": "https://github.com/pytorch/pytorch/pull/102"}
+        contexts = [bottom, top]
+        refs = {
+            "gh/u/101/head": "A_HEAD2",
+            "gh/u/101/orig": "A_ORIG2",
+            "gh/u/102/head": "B_HEAD2",
+            "gh/u/102/orig": "B_ORIG2",
+        }
+        with mock.patch.object(
+            stack_shepherd, "_wait_for_no_active_sev", return_value=False
+        ), mock.patch.object(
+            stack_shepherd.repo,
+            "select_rebase_target",
+            return_value=("origin/main", "origin/main"),
+        ), mock.patch.object(
+            stack_shepherd, "_reconstruct_stack_up_to"
+        ), mock.patch.object(
+            stack_shepherd.repo,
+            "attempt_rebase_main",
+            return_value=("conflict", None),
+        ), mock.patch.object(
+            stack_shepherd, "_refresh_context_for", return_value=(mock.Mock(), [])
+        ), mock.patch.object(
+            stack_shepherd.repo, "head_sha", return_value="B_OLD"
+        ), mock.patch.object(
+            stack_shepherd.claude_mod,
+            "invoke_rebase_resolver",
+            return_value=(True, "B_REBASED", []),
+        ) as invoke, mock.patch.object(
+            stack_shepherd.repo, "ghstack_submit"
+        ), mock.patch.object(
+            stack_shepherd.repo, "fetch_stack_refs", return_value=refs
+        ), mock.patch.object(
+            stack_shepherd, "_record_pushed_commit"
+        ), mock.patch.object(
+            stack_shepherd, "_wait_for_pr_head"
+        ):
+            stack_shepherd._rebase_stack_prefix_onto_main(
+                contexts,
+                1,
+                mock.Mock(),
+                [],
+                ignore_sev=False,
+                force_ghstack=False,
+            )
+
+        invoke.assert_called_once()
+        self.assertTrue(invoke.call_args.kwargs["allow_multiple_commits"])
+
 
 class TestLatestUnhandledStackFailure(unittest.TestCase):
     def test_finds_newest_post_handoff_failure(self):

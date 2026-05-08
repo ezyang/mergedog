@@ -679,7 +679,7 @@ def _rebase_stack_prefix_onto_main(
         sha_before = repo.head_sha(worktree)
         started_at = utc_now_iso()
         ran_cleanly, new_top_sha, transcript = claude_mod.invoke_rebase_resolver(
-            worktree, prompt
+            worktree, prompt, allow_multiple_commits=True
         )
         _record_claude_session(
             sessions,
