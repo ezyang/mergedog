@@ -42,7 +42,8 @@ are amended into the contributor's orig commit and re-uploaded with
 rather than by merging.
 
 mergedog is implemented as a traditional software harness that shells into
-Claude to actually issue the fixes.
+a local LLM CLI to actually issue the fixes.  Claude Code is the default;
+Codex and MetaCode are also supported.
 
 ## Running mergedog
 
@@ -143,6 +144,20 @@ These work on both the single-PR and stack entry points:
 | `--extra-context-file PATH` | Same, but reads from a file (mutually exclusive with above) |
 | `--root DIR` | Override on-disk root (`~/.mergedog`) |
 
+### LLM provider
+
+By default, mergedog shells out to `claude` with the `opus` model.  To switch
+future agent invocations, persist the provider in `~/.mergedog/config.json`:
+
+```bash
+mergedog config llm codex
+mergedog config llm metacode --model provider/model
+mergedog config llm claude --clear-model
+```
+
+`mergedog config llm` prints the current setting.  Supported providers are
+`claude`, `codex`, and `metacode`.
+
 ## Customizing Claude's prompt
 
 The prompts Claude sees are in `mergedog/prompts.py`. They are not
@@ -179,6 +194,7 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── mux-prs.json              # mux's tracked PR list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)
+├── config.json               # persistent operator settings (LLM provider/model)
 ├── label-cache.json          # cached repo labels for autolabeling (24h TTL)
 ├── lintrunner-venv/          # shared lintrunner virtualenv
 └── pushed-commits.log        # append-only log of pushed commits (stack mode)

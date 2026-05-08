@@ -1,4 +1,4 @@
-"""Invoke claude as a subprocess to investigate and (maybe) fix CI failures."""
+"""Invoke a local LLM CLI to investigate and (maybe) fix CI failures."""
 from __future__ import annotations
 
 import fcntl
@@ -7,9 +7,11 @@ import os
 import shlex
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from mergedog.config import LLMConfig, get_llm_config
 from mergedog.log import log
 from mergedog.paths import LINTRUNNER_VENV, REPO_DIR
 from mergedog.process import run
@@ -18,10 +20,62 @@ from mergedog.repo import head_sha, head_subject
 
 MERGEDOG_PREFIX = "[MERGEDOG]"
 
-# Pin the model so an operator's local default (or "fast mode" on an older
-# Opus) can't downgrade us. mergedog runs async; slow is fine, capable is
-# not optional.
-_CLAUDE_MODEL = "opus"
+
+@dataclass(frozen=True)
+class _LLMInvocation:
+    provider: str
+    cmd: list[str]
+    event_label: str
+
+
+def _build_llm_invocation(
+    prompt: str, cwd: Path, config: LLMConfig
+) -> _LLMInvocation:
+    model = config.effective_model
+    if config.provider == "claude":
+        cmd = [
+            "claude",
+            "-p",
+            prompt,
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        return _LLMInvocation(config.provider, cmd, "claude")
+    if config.provider == "codex":
+        cmd = [
+            "codex",
+            "exec",
+            "--json",
+            "--color",
+            "never",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-C",
+            str(cwd),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append(prompt)
+        return _LLMInvocation(config.provider, cmd, "codex")
+    if config.provider == "metacode":
+        cmd = [
+            "metacode",
+            "run",
+            "--yolo",
+            "--format",
+            "json",
+            "--dir",
+            str(cwd),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append(prompt)
+        return _LLMInvocation(config.provider, cmd, "metacode")
+    raise AssertionError(f"unknown LLM provider: {config.provider}")
 
 
 def _relativize(text: str, worktree: Path | None) -> str:
@@ -69,7 +123,7 @@ def _summarize_tool_input(tool: str, inp: dict, worktree: Path | None) -> str:
     return _relativize(json.dumps(inp, default=str), worktree)
 
 
-def _summarize_event(ev: dict, worktree: Path | None = None) -> Iterator[str]:
+def _summarize_claude_event(ev: dict, worktree: Path | None = None) -> Iterator[str]:
     """Render a stream-json event into zero or more human-readable log lines.
 
     Tool-result events are intentionally dropped: the operator can read the
@@ -112,35 +166,79 @@ def _summarize_event(ev: dict, worktree: Path | None = None) -> Iterator[str]:
             yield f"claude finished: {sub}"
 
 
-def _run_claude_streaming(
-    prompt: str, cwd: Path, env_extra: Mapping[str, str]
+def _string_from_block(block: object) -> str | None:
+    if isinstance(block, str):
+        return block
+    if not isinstance(block, dict):
+        return None
+    for key in ("text", "message", "summary", "content", "delta"):
+        value = block.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _summarize_generic_event(
+    provider: str, ev: dict, worktree: Path | None = None
+) -> Iterator[str]:
+    """Best-effort rendering for JSON event streams that are not Claude's."""
+    t = ev.get("type") or ev.get("event") or ev.get("kind")
+    if t in ("session.created", "session", "init", "started", "start"):
+        sid = ev.get("session_id") or ev.get("sessionId") or ev.get("id")
+        if isinstance(sid, str) and sid:
+            yield f"{provider} session {sid[:8]}"
+        return
+    if t in ("exec_command", "command", "tool_call", "tool_use"):
+        command = ev.get("command") or ev.get("cmd")
+        if isinstance(command, list):
+            command = shlex.join(str(x) for x in command)
+        if isinstance(command, str) and command.strip():
+            yield from _yield_multiline(
+                f"{provider} → command: ", _relativize(command, worktree)
+            )
+            return
+    for key in ("message", "text", "content", "output", "result", "delta"):
+        value = ev.get(key)
+        text = _string_from_block(value)
+        if text is None and isinstance(value, list):
+            parts = [_string_from_block(block) for block in value]
+            text = "\n".join(part for part in parts if part)
+        if text:
+            for line in _relativize(text, worktree).splitlines():
+                if line.strip():
+                    yield f"{provider}: {line}"
+            return
+    if t in ("done", "finished", "result", "completed"):
+        yield f"{provider} finished"
+
+
+def _summarize_event(
+    provider: str, ev: dict, worktree: Path | None = None
+) -> Iterator[str]:
+    if provider == "claude":
+        yield from _summarize_claude_event(ev, worktree)
+    else:
+        yield from _summarize_generic_event(provider, ev, worktree)
+
+
+def _run_llm_streaming(
+    prompt: str, cwd: Path, env_extra: Mapping[str, str], config: LLMConfig
 ) -> tuple[int, list[str]]:
-    """Run claude in stream-json mode and pretty-print events as they arrive.
+    """Run the configured LLM and pretty-print events as they arrive.
 
     Returns ``(returncode, transcript_lines)``: the same human-readable
     summaries we wrote to the log, kept in order, so the shepherd can
     later quote them in a handoff comment.
     """
-    cmd = [
-        "claude",
-        "-p",
-        prompt,
-        "--model",
-        _CLAUDE_MODEL,
-        "--permission-mode",
-        "bypassPermissions",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
+    invocation = _build_llm_invocation(prompt, cwd, config)
     # Quote everything except the prompt itself, which is huge and would
     # bury the rest of the line.
-    redacted = [c if c is not prompt else "<prompt>" for c in cmd]
+    redacted = [c if c is not prompt else "<prompt>" for c in invocation.cmd]
     log("$ " + " ".join(shlex.quote(c) for c in redacted))
     env = os.environ.copy()
     env.update(env_extra)
     proc = subprocess.Popen(
-        cmd,
+        invocation.cmd,
         cwd=str(cwd),
         env=env,
         stdout=subprocess.PIPE,
@@ -157,9 +255,9 @@ def _run_claude_streaming(
         try:
             ev = json.loads(line)
         except json.JSONDecodeError:
-            log(f"claude (raw): {line[:300]}")
+            log(f"{invocation.event_label} (raw): {line[:300]}")
             continue
-        for summary in _summarize_event(ev, worktree=cwd):
+        for summary in _summarize_event(invocation.event_label, ev, worktree=cwd):
             log(summary)
             transcript.append(summary)
     return proc.wait(), transcript
@@ -281,7 +379,7 @@ def _run_lintrunner_amend(worktree: Path) -> str | None:
     # directory -- we don't build PyTorch, so skip them. CI runs clang-tidy
     # itself; we only care about auto-fixable lints here.
     skip = "CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY"
-    log(f"$ {lintrunner} -a -r HEAD~1 --skip {skip}  (post-claude autoformat)")
+    log(f"$ {lintrunner} -a -r HEAD~1 --skip {skip}  (post-LLM autoformat)")
     proc = subprocess.run(
         [str(lintrunner), "-a", "-r", "HEAD~1", "--skip", skip],
         cwd=str(worktree),
@@ -315,7 +413,7 @@ def _run_lintrunner_amend(worktree: Path) -> str | None:
 
 
 def _commits_between(worktree: Path, before: str, after: str) -> int:
-    """How many commits did claude add on top of ``before`` to reach ``after``?
+    """How many commits did the LLM add on top of ``before`` to reach ``after``?
 
     Uses ``--first-parent`` so that a merge commit counts as a single
     commit (the merge itself), rather than ``1 + everything brought in
@@ -337,7 +435,7 @@ def _invoke(
     expect_merge_commit: bool,
     expect_rebase_resolution: bool = False,
 ) -> tuple[bool, str | None, list[str]]:
-    """Run claude in ``worktree`` and validate that its output meets the contract.
+    """Run the configured LLM and validate that its output meets the contract.
 
     Shared by ``invoke_fixer``, ``invoke_merge_resolver``, and
     ``invoke_rebase_resolver``. The modes differ in post-run checks:
@@ -346,32 +444,35 @@ def _invoke(
     state.
 
     Returns ``(ran_cleanly, new_sha, transcript)``:
-    - ``ran_cleanly`` is False if claude exited non-zero, left a dirty
+    - ``ran_cleanly`` is False if the LLM exited non-zero, left a dirty
       working tree (or unfinished merge), made multiple commits, or
       violated the commit-message contract -- the harness should halt
       in any of those cases.
-    - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if claude
-      made one, else None. ``(True, None, ...)`` means "claude judged
+    - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if the LLM
+      made one, else None. ``(True, None, ...)`` means "the LLM judged
       it a no-op" (spurious failures, or merge aborted).
     - ``transcript`` is the streamed event lines (same as the log) so
-      the shepherd can include claude's reasoning in a handoff comment.
+      the shepherd can include the LLM's reasoning in a handoff comment.
     """
     before = head_sha(worktree)
     name, email = repo_mod.get_mergedog_identity()
-    log(f"invoking claude ({mode} mode)...")
-    rc, transcript = _run_claude_streaming(
-        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email)
+    llm_config = get_llm_config()
+    agent = llm_config.provider
+    log(f"invoking {agent} ({mode} mode)...")
+    rc, transcript = _run_llm_streaming(
+        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email),
+        config=llm_config,
     )
     if rc != 0:
-        log(f"claude exited with code {rc}")
+        log(f"{agent} exited with code {rc}")
         return False, None, transcript
 
     if expect_merge_commit and repo_mod.is_merge_in_progress(worktree):
-        log("claude exited but the merge is still in progress; refusing to push")
+        log(f"{agent} exited but the merge is still in progress; refusing to push")
         return False, None, transcript
 
     if expect_rebase_resolution and repo_mod.is_rebase_in_progress(worktree):
-        log("claude exited but the rebase is still in progress; refusing to push")
+        log(f"{agent} exited but the rebase is still in progress; refusing to push")
         return False, None, transcript
 
     inconclusive_path = worktree / ".mergedog-inconclusive"
@@ -380,20 +481,20 @@ def _invoke(
         inconclusive_path.unlink()
 
     if not _is_clean(worktree):
-        log("claude left an uncommitted working tree; refusing to push")
+        log(f"{agent} left an uncommitted working tree; refusing to push")
         return False, None, transcript
 
     after = head_sha(worktree)
     if after == before:
         if inconclusive:
-            log("claude signalled INCONCLUSIVE; halting for human review")
+            log(f"{agent} signalled INCONCLUSIVE; halting for human review")
             return False, None, transcript
         if expect_merge_commit:
-            log("claude aborted the merge without committing")
+            log(f"{agent} aborted the merge without committing")
         elif expect_rebase_resolution:
-            log("claude aborted the rebase without committing")
+            log(f"{agent} aborted the rebase without committing")
         else:
-            log("claude made no commit (treating as: failures are spurious / no-op)")
+            log(f"{agent} made no commit (treating as: failures are spurious / no-op)")
         return True, None, transcript
 
     n = _commits_between(worktree, before, after)
@@ -403,12 +504,12 @@ def _invoke(
             if expect_merge_commit
             else "mergedog only allows one per pass"
         )
-        log(f"claude produced {n} commits but {expected}")
+        log(f"{agent} produced {n} commits but {expected}")
         return False, None, transcript
 
     if expect_merge_commit and repo_mod.parent_count(worktree, after) != 2:
         log(
-            f"claude's commit {after[:12]} is not a merge commit "
+            f"{agent}'s commit {after[:12]} is not a merge commit "
             f"(expected 2 parents)"
         )
         return False, None, transcript
@@ -418,7 +519,7 @@ def _invoke(
     # require the [MERGEDOG] prefix.
     if not expect_rebase_resolution and not subject.startswith(MERGEDOG_PREFIX):
         log(
-            f"claude's commit {after[:12]} subject does not start "
+            f"{agent}'s commit {after[:12]} subject does not start "
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
         )
         return False, None, transcript
@@ -435,30 +536,30 @@ def _invoke(
             subject = head_subject(worktree)
 
     if expect_merge_commit:
-        log(f"claude resolved the merge: {after[:12]}: {subject}")
+        log(f"{agent} resolved the merge: {after[:12]}: {subject}")
     elif expect_rebase_resolution:
-        log(f"claude resolved the rebase: {after[:12]}: {subject}")
+        log(f"{agent} resolved the rebase: {after[:12]}: {subject}")
     else:
-        log(f"claude produced fix commit {after[:12]}: {subject}")
+        log(f"{agent} produced fix commit {after[:12]}: {subject}")
     return True, after, transcript
 
 
 def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None, list[str]]:
-    """Run claude in the worktree to fix CI failures."""
+    """Run the configured LLM in the worktree to fix CI failures."""
     return _invoke(worktree, prompt, mode="fix-CI", expect_merge_commit=False)
 
 
 def invoke_merge_resolver(
     worktree: Path, prompt: str
 ) -> tuple[bool, str | None, list[str]]:
-    """Run claude in a mid-merge worktree to resolve conflicts."""
+    """Run the configured LLM in a mid-merge worktree to resolve conflicts."""
     return _invoke(worktree, prompt, mode="merge-resolver", expect_merge_commit=True)
 
 
 def invoke_rebase_resolver(
     worktree: Path, prompt: str
 ) -> tuple[bool, str | None, list[str]]:
-    """Run claude in a mid-rebase worktree to resolve conflicts."""
+    """Run the configured LLM in a mid-rebase worktree to resolve conflicts."""
     return _invoke(
         worktree, prompt, mode="rebase-resolver",
         expect_merge_commit=False, expect_rebase_resolution=True,

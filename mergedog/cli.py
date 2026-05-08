@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from mergedog import notify, shepherd, stack_shepherd
+from mergedog.config import LLM_PROVIDERS, get_llm_config, set_llm_config
 
 
 def _parse_pr(value: str) -> int:
@@ -232,6 +233,63 @@ def _rage_main(argv: list[str]) -> int:
     return 0
 
 
+def _config_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mergedog config",
+        description="Inspect or update persistent mergedog settings.",
+    )
+    subparsers = parser.add_subparsers(dest="setting", required=True)
+
+    llm = subparsers.add_parser(
+        "llm",
+        help="Show or set the LLM provider used for fix/resolution agents.",
+    )
+    llm.add_argument(
+        "provider",
+        nargs="?",
+        choices=LLM_PROVIDERS,
+        help="Provider to use for future agent invocations.",
+    )
+    llm.add_argument(
+        "--model",
+        help=(
+            "Provider-specific model name. Defaults to opus for claude and "
+            "the provider CLI's default for codex/metacode."
+        ),
+    )
+    llm.add_argument(
+        "--clear-model",
+        action="store_true",
+        help="Remove any configured model override for this provider.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.setting == "llm":
+        if args.provider is None:
+            if args.model is not None or args.clear_model:
+                parser.error(
+                    "mergedog config llm needs a provider when changing model"
+                )
+            cfg = get_llm_config()
+        else:
+            cfg = set_llm_config(
+                args.provider, model=args.model, clear_model=args.clear_model
+            )
+        model = cfg.effective_model
+        if cfg.model:
+            print(f"llm.provider={cfg.provider}")
+            print(f"llm.model={cfg.model}")
+        elif model:
+            print(f"llm.provider={cfg.provider}")
+            print(f"llm.model={model} (default)")
+        else:
+            print(f"llm.provider={cfg.provider}")
+            print("llm.model=<provider default>")
+        return 0
+
+    raise AssertionError(f"unknown config setting: {args.setting}")
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -242,4 +300,6 @@ def main(argv: list[str] | None = None) -> int:
         return _stack_main(argv[1:])
     if argv and argv[0] == "rage":
         return _rage_main(argv[1:])
+    if argv and argv[0] == "config":
+        return _config_main(argv[1:])
     return _single_main(argv)

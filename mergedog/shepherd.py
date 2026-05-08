@@ -14,6 +14,7 @@ from pathlib import Path
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
 from mergedog import github, interventions, labels, repo
+from mergedog.config import get_llm_config
 from mergedog.handoff import (
     ClaudeSession,
     is_merge_conflict_failure,
@@ -105,6 +106,10 @@ MAX_EMPTY_LOG_DEFERS = 3
 # Below this many post-strip chars (across all failing jobs combined) the
 # prompt's logs section is considered content-free.
 MIN_USEFUL_LOG_CHARS = 200
+
+
+def _llm_label() -> str:
+    return get_llm_config().provider
 
 
 def _failed_logs_are_content_free(
@@ -494,9 +499,9 @@ def _rebase_ghstack_onto_main(
             repo.abort_rebase(worktree)
             die(
                 "rebase produced conflicts; halting for human intervention "
-                "(no pr_data/sessions available for claude resolution)"
+                "(no pr_data/sessions available for LLM resolution)"
             )
-        log("rebase produced conflicts; asking claude to resolve")
+        log(f"rebase produced conflicts; asking {_llm_label()} to resolve")
         ctx_path, _ = _refresh_context_file(pr_data, trusted=True)
         prompt = render_rebase_conflict_prompt(
             url=pr_data.get("url", ""),
@@ -520,9 +525,13 @@ def _rebase_ghstack_onto_main(
             on_clean_noop="aborted the rebase",
         )
         if not ran_cleanly:
-            die("claude failed to resolve the rebase conflict cleanly")
+            die(
+                f"{_llm_label()} failed to resolve the rebase conflict cleanly"
+            )
         if new_orig_sha is None:
-            die("claude aborted the rebase; halting for human intervention")
+            die(
+                f"{_llm_label()} aborted the rebase; halting for human intervention"
+            )
 
     assert new_orig_sha is not None
     log(f"rebased /orig to {new_orig_sha[:12]}; re-publishing via ghstack")
@@ -659,7 +668,7 @@ def _merge_main_resolving_conflicts(
         return None
 
     if status == "conflict":
-        log("merge produced conflicts; asking claude to resolve")
+        log(f"merge produced conflicts; asking {_llm_label()} to resolve")
         ctx_path, _ = _refresh_context_file(pr_data, trusted=trusted_pr)
         prompt = render_merge_conflict_prompt(
             url=pr_data.get("url", ""),
@@ -684,9 +693,9 @@ def _merge_main_resolving_conflicts(
             on_clean_noop="aborted the merge",
         )
         if not ran_cleanly:
-            die("claude failed to resolve the merge conflict cleanly")
+            die(f"{_llm_label()} failed to resolve the merge conflict cleanly")
         if new_sha is None:
-            die("claude aborted the merge; halting for human intervention")
+            die(f"{_llm_label()} aborted the merge; halting for human intervention")
 
     assert new_sha is not None
     trust.trust(new_sha)
@@ -1077,7 +1086,7 @@ def _shepherd_body(
                         f"failed-job logs not yet available from gh "
                         f"(defer {empty_log_defers}/{MAX_EMPTY_LOG_DEFERS}); "
                         f"{log_state}; "
-                        f"waiting for logs to publish before invoking claude"
+                        f"waiting for logs to publish before invoking {_llm_label()}"
                     )
                     time.sleep(POLL_INTERVAL_SEC)
                     continue
@@ -1096,14 +1105,14 @@ def _shepherd_body(
                     time.sleep(APPROVAL_SETTLE_SEC)
                     continue
 
-                log(f"invoking claude on failing CI ({log_state})")
+                log(f"invoking {_llm_label()} on failing CI ({log_state})")
                 ctx_path, comments = _refresh_context_file(
                     pr_data, trusted=trusted_pr
                 )
                 trunk_ctx = repo.trunk_revert_context(worktree)
                 effective_extra = extra_context or ""
                 if trunk_ctx:
-                    log("injecting trunk revert context into claude prompt")
+                    log(f"injecting trunk revert context into {_llm_label()} prompt")
                     effective_extra = (
                         f"{trunk_ctx}\n\n{effective_extra}" if effective_extra
                         else trunk_ctx
@@ -1148,7 +1157,10 @@ def _shepherd_body(
                     ),
                 )
                 if not ran_cleanly:
-                    die("claude exited abnormally or produced an invalid commit")
+                    die(
+                        f"{_llm_label()} exited abnormally or produced an "
+                        "invalid commit"
+                    )
                 if new_sha is None:
                     # Mark the failed checks as spurious so we treat
                     # them as skipping in subsequent iterations. We
@@ -1165,7 +1177,7 @@ def _shepherd_body(
                     trust.spurious_check_names = sorted(spurious_check_names)
                     trust.save()
                     log(
-                        f"claude judged {len(newly_spurious)} failure"
+                        f"{_llm_label()} judged {len(newly_spurious)} failure"
                         f"{'' if len(newly_spurious) == 1 else 's'} spurious; "
                         "continuing to wait on remaining CI"
                     )
@@ -1201,7 +1213,7 @@ def _shepherd_body(
                     )
                     _safe_push(
                         pr, worktree, fork_remote, branch, final_sha,
-                        reason="pushing claude fix commit",
+                        reason=f"pushing {_llm_label()} fix commit",
                         ignore_sev=ignore_sev,
                     )
                     fix_commits_pushed += 1
