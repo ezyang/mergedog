@@ -7,6 +7,7 @@ from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     _failed_logs_are_content_free,
     _latest_completed_at,
+    _spurious_check_names_from_checks,
     describe_log_state,
 )
 
@@ -149,6 +150,25 @@ class TestLatestCompletedAt(unittest.TestCase):
         self.assertIsNone(
             _latest_completed_at([{"completedAt": "not-a-date"}])
         )
+
+
+class TestSpuriousCheckNames(unittest.TestCase):
+    def test_collects_only_named_failed_checks(self):
+        self.assertEqual(
+            _spurious_check_names_from_checks(
+                [
+                    {"name": "pull / linux", "bucket": "fail"},
+                    {"name": "lint", "bucket": "cancel"},
+                    {"name": "docs", "bucket": "pass"},
+                    {"name": "", "bucket": "fail"},
+                    {"bucket": "fail"},
+                ]
+            ),
+            {"pull / linux", "lint"},
+        )
+
+    def test_workflow_only_failure_has_no_check_to_mark(self):
+        self.assertEqual(_spurious_check_names_from_checks([]), set())
 
 
 if __name__ == "__main__":

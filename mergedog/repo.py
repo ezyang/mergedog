@@ -588,8 +588,8 @@ def trunk_revert_context(worktree: Path) -> str | None:
     """If trunk has recent reverts ahead of the PR's base, describe them.
 
     Used to inject "known trunk failures" context into Claude's prompt
-    when we choose NOT to rebase (CI in flight) so Claude doesn't try
-    to fix breakage that trunk already reverted.
+    when we choose NOT to rebase (CI in flight). This is only a clue:
+    a PR can expose a real failure in the same area as a trunk revert.
     """
     merge_base = run(
         ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
@@ -612,9 +612,13 @@ def trunk_revert_context(worktree: Path) -> str | None:
         return None
     header = (
         "The following commits were recently reverted on trunk (main). "
-        "If any CI failure you see matches the area affected by these "
-        "reverts, it is likely a known trunk issue -- not a problem with "
-        "this PR. Judge such failures as spurious (option 2)."
+        "Use this only as diagnostic context: a matching failure may be "
+        "unrelated trunk breakage, but it may also be a real incompatibility "
+        "between this PR and current trunk. Do not treat a revert-area match "
+        "as sufficient reason to choose spurious. If the failing test or "
+        "build error is plausibly related to this PR's changes, choose "
+        "INCONCLUSIVE instead of spurious unless the logs clearly prove the "
+        "failure is unrelated."
     )
     body = "\n".join(f"- {s}" for s in reverts)
     return f"{header}\n\n{body}"

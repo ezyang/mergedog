@@ -62,6 +62,7 @@ from mergedog.shepherd import (
     _failed_logs_are_content_free,
     _llm_label,
     _record_claude_session,
+    _spurious_check_names_from_checks,
     _wait_for_pr_head,
     _wait_for_no_active_sev,
     describe_log_state,
@@ -491,11 +492,13 @@ def _try_fix(
         die(f"PR #{pr}: {_llm_label()} exited abnormally or produced an invalid commit")
 
     if new_sha is None:
-        newly_spurious = {
-            c.get("name")
-            for c in checks
-            if c.get("bucket") in {"fail", "cancel"} and c.get("name")
-        }
+        newly_spurious = _spurious_check_names_from_checks(checks)
+        if not newly_spurious:
+            die(
+                f"PR #{pr}: {_llm_label()} made no commit, but mergedog "
+                "could not map that no-op to any failed check; halting for "
+                "human intervention"
+            )
         ctx.spurious_check_names |= newly_spurious
         ctx.trust.spurious_check_names = sorted(ctx.spurious_check_names)
         ctx.trust.save()

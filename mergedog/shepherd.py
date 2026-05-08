@@ -255,6 +255,15 @@ def _apply_spurious_overrides(
     return out
 
 
+def _spurious_check_names_from_checks(checks: list[dict]) -> set[str]:
+    """Return concrete failed check names that can be suppressed as spurious."""
+    return {
+        c.get("name")
+        for c in checks
+        if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+    }
+
+
 def _write_status_best_effort(pr: int, **fields) -> None:
     try:
         write_status(pr, **fields)
@@ -1217,12 +1226,13 @@ def _shepherd_body(
                     # still wait out any other pending checks before
                     # handing off -- a green-on-the-non-spurious-set
                     # verdict isn't a green-on-everything verdict.
-                    newly_spurious = {
-                        c.get("name")
-                        for c in checks
-                        if c.get("bucket") in {"fail", "cancel"}
-                        and c.get("name")
-                    }
+                    newly_spurious = _spurious_check_names_from_checks(checks)
+                    if not newly_spurious:
+                        die(
+                            f"{_llm_label()} made no commit, but mergedog "
+                            "could not map that no-op to any failed check; "
+                            "halting for human intervention"
+                        )
                     spurious_check_names |= newly_spurious
                     trust.spurious_check_names = sorted(spurious_check_names)
                     trust.save()
