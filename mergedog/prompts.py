@@ -38,6 +38,20 @@ Your job, right now, is to decide which of two things to do and do exactly it:
      lack enough information to be sure. The harness will HALT for human \
      review instead of advancing the PR.
 
+Caution on dr. ci FLAKY classifications:
+
+  dr. ci marks a test FLAKY when similar failures appear on other commits. \
+  But that signal is unreliable for tests that are *related to this PR's \
+  changes*: if the PR adds or modifies a test, that test may also fail on \
+  trunk for the same or different reasons, causing dr. ci to label it FLAKY \
+  even though the failure is real for this PR. Before dismissing a FLAKY \
+  failure as spurious, check whether the failing test name is semantically \
+  related to the PR's domain (read the sidecar for what the PR does). If \
+  it is, prefer INCONCLUSIVE (option 3) over spurious (option 2). \
+  Additionally, the same test failing across multiple independent configs \
+  (e.g. three different Python versions) is evidence of a real, \
+  reproducible failure -- not a coincidental flake.
+
 Commit message contract (when you do commit):
 
   - Subject line: starts with ``[MERGEDOG] `` followed by a one-line \
