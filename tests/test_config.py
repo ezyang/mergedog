@@ -43,7 +43,9 @@ class TestLLMInvocation(unittest.TestCase):
     def test_builds_claude_command_with_default_model(self):
         inv = _build_llm_invocation("fix it", Path("/tmp/wt"), LLMConfig("claude"))
 
-        self.assertEqual(inv.cmd[:3], ["claude", "-p", "fix it"])
+        self.assertEqual(inv.cmd[:2], ["claude", "-p"])
+        self.assertNotIn("fix it", inv.cmd)
+        self.assertEqual(inv.stdin_input, "fix it")
         self.assertIn("--model", inv.cmd)
         self.assertEqual(inv.cmd[inv.cmd.index("--model") + 1], "opus")
 
