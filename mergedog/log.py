@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import time
+from pathlib import Path
 
 # Module-level signifiers the shepherd toggles based on PR state.
 # Surfaced into every log line so the mux's last-line-of-the-log readout
@@ -12,6 +13,17 @@ import time
 # over ``[APPROVED]`` (a PR being merged is also approved).
 _merging = False
 _approved = False
+_log_file: Path | None = None
+
+
+def configure_log_file(path: Path) -> None:
+    """Also append future log lines to ``path``."""
+    global _log_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _log_file = path
+    with open(path, "a", encoding="utf-8") as f:
+        started = time.strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"\n=== mergedog start at {started} ===\n")
 
 
 def set_merging(value: bool) -> None:
@@ -32,7 +44,14 @@ def log(msg: str) -> None:
         prefix = "[APPROVED] "
     else:
         prefix = ""
-    print(f"[{ts}] {prefix}{msg}", file=sys.stderr, flush=True)
+    line = f"[{ts}] {prefix}{msg}"
+    print(line, file=sys.stderr, flush=True)
+    if _log_file is not None:
+        try:
+            with open(_log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 def die(msg: str, code: int = 1) -> None:

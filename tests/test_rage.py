@@ -58,6 +58,38 @@ class TestRageReport(unittest.TestCase):
         self.assertIn("https://user:<REDACTED>@example.com/repo.git", report)
         self.assertIn('"github_token": "<REDACTED>"', report)
 
+    def test_build_stack_report_includes_all_members_and_one_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "logs").mkdir()
+            (root / "state").mkdir()
+            (root / "contexts").mkdir()
+            (root / "worktrees" / "stack-100").mkdir(parents=True)
+            (root / "logs" / "stack-100.log").write_text("stack log\n")
+            (root / "logs" / "101.log").write_text("per-pr log\n")
+            (root / "state" / "100.json").write_text('{"pr": 100}')
+            (root / "state" / "101.json").write_text('{"pr": 101}')
+            (root / "contexts" / "100.md").write_text("bottom context")
+            (root / "contexts" / "101.md").write_text("top context")
+            (root / "pushed-commits.log").write_text(
+                "2026-01-01T00:00:00  fix     PR#100  abc  bottom\n"
+                "2026-01-01T00:00:00  fix     PR#101  def  top\n"
+                "2026-01-01T00:00:00  fix     PR#102  ghi  other\n"
+            )
+
+            report = rage.build_stack_report(101, root=root, members=[100, 101])
+
+        self.assertIn("stack containing PR #101", report)
+        self.assertIn("PR #100", report)
+        self.assertIn("PR #101", report)
+        self.assertIn("stack log", report)
+        self.assertNotIn("per-pr log", report)
+        self.assertIn("bottom context", report)
+        self.assertIn("top context", report)
+        self.assertIn("PR#100", report)
+        self.assertIn("PR#101", report)
+        self.assertNotIn("PR#102", report)
+
 
 class TestCreatePaste(unittest.TestCase):
     @mock.patch("shutil.which")

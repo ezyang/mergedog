@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Sequence
 
 from mergedog.paths import ROOT
 
@@ -140,6 +141,37 @@ def _stack_worktree_candidates(root: Path, pr: int) -> str | None:
     return "\n".join(lines)
 
 
+def _pushed_commits_for(
+    prs: Sequence[int], pushed_commits_path: Path
+) -> str | None:
+    pushed_commits = _read_text(pushed_commits_path)
+    if pushed_commits is None:
+        return None
+    pattern = re.compile(r"\bPR#(?:" + "|".join(str(pr) for pr in prs) + r")\b")
+    return "\n".join(
+        line for line in pushed_commits.splitlines() if pattern.search(line)
+    )
+
+
+def _resolve_stack_prs(pr: int) -> list[int]:
+    from mergedog.stack import resolve_stack
+
+    members, _ = resolve_stack(pr)
+    return [member.pr for member in members]
+
+
+def _stack_log_path(root: Path, bottom_pr: int) -> Path:
+    # Stack mode is one process for the whole stack, so rage uses one log
+    # keyed by the bottom PR, matching the shared stack worktree name.
+    stack_path = root / "logs" / f"stack-{bottom_pr}.log"
+    if stack_path.exists():
+        return stack_path
+    legacy_path = root / "logs" / f"{bottom_pr}.log"
+    if legacy_path.exists():
+        return legacy_path
+    return stack_path
+
+
 def build_report(pr: int, *, root: Path = ROOT) -> str:
     """Build a redacted markdown diagnostics bundle for ``pr``."""
     root = root.expanduser().resolve()
@@ -150,12 +182,7 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
     pushed_commits_path = root / "pushed-commits.log"
     worktree_path = root / "worktrees" / str(pr)
     stack_worktree_path = root / "worktrees" / f"stack-{pr}"
-
-    pushed_commits = _read_text(pushed_commits_path)
-    if pushed_commits is not None:
-        pushed_commits = "\n".join(
-            line for line in pushed_commits.splitlines() if f"PR#{pr}" in line
-        )
+    pushed_commits = _pushed_commits_for([pr], pushed_commits_path)
 
     parts = [
         f"# mergedog rage PR #{pr}",
@@ -185,6 +212,66 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
             _stack_worktree_candidates(root, pr),
         ),
     ]
+    return redact_secrets("\n\n".join(parts) + "\n")
+
+
+def build_stack_report(
+    pr: int, *, root: Path = ROOT, members: Sequence[int] | None = None
+) -> str:
+    """Build a redacted markdown diagnostics bundle for a whole stack."""
+    root = root.expanduser().resolve()
+    member_prs = list(members) if members is not None else _resolve_stack_prs(pr)
+    if not member_prs:
+        member_prs = [pr]
+    bottom_pr = member_prs[0]
+    log_path = _stack_log_path(root, bottom_pr)
+    pushed_commits_path = root / "pushed-commits.log"
+    stack_worktree_path = root / "worktrees" / f"stack-{bottom_pr}"
+
+    parts = [
+        f"# mergedog rage stack containing PR #{pr}",
+        "",
+        f"Generated: {datetime.now(UTC).isoformat()}",
+        f"Root: `{root}`",
+        f"mergedog git HEAD: `{_git_head()}`",
+        "",
+        _section(
+            "stack members",
+            root / "state",
+            "\n".join(f"- PR #{member_pr}" for member_pr in member_prs),
+        ),
+        _section("stack shepherd log", log_path, _read_text(log_path)),
+        _section(
+            "stack worktree git summary",
+            stack_worktree_path,
+            _git_worktree_summary(stack_worktree_path),
+        ),
+        _section(
+            "pushed commits for stack",
+            pushed_commits_path,
+            _pushed_commits_for(member_prs, pushed_commits_path),
+        ),
+        _section(
+            "mux tracked PRs",
+            root / "mux-prs.json",
+            _read_text(root / "mux-prs.json"),
+        ),
+    ]
+    for member_pr in member_prs:
+        parts.extend(
+            [
+                _section(
+                    f"PR #{member_pr} trust/state JSON",
+                    root / "state" / f"{member_pr}.json",
+                    _read_text(root / "state" / f"{member_pr}.json"),
+                ),
+                _section(
+                    f"PR #{member_pr} context sidecar",
+                    root / "contexts" / f"{member_pr}.md",
+                    _read_text(root / "contexts" / f"{member_pr}.md"),
+                ),
+            ]
+        )
     return redact_secrets("\n\n".join(parts) + "\n")
 
 
@@ -231,6 +318,11 @@ def create_paste(content: str, *, title: str) -> str:
     return text
 
 
-def rage(pr: int, *, root: Path = ROOT) -> str:
-    report = build_report(pr, root=root)
-    return create_paste(report, title=f"mergedog rage PR #{pr}")
+def rage(pr: int, *, root: Path = ROOT, stack: bool = False) -> str:
+    if stack:
+        report = build_stack_report(pr, root=root)
+        title = f"mergedog rage stack containing PR #{pr}"
+    else:
+        report = build_report(pr, root=root)
+        title = f"mergedog rage PR #{pr}"
+    return create_paste(report, title=title)

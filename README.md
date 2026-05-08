@@ -122,6 +122,7 @@ anti-clobber check.
 
 ```
 mergedog rage <pr_number_or_url> [--root DIR]
+mergedog rage stack <any_pr_in_stack> [--root DIR]
 ```
 
 Creates a private markdown paste with redacted diagnostics for the PR.  The
@@ -132,6 +133,11 @@ members, the bundle also lists existing `worktrees/stack-*` candidates
 because stack mode names the shared worktree after the bottom PR.  Before
 upload, mergedog applies a best-effort credential scrub over the entire
 bundle.
+
+For ghstack runs, use `mergedog rage stack <any_pr_in_stack>`.  It resolves
+the full stack, uses one stack log keyed by the bottom PR
+(`logs/stack-<bottom_pr>.log`), and includes every member's state/context plus
+stack-wide pushed commits and the shared stack worktree summary.
 
 ### Common flags
 
@@ -194,6 +200,7 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── state/<pr>.json           # trust DB, spurious verdicts, last failure
 ├── contexts/<pr>.md          # sidecar: PR title/body/comments (untrusted, fed to Claude)
 ├── logs/<pr>.log             # per-PR shepherd stdout/stderr (written by mux)
+├── logs/stack-<pr>.log       # stack shepherd log, named by bottom PR
 ├── mux-prs.json              # mux's tracked PR list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)

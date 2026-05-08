@@ -197,11 +197,14 @@ def _stack_main(argv: list[str]) -> int:
 
 
 def _rage_main(argv: list[str]) -> int:
+    stack = bool(argv and argv[0] == "stack")
+    if stack:
+        argv = argv[1:]
     parser = argparse.ArgumentParser(
-        prog="mergedog rage",
+        prog="mergedog rage stack" if stack else "mergedog rage",
         description=(
-            "Create a private paste with redacted diagnostics for a PR, "
-            "including logs and persisted mergedog state."
+            "Create a private paste with redacted diagnostics for "
+            + ("a whole ghstack stack." if stack else "a PR.")
         ),
     )
     parser.add_argument(
@@ -225,7 +228,7 @@ def _rage_main(argv: list[str]) -> int:
 
     root = args.root if args.root is not None else ROOT
     try:
-        paste = rage_mod.rage(args.pr, root=root)
+        paste = rage_mod.rage(args.pr, root=root, stack=stack)
     except Exception as e:
         print(f"rage failed: {e}", file=sys.stderr)
         return 1

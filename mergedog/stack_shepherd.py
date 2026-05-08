@@ -45,8 +45,8 @@ from mergedog.handoff import (
     utc_now_iso,
     watch_stack_post_handoff,
 )
-from mergedog.log import die, log
-from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, context_file
+from mergedog.log import configure_log_file, die, log
+from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, ROOT, context_file
 from mergedog.prompts import render_fix_prompt, render_rebase_conflict_prompt
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
@@ -983,6 +983,8 @@ def run_stack(
     repo.fetch_main()
 
     members, pr_data_by_pr = resolve_stack(pr)
+    bottom_pr = members[0].pr
+    configure_log_file(ROOT / "logs" / f"stack-{bottom_pr}.log")
     log(f"resolved ghstack stack containing PR #{pr}: {len(members)} member(s)")
     for i, m in enumerate(members):
         log(f"  [{i}] PR #{m.pr}  head={m.head_ref}  orig={m.orig_ref}")
