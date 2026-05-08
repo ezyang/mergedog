@@ -492,7 +492,9 @@ class MuxApp(App):
             elif cmd == "reassess":
                 if not rest:
                     return "usage: reassess <pr>"
-                return self._do_add(_parse_pr(rest[0]), ["--reassess", *rest[1:]])
+                pr = _parse_pr(rest[0])
+                self._do_cancel(pr)
+                return self._do_add(pr, ["--reassess", *rest[1:]])
             elif cmd in ("cancel", "c", "kill"):
                 if not rest:
                     return "usage: cancel <pr>"
