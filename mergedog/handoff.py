@@ -51,7 +51,12 @@ def _format_handoff_comment(
     re-inspected CI; the human still needs to re-run ``@pytorchbot
     merge`` themselves -- mergedog never auto-retriggers a land.
     """
-    marker = "<!-- mergedog:handoff -->\n"
+    head_sha = str(pr_data.get("headRefOid") or "")
+    marker = (
+        f"<!-- mergedog:handoff head={head_sha} -->\n"
+        if head_sha
+        else "<!-- mergedog:handoff -->\n"
+    )
     n = len(sessions)
     if recovering:
         head: list[str] = [
@@ -72,12 +77,17 @@ def _format_handoff_comment(
             "",
         ]
     if n == 0:
+        if head_sha:
+            head.extend(["", f"Current PR head: `{head_sha}`."])
         head.append(
             "No LLM was invoked during this run (CI was green from the "
             "start; no merge or fix needed)."
         )
         return marker + "\n".join(head) + "\n"
 
+    if head_sha:
+        head.append(f"Current PR head: `{head_sha}`.")
+        head.append("")
     head.append(
         f"During shepherding, the configured LLM was invoked **{n}** time"
         f"{'' if n == 1 else 's'}. If any CI shows red, it judged that "
@@ -128,7 +138,12 @@ def post_handoff_comment(
     # Recovery handoffs always post a fresh comment (forcing past the
     # "already handed off" check) -- the prior comment said "ready to
     # merge", which is now stale, and the human needs the new framing.
-    if not force and not recovering and github.has_mergedog_handoff_comment(pr):
+    head_sha = str(pr_data.get("headRefOid") or "") or None
+    if (
+        not force
+        and not recovering
+        and github.has_mergedog_handoff_comment(pr, head_sha=head_sha)
+    ):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
         return
     body = _format_handoff_comment(pr_data, sessions, recovering=recovering)

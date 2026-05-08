@@ -1,7 +1,53 @@
 import unittest
 from unittest import mock
 
+from mergedog import github
 from mergedog import handoff
+
+
+class TestHandoffComments(unittest.TestCase):
+    def test_handoff_comment_records_current_head(self):
+        body = handoff._format_handoff_comment(
+            {
+                "number": 101,
+                "headRefOid": "a" * 40,
+            },
+            [],
+        )
+
+        self.assertIn(f"<!-- mergedog:handoff head={'a' * 40} -->", body)
+        self.assertIn(f"Current PR head: `{'a' * 40}`.", body)
+
+    def test_handoff_comment_idempotency_is_scoped_to_head(self):
+        comments = [
+            {
+                "author": "mergedog",
+                "created_at": "2026-05-08T13:00:00Z",
+                "body": f"<!-- mergedog:handoff head={'a' * 40} -->",
+            },
+            {
+                "author": "mergedog",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": "<!-- mergedog:handoff -->",
+            },
+        ]
+
+        with mock.patch.object(github, "get_pr_comments", return_value=comments):
+            self.assertTrue(github.has_mergedog_handoff_comment(101))
+            self.assertTrue(
+                github.has_mergedog_handoff_comment(
+                    101, head_sha="a" * 40
+                )
+            )
+            self.assertFalse(
+                github.has_mergedog_handoff_comment(
+                    101, head_sha="b" * 40
+                )
+            )
+            self.assertEqual(
+                github.latest_mergedog_handoff_iso(101),
+                "2026-05-08T14:00:00Z",
+            )
 
 
 class TestWatchStackPostHandoff(unittest.TestCase):

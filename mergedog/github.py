@@ -401,14 +401,36 @@ def list_active_ci_sevs() -> list[dict]:
     )
 
 
-def has_mergedog_handoff_comment(pr: int) -> bool:
-    """True if any existing PR comment carries the mergedog handoff marker.
+_HANDOFF_MARKER_RE = re.compile(
+    r"<!--\s*mergedog:handoff(?:\s+head=([^\s>]+))?\s*-->"
+)
+
+
+def _mergedog_handoff_marker(body: str) -> tuple[bool, str | None]:
+    match = _HANDOFF_MARKER_RE.search(body)
+    if not match:
+        return False, None
+    return True, match.group(1)
+
+
+def has_mergedog_handoff_comment(
+    pr: int, *, head_sha: str | None = None
+) -> bool:
+    """True if an existing PR comment carries the mergedog handoff marker.
 
     Lets the shepherd be restart-safe: after a ctrl-c & rerun, we won't
-    re-post the same handoff. The marker is the ``<!-- mergedog:handoff ...``
-    HTML comment embedded by ``_format_handoff_comment``.
+    re-post the same handoff. When ``head_sha`` is supplied, require the
+    marker to describe that exact PR head; an older handoff before a rebase
+    is stale and should not suppress a new comment.
     """
-    return latest_mergedog_handoff_iso(pr) is not None
+    for c in get_pr_comments(pr):
+        body = c.get("body") or ""
+        has_marker, marker_head = _mergedog_handoff_marker(body)
+        if not has_marker:
+            continue
+        if head_sha is None or marker_head == head_sha:
+            return True
+    return False
 
 
 def latest_mergedog_handoff_iso(pr: int) -> str | None:
@@ -423,7 +445,7 @@ def latest_mergedog_handoff_iso(pr: int) -> str | None:
     matches = [
         c.get("created_at") or ""
         for c in get_pr_comments(pr)
-        if "<!-- mergedog:handoff" in (c.get("body") or "")
+        if _mergedog_handoff_marker(c.get("body") or "")[0]
     ]
     return max(matches) if matches else None
 
