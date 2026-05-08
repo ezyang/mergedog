@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
@@ -26,6 +27,7 @@ class _LLMInvocation:
     provider: str
     cmd: list[str]
     event_label: str
+    stdin_input: str | None = None
 
 
 def _build_llm_invocation(
@@ -36,7 +38,6 @@ def _build_llm_invocation(
         cmd = [
             "claude",
             "-p",
-            prompt,
             "--permission-mode",
             "bypassPermissions",
             "--output-format",
@@ -45,7 +46,7 @@ def _build_llm_invocation(
         ]
         if model:
             cmd.extend(["--model", model])
-        return _LLMInvocation(config.provider, cmd, "claude")
+        return _LLMInvocation(config.provider, cmd, "claude", stdin_input=prompt)
     if config.provider == "codex":
         cmd = [
             "codex",
@@ -241,12 +242,21 @@ def _run_llm_streaming(
         invocation.cmd,
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.PIPE if invocation.stdin_input else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
     )
     assert proc.stdout is not None
+    if invocation.stdin_input:
+        assert proc.stdin is not None
+        def _feed(stdin: object, data: str) -> None:
+            stdin.write(data)
+            stdin.close()
+        threading.Thread(
+            target=_feed, args=(proc.stdin, invocation.stdin_input), daemon=True,
+        ).start()
     transcript: list[str] = []
     for line in proc.stdout:
         line = line.rstrip()
