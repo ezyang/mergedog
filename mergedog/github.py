@@ -703,6 +703,33 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     return "".join(pieces)
 
 
+def _fetch_job_log(run_id: int, job_id: int | None) -> str:
+    """Fetch log text for a failed job, with fallback for in-progress runs.
+
+    ``gh run view --log-failed`` refuses to return anything when the parent
+    workflow run is still in progress, even if the individual job has already
+    completed and its logs are available on GitHub. When that happens, fall
+    back to the per-job logs API endpoint which works regardless of the
+    run's overall status.
+    """
+    args = ["run", "view", str(run_id), "--repo", REPO, "--log-failed"]
+    if job_id is not None:
+        args += ["--job", str(job_id)]
+    proc = _gh(args, check=False)
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        return proc.stdout
+    # gh run view --log-failed fails when the run is still in progress.
+    # Fall back to per-job log via the API.
+    if job_id is not None:
+        api_proc = _gh(
+            ["api", f"repos/{REPO}/actions/jobs/{job_id}/logs"],
+            check=False,
+        )
+        if api_proc.returncode == 0 and (api_proc.stdout or "").strip():
+            return api_proc.stdout
+    return "<no log available>"
+
+
 def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> list[tuple[str, str]]:
     """Return ``(name, log_excerpt)`` pairs for failing jobs on the PR head."""
     checks = get_pr_checks_all(pr)
@@ -717,14 +744,7 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
         run_id, job_id = _parse_run_link(link)
         if run_id is None:
             continue
-        args = ["run", "view", str(run_id), "--repo", REPO, "--log-failed"]
-        if job_id is not None:
-            args += ["--job", str(job_id)]
-        proc = _gh(args, check=False)
-        if proc.returncode != 0:
-            text = "<no log available>"
-        else:
-            text = proc.stdout or "<no log available>"
+        text = _fetch_job_log(run_id, job_id)
         text = _trim_log_for_prompt(text, max_chars)
         out.append((taint(c.get("name", "<unknown>"), "ci_log"), taint(text, "ci_log")))
     return out
@@ -741,12 +761,6 @@ def get_failed_job_logs_for_runs(
     """
     out: list[tuple[str, str]] = []
     for run_id in run_ids:
-        proc = _gh(
-            ["run", "view", str(run_id), "--repo", REPO, "--log-failed"],
-            check=False,
-        )
-        if proc.returncode != 0 or not (proc.stdout or "").strip():
-            continue
         jobs_proc = _gh(
             ["api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"],
             check=False,
@@ -762,13 +776,7 @@ def get_failed_job_logs_for_runs(
         for j in failed_jobs[:max_jobs - len(out)]:
             name = j.get("name", f"<run {run_id}>")
             job_id = j.get("id")
-            args = [
-                "run", "view", str(run_id), "--repo", REPO, "--log-failed",
-            ]
-            if job_id is not None:
-                args += ["--job", str(job_id)]
-            p = _gh(args, check=False)
-            text = p.stdout or p.stderr or "<no log available>"
+            text = _fetch_job_log(run_id, job_id)
             text = _trim_log_for_prompt(text, max_chars)
             out.append((taint(name, "ci_log"), taint(text, "ci_log")))
             if len(out) >= max_jobs:
