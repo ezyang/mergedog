@@ -116,6 +116,30 @@ def _git_worktree_summary(path: Path) -> str | None:
     return "\n\n".join(lines)
 
 
+def _stack_worktree_candidates(root: Path, pr: int) -> str | None:
+    worktrees = root / "worktrees"
+    if not worktrees.exists():
+        return None
+    paths = sorted(p for p in worktrees.glob("stack-*") if p.is_dir())
+    if not paths:
+        return None
+    exact = worktrees / f"stack-{pr}"
+    lines = []
+    if exact in paths:
+        lines.append(
+            f"`{exact}` exists; this PR is the bottom PR for a stack worktree."
+        )
+    else:
+        lines.append(
+            "No `stack-<this-pr>` worktree exists. If this PR is a non-bottom "
+            "stack member, the shared worktree is named after the bottom PR."
+        )
+    lines.append("")
+    lines.append("Existing stack worktrees:")
+    lines.extend(f"- `{path}`" for path in paths)
+    return "\n".join(lines)
+
+
 def build_report(pr: int, *, root: Path = ROOT) -> str:
     """Build a redacted markdown diagnostics bundle for ``pr``."""
     root = root.expanduser().resolve()
@@ -125,6 +149,7 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
     mux_prs_path = root / "mux-prs.json"
     pushed_commits_path = root / "pushed-commits.log"
     worktree_path = root / "worktrees" / str(pr)
+    stack_worktree_path = root / "worktrees" / f"stack-{pr}"
 
     pushed_commits = _read_text(pushed_commits_path)
     if pushed_commits is not None:
@@ -148,6 +173,16 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
             "worktree git summary",
             worktree_path,
             _git_worktree_summary(worktree_path),
+        ),
+        _section(
+            "stack worktree git summary",
+            stack_worktree_path,
+            _git_worktree_summary(stack_worktree_path),
+        ),
+        _section(
+            "stack worktree candidates",
+            root / "worktrees",
+            _stack_worktree_candidates(root, pr),
         ),
     ]
     return redact_secrets("\n\n".join(parts) + "\n")

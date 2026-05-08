@@ -14,6 +14,8 @@ class TestRageReport(unittest.TestCase):
             (root / "logs").mkdir()
             (root / "state").mkdir()
             (root / "contexts").mkdir()
+            (root / "worktrees" / "stack-123").mkdir(parents=True)
+            (root / "worktrees" / "stack-456").mkdir()
             (root / "logs" / "123.log").write_text("HALT: bad\n")
             (root / "state" / "123.json").write_text('{"trusted_shas": ["abc"]}')
             (root / "contexts" / "123.md").write_text("PR context")
@@ -31,6 +33,8 @@ class TestRageReport(unittest.TestCase):
         self.assertIn("[123, 456]", report)
         self.assertIn("PR#123", report)
         self.assertNotIn("PR#456", report)
+        self.assertIn("worktrees/stack-123", report)
+        self.assertIn("worktrees/stack-456", report)
 
     def test_build_report_redacts_credentials(self):
         with tempfile.TemporaryDirectory() as td:

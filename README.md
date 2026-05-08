@@ -126,9 +126,12 @@ mergedog rage <pr_number_or_url> [--root DIR]
 
 Creates a private markdown paste with redacted diagnostics for the PR.  The
 bundle includes the mux/shepherd log, persisted trust/state JSON, context
-sidecar, mux tracking list, pushed-commit records for that PR, and a local
-worktree branch/HEAD/status summary.  Before upload, mergedog applies a
-best-effort credential scrub over the entire bundle.
+sidecar, mux tracking list, pushed-commit records for that PR, and local
+regular/stack worktree branch/HEAD/status summaries.  For non-bottom stack
+members, the bundle also lists existing `worktrees/stack-*` candidates
+because stack mode names the shared worktree after the bottom PR.  Before
+upload, mergedog applies a best-effort credential scrub over the entire
+bundle.
 
 ### Common flags
 
