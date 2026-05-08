@@ -730,7 +730,9 @@ def _fetch_job_log(run_id: int, job_id: int | None) -> str:
     return "<no log available>"
 
 
-def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> list[tuple[str, str]]:
+def get_failed_job_logs(
+    pr: int, max_jobs: int = 8, max_chars: int = 30000
+) -> list[tuple[str, str]]:
     """Return ``(name, log_excerpt)`` pairs for failing jobs on the PR head."""
     checks = get_pr_checks_all(pr)
     failed = [
@@ -738,15 +740,26 @@ def get_failed_job_logs(pr: int, max_jobs: int = 8, max_chars: int = 30000) -> l
         for c in checks
         if c.get("state") in ("FAILURE", "STARTUP_FAILURE", "TIMED_OUT", "ERROR")
     ]
+    if failed:
+        capped = min(len(failed), max_jobs)
+        suffix = f" (capped at {max_jobs})" if len(failed) > max_jobs else ""
+        log(
+            f"PR #{pr}: fetching failed-job logs for {capped}/"
+            f"{len(failed)} failed check(s){suffix}"
+        )
     out: list[tuple[str, str]] = []
     for c in failed[:max_jobs]:
+        name = c.get("name", "<unknown>")
         link = c.get("link") or ""
         run_id, job_id = _parse_run_link(link)
         if run_id is None:
+            log(f"PR #{pr}: skipping log fetch for {name!r}; no run id")
             continue
+        job_part = f"/job/{job_id}" if job_id is not None else ""
+        log(f"PR #{pr}: fetching log for {name!r} from run {run_id}{job_part}")
         text = _fetch_job_log(run_id, job_id)
         text = _trim_log_for_prompt(text, max_chars)
-        out.append((taint(c.get("name", "<unknown>"), "ci_log"), taint(text, "ci_log")))
+        out.append((taint(name, "ci_log"), taint(text, "ci_log")))
     return out
 
 
