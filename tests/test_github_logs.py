@@ -1,5 +1,8 @@
+import threading
 import unittest
+from unittest import mock
 
+from mergedog import github
 from mergedog.github import (
     _strip_gh_log_prefix,
     _trim_log_for_prompt,
@@ -106,6 +109,50 @@ class TestTrimLog(unittest.TestCase):
         # Should contain both an early line and a late line.
         self.assertIn("line 0", out)
         self.assertIn("line 19999", out)
+
+
+class TestFetchFailedJobLogs(unittest.TestCase):
+    def test_fetches_multiple_failed_logs_in_parallel(self):
+        checks = [
+            {
+                "name": "job one",
+                "state": "FAILURE",
+                "link": "https://github.com/pytorch/pytorch/actions/runs/1/job/101",
+            },
+            {
+                "name": "job two",
+                "state": "FAILURE",
+                "link": "https://github.com/pytorch/pytorch/actions/runs/2/job/102",
+            },
+        ]
+        second_started = threading.Event()
+        lock = threading.Lock()
+        started: list[int | None] = []
+
+        def fake_fetch(run_id: int, job_id: int | None) -> str:
+            with lock:
+                started.append(job_id)
+                is_first_fetch = len(started) == 1
+                if len(started) == 2:
+                    second_started.set()
+            if is_first_fetch:
+                self.assertTrue(
+                    second_started.wait(1.0),
+                    "second log fetch did not start while first was running",
+                )
+            return f"FAILED: job {job_id}"
+
+        with (
+            mock.patch.object(github, "get_pr_checks_all", return_value=checks),
+            mock.patch.object(github, "_fetch_job_log", side_effect=fake_fetch),
+            mock.patch.object(github, "log"),
+        ):
+            out = github.get_failed_job_logs(123, max_jobs=2, max_chars=1000)
+
+        self.assertEqual(
+            [(str(name), str(text)) for name, text in out],
+            [("job one", "FAILED: job 101"), ("job two", "FAILED: job 102")],
+        )
 
 
 class TestLatestDrciSummary(unittest.TestCase):

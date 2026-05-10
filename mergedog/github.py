@@ -5,6 +5,7 @@ parses JSON. No third-party HTTP client.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import subprocess
@@ -752,6 +753,27 @@ def _fetch_job_log(run_id: int, job_id: int | None) -> str:
     return "<no log available>"
 
 
+def _fetch_and_trim_job_log(
+    spec: tuple[str, int, int | None], max_chars: int
+) -> tuple[str, str]:
+    name, run_id, job_id = spec
+    text = _fetch_job_log(run_id, job_id)
+    text = _trim_log_for_prompt(text, max_chars)
+    return (taint(name, "ci_log"), taint(text, "ci_log"))
+
+
+def _fetch_failed_job_logs_parallel(
+    specs: list[tuple[str, int, int | None]], max_chars: int
+) -> list[tuple[str, str]]:
+    if len(specs) <= 1:
+        return [_fetch_and_trim_job_log(spec, max_chars) for spec in specs]
+    with ThreadPoolExecutor(max_workers=len(specs)) as ex:
+        futures = [
+            ex.submit(_fetch_and_trim_job_log, spec, max_chars) for spec in specs
+        ]
+        return [future.result() for future in futures]
+
+
 def get_failed_job_logs(
     pr: int, max_jobs: int = 8, max_chars: int = 30000
 ) -> list[tuple[str, str]]:
@@ -769,7 +791,7 @@ def get_failed_job_logs(
             f"PR #{pr}: fetching failed-job logs for {capped}/"
             f"{len(failed)} failed check(s){suffix}"
         )
-    out: list[tuple[str, str]] = []
+    specs: list[tuple[str, int, int | None]] = []
     for c in failed[:max_jobs]:
         name = c.get("name", "<unknown>")
         link = c.get("link") or ""
@@ -779,10 +801,8 @@ def get_failed_job_logs(
             continue
         job_part = f"/job/{job_id}" if job_id is not None else ""
         log(f"PR #{pr}: fetching log for {name!r} from run {run_id}{job_part}")
-        text = _fetch_job_log(run_id, job_id)
-        text = _trim_log_for_prompt(text, max_chars)
-        out.append((taint(name, "ci_log"), taint(text, "ci_log")))
-    return out
+        specs.append((name, run_id, job_id))
+    return _fetch_failed_job_logs_parallel(specs, max_chars)
 
 
 def get_failed_job_logs_for_runs(
@@ -794,7 +814,7 @@ def get_failed_job_logs_for_runs(
     ``gh pr checks`` disagrees (e.g. a re-run made the check-run API
     show the latest passing attempt).
     """
-    out: list[tuple[str, str]] = []
+    specs: list[tuple[str, int, int | None]] = []
     for run_id in run_ids:
         jobs_proc = _gh(
             ["api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"],
@@ -808,17 +828,15 @@ def get_failed_job_logs_for_runs(
             for j in (jobs_data.get("jobs") or [])
             if j.get("conclusion") == "failure"
         ]
-        for j in failed_jobs[:max_jobs - len(out)]:
+        for j in failed_jobs[:max_jobs - len(specs)]:
             name = j.get("name", f"<run {run_id}>")
             job_id = j.get("id")
-            text = _fetch_job_log(run_id, job_id)
-            text = _trim_log_for_prompt(text, max_chars)
-            out.append((taint(name, "ci_log"), taint(text, "ci_log")))
-            if len(out) >= max_jobs:
+            specs.append((name, run_id, job_id))
+            if len(specs) >= max_jobs:
                 break
-        if len(out) >= max_jobs:
+        if len(specs) >= max_jobs:
             break
-    return out
+    return _fetch_failed_job_logs_parallel(specs, max_chars)
 
 
 def _parse_run_link(link: str) -> tuple[int | None, int | None]:
