@@ -113,6 +113,13 @@ def _llm_label() -> str:
     return get_llm_config().provider
 
 
+def _llm_halt_message(result: object, fallback: str) -> str:
+    reason = getattr(result, "halt_reason", None)
+    if isinstance(reason, str) and reason:
+        return f"{_llm_label()} {reason}"
+    return fallback
+
+
 def _failed_logs_are_content_free(
     failed: list[tuple[str, str]],
 ) -> bool:
@@ -530,9 +537,8 @@ def _rebase_ghstack_onto_main(
         )
         sha_before = repo.head_sha(worktree)
         started_at = utc_now_iso()
-        ran_cleanly, new_orig_sha, transcript = claude_mod.invoke_rebase_resolver(
-            worktree, prompt
-        )
+        result = claude_mod.invoke_rebase_resolver(worktree, prompt)
+        ran_cleanly, new_orig_sha, transcript = result
         _record_claude_session(
             sessions,
             mode="rebase-resolver",
@@ -546,7 +552,10 @@ def _rebase_ghstack_onto_main(
         )
         if not ran_cleanly:
             die(
-                f"{_llm_label()} failed to resolve the rebase conflict cleanly"
+                _llm_halt_message(
+                    result,
+                    f"{_llm_label()} failed to resolve the rebase conflict cleanly",
+                )
             )
         if new_orig_sha is None:
             die(
@@ -698,9 +707,8 @@ def _merge_main_resolving_conflicts(
         )
         sha_before = repo.head_sha(worktree)
         started_at = utc_now_iso()
-        ran_cleanly, new_sha, transcript = claude_mod.invoke_merge_resolver(
-            worktree, prompt
-        )
+        result = claude_mod.invoke_merge_resolver(worktree, prompt)
+        ran_cleanly, new_sha, transcript = result
         _record_claude_session(
             sessions,
             mode="merge-resolver",
@@ -713,7 +721,12 @@ def _merge_main_resolving_conflicts(
             on_clean_noop="aborted the merge",
         )
         if not ran_cleanly:
-            die(f"{_llm_label()} failed to resolve the merge conflict cleanly")
+            die(
+                _llm_halt_message(
+                    result,
+                    f"{_llm_label()} failed to resolve the merge conflict cleanly",
+                )
+            )
         if new_sha is None:
             die(f"{_llm_label()} aborted the merge; halting for human intervention")
 
@@ -1196,9 +1209,8 @@ def _shepherd_body(
                 session_failed_jobs = [name for name, _ in failed]
                 sha_before = current
                 started_at = utc_now_iso()
-                ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(
-                    worktree, prompt
-                )
+                result = claude_mod.invoke_fixer(worktree, prompt)
+                ran_cleanly, new_sha, transcript = result
                 _record_claude_session(
                     sessions,
                     mode="fix-CI",
@@ -1217,8 +1229,11 @@ def _shepherd_body(
                 )
                 if not ran_cleanly:
                     die(
-                        f"{_llm_label()} exited abnormally or produced an "
-                        "invalid commit"
+                        _llm_halt_message(
+                            result,
+                            f"{_llm_label()} exited abnormally or produced an "
+                            "invalid commit",
+                        )
                     )
                 if new_sha is None:
                     # Mark the failed checks as spurious so we treat

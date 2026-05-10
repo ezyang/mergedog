@@ -60,6 +60,7 @@ from mergedog.shepherd import (
     _apply_spurious_overrides,
     _approve_pending_runs,
     _failed_logs_are_content_free,
+    _llm_halt_message,
     _llm_label,
     _record_claude_session,
     _spurious_check_names_from_checks,
@@ -471,7 +472,8 @@ def _try_fix(
 
     sha_before = ctx.head_sha
     started_at = utc_now_iso()
-    ran_cleanly, new_sha, transcript = claude_mod.invoke_fixer(worktree, prompt)
+    result = claude_mod.invoke_fixer(worktree, prompt)
+    ran_cleanly, new_sha, transcript = result
     _record_claude_session(
         sessions,
         mode=f"fix-CI #{pr}",
@@ -489,7 +491,13 @@ def _try_fix(
         ),
     )
     if not ran_cleanly:
-        die(f"PR #{pr}: {_llm_label()} exited abnormally or produced an invalid commit")
+        die(
+            f"PR #{pr}: "
+            + _llm_halt_message(
+                result,
+                f"{_llm_label()} exited abnormally or produced an invalid commit",
+            )
+        )
 
     if new_sha is None:
         newly_spurious = _spurious_check_names_from_checks(checks)
@@ -681,9 +689,10 @@ def _rebase_stack_prefix_onto_main(
         )
         sha_before = repo.head_sha(worktree)
         started_at = utc_now_iso()
-        ran_cleanly, new_top_sha, transcript = claude_mod.invoke_rebase_resolver(
+        result = claude_mod.invoke_rebase_resolver(
             worktree, prompt, allow_multiple_commits=True
         )
+        ran_cleanly, new_top_sha, transcript = result
         _record_claude_session(
             sessions,
             mode=f"rebase-resolver #{target_ctx.member.pr}",
@@ -696,7 +705,12 @@ def _rebase_stack_prefix_onto_main(
             on_clean_noop="aborted the stack rebase",
         )
         if not ran_cleanly:
-            die(f"{_llm_label()} failed to resolve the stack rebase conflict cleanly")
+            die(
+                _llm_halt_message(
+                    result,
+                    f"{_llm_label()} failed to resolve the stack rebase conflict cleanly",
+                )
+            )
         if new_top_sha is None:
             die(f"{_llm_label()} aborted the stack rebase; halting for human intervention")
 

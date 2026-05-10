@@ -30,6 +30,21 @@ class _LLMInvocation:
     stdin_input: str | None = None
 
 
+@dataclass(frozen=True)
+class LLMResult:
+    ran_cleanly: bool
+    new_sha: str | None
+    transcript: list[str]
+    halt_reason: str | None = None
+
+    def __iter__(self) -> Iterator[object]:
+        # Preserve the old ``ran_cleanly, new_sha, transcript = invoke_*()``
+        # calling convention while letting callers inspect ``halt_reason``.
+        yield self.ran_cleanly
+        yield self.new_sha
+        yield self.transcript
+
+
 def _build_llm_invocation(
     prompt: str, cwd: Path, config: LLMConfig
 ) -> _LLMInvocation:
@@ -445,7 +460,7 @@ def _invoke(
     expect_merge_commit: bool,
     expect_rebase_resolution: bool = False,
     allow_multiple_commits: bool = False,
-) -> tuple[bool, str | None, list[str]]:
+) -> LLMResult:
     """Run the configured LLM and validate that its output meets the contract.
 
     Shared by ``invoke_fixer``, ``invoke_merge_resolver``, and
@@ -454,7 +469,8 @@ def _invoke(
     two parents; ``expect_rebase_resolution`` rejects leftover mid-rebase
     state.
 
-    Returns ``(ran_cleanly, new_sha, transcript)``:
+    Returns an :class:`LLMResult`, which can still be unpacked as
+    ``(ran_cleanly, new_sha, transcript)``:
     - ``ran_cleanly`` is False if the LLM exited non-zero, left a dirty
       working tree (or unfinished merge), made an unexpected number of
       commits, or violated the commit-message contract -- the harness
@@ -464,6 +480,8 @@ def _invoke(
       it a no-op" (spurious failures, or merge aborted).
     - ``transcript`` is the streamed event lines (same as the log) so
       the shepherd can include the LLM's reasoning in a handoff comment.
+    - ``halt_reason`` is a specific operator-facing reason when
+      ``ran_cleanly`` is false.
     """
     before = head_sha(worktree)
     name, email = repo_mod.get_mergedog_identity()
@@ -475,16 +493,19 @@ def _invoke(
         config=llm_config,
     )
     if rc != 0:
-        log(f"{agent} exited with code {rc}")
-        return False, None, transcript
+        reason = f"exited with code {rc}"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     if expect_merge_commit and repo_mod.is_merge_in_progress(worktree):
-        log(f"{agent} exited but the merge is still in progress; refusing to push")
-        return False, None, transcript
+        reason = "exited but the merge is still in progress; refusing to push"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     if expect_rebase_resolution and repo_mod.is_rebase_in_progress(worktree):
-        log(f"{agent} exited but the rebase is still in progress; refusing to push")
-        return False, None, transcript
+        reason = "exited but the rebase is still in progress; refusing to push"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     inconclusive_path = worktree / ".mergedog-inconclusive"
     inconclusive = inconclusive_path.exists()
@@ -492,21 +513,23 @@ def _invoke(
         inconclusive_path.unlink()
 
     if not _is_clean(worktree):
-        log(f"{agent} left an uncommitted working tree; refusing to push")
-        return False, None, transcript
+        reason = "left an uncommitted working tree; refusing to push"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     after = head_sha(worktree)
     if after == before:
         if inconclusive:
-            log(f"{agent} signalled INCONCLUSIVE; halting for human review")
-            return False, None, transcript
+            reason = "signalled INCONCLUSIVE; halting for human review"
+            log(f"{agent} {reason}")
+            return LLMResult(False, None, transcript, reason)
         if expect_merge_commit:
             log(f"{agent} aborted the merge without committing")
         elif expect_rebase_resolution:
             log(f"{agent} aborted the rebase without committing")
         else:
             log(f"{agent} made no commit (treating as: failures are spurious / no-op)")
-        return True, None, transcript
+        return LLMResult(True, None, transcript)
 
     n = _commits_between(worktree, before, after)
     if n != 1 and not allow_multiple_commits:
@@ -515,28 +538,32 @@ def _invoke(
             if expect_merge_commit
             else "mergedog only allows one per pass"
         )
-        log(f"{agent} produced {n} commits but {expected}")
-        return False, None, transcript
+        reason = f"produced {n} commits but {expected}"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
     if n < 1:
-        log(f"{agent} produced no commits but HEAD moved unexpectedly")
-        return False, None, transcript
+        reason = "produced no commits but HEAD moved unexpectedly"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     if expect_merge_commit and repo_mod.parent_count(worktree, after) != 2:
-        log(
-            f"{agent}'s commit {after[:12]} is not a merge commit "
-            f"(expected 2 parents)"
+        reason = (
+            f"produced commit {after[:12]} that is not a merge commit "
+            "(expected 2 parents)"
         )
-        return False, None, transcript
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     subject = head_subject(worktree)
     # Rebase resolution preserves the original commit message — don't
     # require the [MERGEDOG] prefix.
     if not expect_rebase_resolution and not subject.startswith(MERGEDOG_PREFIX):
-        log(
-            f"{agent}'s commit {after[:12]} subject does not start "
+        reason = (
+            f"produced commit {after[:12]} whose subject does not start "
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
         )
-        return False, None, transcript
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
 
     # Run lintrunner -a and fold any auto-fixes into claude's commit.
     # Catches autoformat misses (clang-format, ruff format, ...) before
@@ -555,24 +582,22 @@ def _invoke(
         log(f"{agent} resolved the rebase: {after[:12]}: {subject}")
     else:
         log(f"{agent} produced fix commit {after[:12]}: {subject}")
-    return True, after, transcript
+    return LLMResult(True, after, transcript)
 
 
-def invoke_fixer(worktree: Path, prompt: str) -> tuple[bool, str | None, list[str]]:
+def invoke_fixer(worktree: Path, prompt: str) -> LLMResult:
     """Run the configured LLM in the worktree to fix CI failures."""
     return _invoke(worktree, prompt, mode="fix-CI", expect_merge_commit=False)
 
 
-def invoke_merge_resolver(
-    worktree: Path, prompt: str
-) -> tuple[bool, str | None, list[str]]:
+def invoke_merge_resolver(worktree: Path, prompt: str) -> LLMResult:
     """Run the configured LLM in a mid-merge worktree to resolve conflicts."""
     return _invoke(worktree, prompt, mode="merge-resolver", expect_merge_commit=True)
 
 
 def invoke_rebase_resolver(
     worktree: Path, prompt: str, *, allow_multiple_commits: bool = False
-) -> tuple[bool, str | None, list[str]]:
+) -> LLMResult:
     """Run the configured LLM in a mid-rebase worktree to resolve conflicts."""
     return _invoke(
         worktree, prompt, mode="rebase-resolver",

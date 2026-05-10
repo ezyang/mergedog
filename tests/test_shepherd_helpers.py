@@ -2,10 +2,12 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
+from mergedog.claude import LLMResult
 from mergedog import shepherd
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     _failed_logs_are_content_free,
+    _llm_halt_message,
     _latest_completed_at,
     _spurious_check_names_from_checks,
     describe_log_state,
@@ -86,6 +88,33 @@ class TestFailedLogsAreContentFree(unittest.TestCase):
                     ("b", "y" * (MIN_USEFUL_LOG_CHARS + 1)),
                 ]
             )
+        )
+
+
+class TestLLMHaltMessage(unittest.TestCase):
+    def test_uses_specific_halt_reason(self):
+        result = LLMResult(
+            ran_cleanly=False,
+            new_sha=None,
+            transcript=[],
+            halt_reason="signalled INCONCLUSIVE; halting for human review",
+        )
+
+        self.assertEqual(
+            _llm_halt_message(result, "claude exited abnormally"),
+            "claude signalled INCONCLUSIVE; halting for human review",
+        )
+
+    def test_falls_back_without_specific_reason(self):
+        result = LLMResult(
+            ran_cleanly=False,
+            new_sha=None,
+            transcript=[],
+        )
+
+        self.assertEqual(
+            _llm_halt_message(result, "claude exited abnormally"),
+            "claude exited abnormally",
         )
 
 
