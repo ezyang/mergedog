@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from mergedog.log import log
-from mergedog.paths import REPO_SLUG
+from mergedog.paths import CI_LOGS_DIR, REPO_SLUG
 from mergedog.process import run
 from mergedog.taint import taint, taint_dict
 
@@ -584,6 +584,8 @@ _LOG_FAILURE_MARKERS = (
     "= FAILURES =",             # pytest FAILURES section header
 )
 
+_PYTEST_FAILURES_RE = re.compile(r"(?m)^=+\s+FAILURES\s+=+\s*$")
+
 
 def _strip_gh_log_prefix(line: str) -> str:
     """Strip the ``<job>\\tSTEP\\t<timestamp> `` prefix from a ``gh run view --log`` line.
@@ -612,7 +614,7 @@ def _extract_pytest_failures(cleaned: str, max_chars: int) -> str | None:
 
     Pytest prints failures as::
 
-        = FAILURES =
+        ============================= FAILURES =============================
         ___ test_name ___
         <traceback>
         ...
@@ -624,9 +626,10 @@ def _extract_pytest_failures(cleaned: str, max_chars: int) -> str | None:
     end-of-log. This is far more useful than a generic window around an
     arbitrary marker, because it contains the actual tracebacks.
     """
-    fail_start = cleaned.find("= FAILURES =")
-    if fail_start < 0:
+    match = _PYTEST_FAILURES_RE.search(cleaned)
+    if match is None:
         return None
+    fail_start = match.start()
     section = cleaned[fail_start:]
     if len(section) <= max_chars:
         return "... [head truncated] ...\n" + section if fail_start > 0 else section
@@ -753,23 +756,41 @@ def _fetch_job_log(run_id: int, job_id: int | None) -> str:
     return "<no log available>"
 
 
+def _cache_failed_job_log(
+    pr: int, name: str, run_id: int, job_id: int | None, text: str
+) -> None:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-")[:120]
+    if not safe_name:
+        safe_name = "unknown"
+    job_part = str(job_id) if job_id is not None else "run"
+    path = CI_LOGS_DIR / str(pr) / f"{run_id}-{job_part}-{safe_name}.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", errors="replace")
+    except OSError as e:
+        log(f"PR #{pr}: could not cache full log for {name!r}: {e}")
+
+
 def _fetch_and_trim_job_log(
-    spec: tuple[str, int, int | None], max_chars: int
+    spec: tuple[str, int, int | None], max_chars: int, pr: int | None = None
 ) -> tuple[str, str]:
     name, run_id, job_id = spec
     text = _fetch_job_log(run_id, job_id)
+    if pr is not None and text != "<no log available>":
+        _cache_failed_job_log(pr, name, run_id, job_id, text)
     text = _trim_log_for_prompt(text, max_chars)
     return (taint(name, "ci_log"), taint(text, "ci_log"))
 
 
 def _fetch_failed_job_logs_parallel(
-    specs: list[tuple[str, int, int | None]], max_chars: int
+    specs: list[tuple[str, int, int | None]], max_chars: int, pr: int | None = None
 ) -> list[tuple[str, str]]:
     if len(specs) <= 1:
-        return [_fetch_and_trim_job_log(spec, max_chars) for spec in specs]
+        return [_fetch_and_trim_job_log(spec, max_chars, pr) for spec in specs]
     with ThreadPoolExecutor(max_workers=len(specs)) as ex:
         futures = [
-            ex.submit(_fetch_and_trim_job_log, spec, max_chars) for spec in specs
+            ex.submit(_fetch_and_trim_job_log, spec, max_chars, pr)
+            for spec in specs
         ]
         return [future.result() for future in futures]
 
@@ -802,7 +823,7 @@ def get_failed_job_logs(
         job_part = f"/job/{job_id}" if job_id is not None else ""
         log(f"PR #{pr}: fetching log for {name!r} from run {run_id}{job_part}")
         specs.append((name, run_id, job_id))
-    return _fetch_failed_job_logs_parallel(specs, max_chars)
+    return _fetch_failed_job_logs_parallel(specs, max_chars, pr)
 
 
 def get_failed_job_logs_for_runs(

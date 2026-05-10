@@ -25,6 +25,7 @@ WORKTREES_DIR = ROOT / "worktrees"
 STATE_DIR = ROOT / "state"
 STATUS_DIR = ROOT / "status"
 CONTEXTS_DIR = ROOT / "contexts"
+CI_LOGS_DIR = ROOT / "ci-logs"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
 PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
 CONFIG_FILE = ROOT / "config.json"
@@ -73,3 +74,4 @@ def ensure_dirs() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATUS_DIR.mkdir(parents=True, exist_ok=True)
     CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)
+    CI_LOGS_DIR.mkdir(parents=True, exist_ok=True)

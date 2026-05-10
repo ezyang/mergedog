@@ -1,5 +1,7 @@
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from mergedog import github
@@ -79,25 +81,54 @@ class TestTrimLog(unittest.TestCase):
         failures = "\n".join(
             f"{prefix}{line}"
             for line in [
-                "= FAILURES =",
+                "============================= FAILURES =============================",
                 "___ test_redispatch_as_strided ___",
                 "    def test_redispatch_as_strided(self):",
                 "        x = torch.randn(4)",
                 ">       self.assertEqual(expect, actual)",
                 "E       AssertionError: tensor not close",
                 "",
-                "= short test summary info =",
+                "====================== short test summary info ======================",
                 "FAILED test/test_overrides.py::test_redispatch_as_strided",
-                "= 1 failed, 200 passed =",
+                "====================== 1 failed, 200 passed =======================",
             ]
         )
         log = f"{preamble}\n{failures}"
         out = _trim_log_for_prompt(log, max_chars=4_000)
-        self.assertIn("= FAILURES =", out)
+        self.assertIn("FAILURES", out)
         self.assertIn("AssertionError: tensor not close", out)
         self.assertIn("1 failed", out)
         self.assertIn("[head truncated]", out)
         # Preamble PASS lines should be gone.
+        self.assertNotIn("PASS test_4999", out)
+
+    def test_long_pytest_failure_keeps_traceback_start_and_summary(self):
+        prefix = "job\tstep\t2026-05-04T18:00:00Z "
+        preamble = "\n".join(f"{prefix}PASS test_{i}" for i in range(5_000))
+        long_failure_noise = "\n".join(
+            f"{prefix}captured stdout line {i}" for i in range(2_000)
+        )
+        failures = "\n".join(
+            f"{prefix}{line}"
+            for line in [
+                "============================= FAILURES =============================",
+                "___ TestTorchFunctionRedispatch::test_mode_with_redispatch ___",
+                "    def test_mode_with_redispatch(self):",
+                ">       self.assertEqual(expect, actual)",
+                "E       AssertionError: dynamo redispatch mismatch",
+                long_failure_noise,
+                "====================== short test summary info ======================",
+                "FAILED test/test_overrides.py::TestTorchFunctionRedispatch::test_mode_with_redispatch",
+                "====================== 1 failed, 200 passed =======================",
+            ]
+        )
+        log = f"{preamble}\n{failures}"
+        out = _trim_log_for_prompt(log, max_chars=4_000)
+
+        self.assertIn("FAILURES", out)
+        self.assertIn("dynamo redispatch mismatch", out)
+        self.assertIn("test_mode_with_redispatch", out)
+        self.assertIn("1 failed", out)
         self.assertNotIn("PASS test_4999", out)
 
     def test_no_marker_falls_back_to_head_and_tail(self):
@@ -153,6 +184,31 @@ class TestFetchFailedJobLogs(unittest.TestCase):
             [(str(name), str(text)) for name, text in out],
             [("job one", "FAILED: job 101"), ("job two", "FAILED: job 102")],
         )
+
+    def test_caches_full_failed_log_before_trimming(self):
+        checks = [
+            {
+                "name": "linux / test (dynamo_wrapped, 1, 3)",
+                "state": "FAILURE",
+                "link": "https://github.com/pytorch/pytorch/actions/runs/1/job/101",
+            },
+        ]
+        raw_log = "FAILED test/test_overrides.py::test_name\n" + ("x" * 5000)
+        with tempfile.TemporaryDirectory() as d:
+            with (
+                mock.patch.object(github, "CI_LOGS_DIR", Path(d)),
+                mock.patch.object(github, "get_pr_checks_all", return_value=checks),
+                mock.patch.object(github, "_fetch_job_log", return_value=raw_log),
+                mock.patch.object(github, "log"),
+            ):
+                out = github.get_failed_job_logs(123, max_jobs=1, max_chars=1000)
+
+            cached = list((Path(d) / "123").glob("*.log"))
+            cached_text = cached[0].read_text() if cached else ""
+
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(cached_text, raw_log)
+        self.assertLess(len(str(out[0][1])), len(raw_log))
 
 
 class TestLatestDrciSummary(unittest.TestCase):
