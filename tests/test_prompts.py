@@ -12,6 +12,15 @@ _BASE_KWARGS = dict(
 
 
 class TestEarlierStackSection(unittest.TestCase):
+    def test_fix_prompt_separates_real_failure_from_inconclusive(self):
+        prompt = render_fix_prompt(**_BASE_KWARGS)
+
+        self.assertIn("touch .mergedog-real-failure", prompt)
+        self.assertIn("real and PR-related", prompt)
+        self.assertIn("cannot safely fix it in one commit", prompt)
+        self.assertIn("touch .mergedog-inconclusive", prompt)
+        self.assertIn("Choose this only if you genuinely", prompt)
+
     def test_section_omitted_when_no_earlier_members(self):
         prompt = render_fix_prompt(**_BASE_KWARGS)
         self.assertNotIn("earlier-stack status", prompt)
