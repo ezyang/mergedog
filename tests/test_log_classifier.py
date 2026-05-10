@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from mergedog.log_classifier import classify
 
@@ -62,6 +63,19 @@ class TestClassify(unittest.TestCase):
         assert m is not None
         # Last occurrence of the highest-priority matching rule
         self.assertIn("test_two", m.captures[0])
+
+    def test_classifies_in_worker_thread(self):
+        lines = [
+            "building foo.cpp",
+            "foo.cpp:42:10: error: 'bar' was not declared in this scope",
+            "ninja: build stopped: subcommand failed.",
+        ]
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            m = ex.submit(classify, lines).result()
+
+        assert m is not None
+        self.assertEqual(m.rule_name, "Compile error")
+        self.assertEqual(m.line_num, 1)
 
 
 if __name__ == "__main__":
