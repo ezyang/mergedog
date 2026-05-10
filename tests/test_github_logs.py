@@ -6,6 +6,7 @@ from unittest import mock
 
 from mergedog import github
 from mergedog.github import (
+    _fetch_job_log,
     _strip_gh_log_prefix,
     _trim_log_for_prompt,
     latest_drci_summary,
@@ -26,6 +27,10 @@ class TestStripPrefix(unittest.TestCase):
     def test_no_timestamp_keeps_content(self):
         line = "job\tstep\tno timestamp here"
         self.assertEqual(_strip_gh_log_prefix(line), "no timestamp here")
+
+    def test_strips_api_timestamp(self):
+        line = "2026-05-07T22:13:46.3304467Z ===== FAILURES ====="
+        self.assertEqual(_strip_gh_log_prefix(line), "===== FAILURES =====")
 
     def test_two_tabs_only(self):
         # Only two tabs (job + content, no step) — shouldn't crash.
@@ -143,6 +148,40 @@ class TestTrimLog(unittest.TestCase):
 
 
 class TestFetchFailedJobLogs(unittest.TestCase):
+    def test_fetch_job_log_prefers_job_api(self):
+        calls = []
+
+        def fake_gh(args, *, check=True, loud=False):
+            calls.append(args)
+            proc = mock.Mock()
+            proc.returncode = 0
+            proc.stdout = "api log"
+            proc.stderr = ""
+            return proc
+
+        with mock.patch.object(github, "_gh", side_effect=fake_gh):
+            self.assertEqual(_fetch_job_log(1, 101), "api log")
+
+        self.assertEqual(
+            calls,
+            [["api", "repos/pytorch/pytorch/actions/jobs/101/logs"]],
+        )
+
+    def test_fetch_job_log_falls_back_to_run_view(self):
+        def fake_gh(args, *, check=True, loud=False):
+            proc = mock.Mock()
+            proc.stderr = ""
+            if args[0] == "api":
+                proc.returncode = 1
+                proc.stdout = ""
+            else:
+                proc.returncode = 0
+                proc.stdout = "view log"
+            return proc
+
+        with mock.patch.object(github, "_gh", side_effect=fake_gh):
+            self.assertEqual(_fetch_job_log(1, 101), "view log")
+
     def test_fetches_multiple_failed_logs_in_parallel(self):
         checks = [
             {

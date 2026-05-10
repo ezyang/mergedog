@@ -595,6 +595,13 @@ def _strip_gh_log_prefix(line: str) -> str:
     every line and eats ~70 chars; stripping it ~doubles the useful content
     that fits in our character budget.
     """
+    sp = line.find(" ")
+    if sp > 0:
+        head = line[:sp]
+        # ``gh api repos/.../actions/jobs/<job>/logs`` returns raw lines
+        # prefixed by only an RFC3339 timestamp.
+        if "T" in head and (head.endswith("Z") or "+" in head):
+            return line[sp + 1:]
     parts = line.split("\t", 2)
     if len(parts) != 3:
         return line
@@ -732,20 +739,10 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
 def _fetch_job_log(run_id: int, job_id: int | None) -> str:
     """Fetch log text for a failed job, with fallback for in-progress runs.
 
-    ``gh run view --log-failed`` refuses to return anything when the parent
-    workflow run is still in progress, even if the individual job has already
-    completed and its logs are available on GitHub. When that happens, fall
-    back to the per-job logs API endpoint which works regardless of the
-    run's overall status.
+    Prefer the per-job logs API when a job id is known. ``gh run view
+    --log-failed --job`` can return only a prefix of the failed step log,
+    while the job logs API includes the actual pytest failure body.
     """
-    args = ["run", "view", str(run_id), "--repo", REPO, "--log-failed"]
-    if job_id is not None:
-        args += ["--job", str(job_id)]
-    proc = _gh(args, check=False)
-    if proc.returncode == 0 and (proc.stdout or "").strip():
-        return proc.stdout
-    # gh run view --log-failed fails when the run is still in progress.
-    # Fall back to per-job log via the API.
     if job_id is not None:
         api_proc = _gh(
             ["api", f"repos/{REPO}/actions/jobs/{job_id}/logs"],
@@ -753,6 +750,13 @@ def _fetch_job_log(run_id: int, job_id: int | None) -> str:
         )
         if api_proc.returncode == 0 and (api_proc.stdout or "").strip():
             return api_proc.stdout
+
+    args = ["run", "view", str(run_id), "--repo", REPO, "--log-failed"]
+    if job_id is not None:
+        args += ["--job", str(job_id)]
+    proc = _gh(args, check=False)
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        return proc.stdout
     return "<no log available>"
 
 
