@@ -12,13 +12,13 @@ from mergedog.claude import _build_llm_invocation
 
 
 class TestLLMConfig(unittest.TestCase):
-    def test_default_is_claude_opus(self):
+    def test_default_is_codex(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = get_llm_config(Path(d) / "config.json")
 
-        self.assertEqual(cfg.provider, "claude")
+        self.assertEqual(cfg.provider, "codex")
         self.assertIsNone(cfg.model)
-        self.assertEqual(cfg.effective_model, "opus")
+        self.assertIsNone(cfg.effective_model)
 
     def test_set_provider_and_model_preserves_other_config(self):
         with tempfile.TemporaryDirectory() as d:

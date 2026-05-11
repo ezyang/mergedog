@@ -9,7 +9,7 @@ from typing import Any
 from mergedog.paths import CONFIG_FILE
 
 LLM_PROVIDERS = ("claude", "codex", "metacode")
-DEFAULT_LLM_PROVIDER = "claude"
+DEFAULT_LLM_PROVIDER = "codex"
 DEFAULT_CLAUDE_MODEL = "opus"
 
 

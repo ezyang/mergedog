@@ -42,8 +42,8 @@ are amended into the contributor's orig commit and re-uploaded with
 rather than by merging.
 
 mergedog is implemented as a traditional software harness that shells into
-a local LLM CLI to actually issue the fixes.  Claude Code is the default;
-Codex and MetaCode are also supported.
+a local LLM CLI to actually issue the fixes.  Codex is the default; Claude
+Code and MetaCode are also supported.
 
 ## Running mergedog
 
@@ -160,8 +160,9 @@ These work on both the single-PR and stack entry points:
 
 ### LLM provider
 
-By default, mergedog shells out to `claude` with the `opus` model.  To switch
-future agent invocations, persist the provider in `~/.mergedog/config.json`:
+By default, mergedog shells out to `codex` with the provider CLI's default
+model. To switch future agent invocations, persist the provider in
+`~/.mergedog/config.json`:
 
 ```bash
 mergedog config llm codex
