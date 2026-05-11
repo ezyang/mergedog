@@ -24,9 +24,16 @@ from mergedog.log import die
 
 
 _STACK_HEADER_RE = re.compile(r"Stack\s+from\s+\[?ghstack\]?", re.IGNORECASE)
-# Each line: "* #123" or "* __->__ #123" (the current PR marker).
-# We accept any leading whitespace and ignore anything after the number.
-_STACK_LINE_RE = re.compile(r"^\s*\*\s+(?:__->__\s+)?#(\d+)\b")
+# Each line is one of:
+#   * #123
+#   * __->__ #123
+#   -> Direct ghstack title #123
+#   Direct ghstack title #123
+# We accept any leading whitespace and ignore anything after the number in
+# markdown-list format. Direct format puts the PR number at the end of the line.
+_STACK_LINE_RE = re.compile(
+    r"^\s*(?:\*\s+(?:__->__\s+)?#(\d+)\b|(?:->\s+)?\S.*\s#(\d+)\s*$)"
+)
 
 
 def parse_stack_from_body(body: str) -> list[int]:
@@ -48,7 +55,7 @@ def parse_stack_from_body(body: str) -> list[int]:
             continue
         m = _STACK_LINE_RE.match(line)
         if m:
-            prs_top_first.append(int(m.group(1)))
+            prs_top_first.append(int(m.group(1) or m.group(2)))
             continue
         if not line.strip():
             # Tolerate a blank line between header and first list entry.
@@ -59,6 +66,18 @@ def parse_stack_from_body(body: str) -> list[int]:
         if prs_top_first:
             break
     return list(reversed(prs_top_first))
+
+
+def parse_stack_from_discussion(body: str, comments: list[dict]) -> list[int]:
+    """Return stack PR numbers from the PR body or latest ghstack comment."""
+    nums = parse_stack_from_body(body)
+    if nums:
+        return nums
+    for comment in reversed(comments):
+        nums = parse_stack_from_body(comment.get("body", "") or "")
+        if nums:
+            return nums
+    return []
 
 
 @dataclass
@@ -103,20 +122,25 @@ def resolve_stack(pr: int) -> tuple[list[StackMember], dict[int, dict]]:
     ``Pull-Request-Resolved``) trailers. This is more reliable than
     parsing the markdown table (which can drift on mid-stack submits).
 
-    The PR body is still used for one thing: bootstrapping to find the
-    top PR, since only the top's ``/orig`` has the full commit chain.
+    The PR discussion is still used for one thing: bootstrapping to find the
+    top PR, since only the top's ``/orig`` has the full commit chain. Old
+    ghstack writes this listing into the body; ``ghstack --direct`` writes it
+    as an issue comment.
     """
     from mergedog import repo as repo_mod
 
     pr_data = github.get_pr(pr)
     body = pr_data.get("body", "") or ""
 
-    # Bootstrap: find the top PR from the body listing so we can walk
+    # Bootstrap: find the top PR from the discussion listing so we can walk
     # its orig branch for the canonical stack.
     body_nums = parse_stack_from_body(body)
     if not body_nums:
+        body_nums = parse_stack_from_discussion(body, github.get_pr_comments(pr))
+    if not body_nums:
         die(
-            f"PR #{pr} has no parseable ghstack stack listing in its body; "
+            f"PR #{pr} has no parseable ghstack stack listing in its "
+            f"body or comments; "
             f"refusing to run stack mode (use the regular shepherd for "
             f"non-stack PRs)"
         )
