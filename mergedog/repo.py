@@ -226,6 +226,20 @@ def wipe_worktree(pr: int) -> None:
     run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
 
 
+def wipe_stack_worktree(bottom_pr: int) -> None:
+    wt = stack_worktree_dir(bottom_pr)
+    if wt.exists():
+        run(
+            ["git", "worktree", "remove", "--force", str(wt)],
+            cwd=REPO_DIR,
+            check=False,
+            loud=True,
+        )
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+    run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
+
+
 def ensure_worktree(
     pr: int,
     sha: str,

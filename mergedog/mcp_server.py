@@ -8,8 +8,8 @@ Configure in Claude Code's MCP settings to connect via stdio.
 
 Tools:
 
-    mergedog_command   Send any mux command (add, cancel, rebase, etc.)
-    mergedog_status    Get live status of all tracked PRs
+    mergedog_command   Send any mux command (add, stack, cancel, rebase, etc.)
+    mergedog_status    Get live status of all tracked mux jobs
     mergedog_log       Read a PR's shepherd log (tail)
     mergedog_state     Read a PR's trust-DB state
 """
@@ -26,7 +26,7 @@ promote_early_env(sys.argv[1:])
 from mcp.server import FastMCP  # noqa: E402
 
 from mergedog.ipc import discover_mux, send_command  # noqa: E402
-from mergedog.paths import ROOT, MUX_PRS_FILE  # noqa: E402
+from mergedog.paths import ROOT, MUX_JOBS_FILE, MUX_PRS_FILE  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 STATE_DIR = ROOT / "state"
@@ -47,6 +47,10 @@ mcp = FastMCP(
         "text commands as the mux TUI input bar.\n\n"
         "Commands:\n"
         "  add <pr>           — start shepherding a PR\n"
+        "  stack <pr>         — start shepherding a ghstack stack\n"
+        "  stack rebase <pr>  — start a stack with --rebase\n"
+        "  stack cancel <pr>  — stop shepherding a stack\n"
+        "  stack remove <pr>  — stop and forget a stack\n"
         "  cancel <pr>        — stop shepherding (keeps state)\n"
         "  remove <pr>        — stop and forget (wipes worktree)\n"
         "  restart <pr>       — cancel + add\n"
@@ -73,9 +77,9 @@ async def mergedog_command(command: str) -> str:
 
 @mcp.tool(
     description=(
-        "Get the current status of all PRs tracked by the mux.  Returns "
-        "JSON with pr, title, state (running/exited_ok/exited_error), and "
-        "last_log for each PR."
+        "Get the current status of all PR/stack jobs tracked by the mux. "
+        "Returns JSON with kind, pr, title, state "
+        "(running/exited_ok/exited_error), and last_log for each job."
     ),
 )
 async def mergedog_status() -> str:
@@ -88,15 +92,16 @@ async def mergedog_status() -> str:
 
 @mcp.tool(
     description=(
-        "Read the tail of a PR's shepherd log.  Reads directly from disk, "
-        "does not require the mux to be running."
+        "Read the tail of a PR or stack shepherd log.  Reads directly from "
+        "disk, does not require the mux to be running."
     ),
 )
-async def mergedog_log(pr: int, lines: int = 100) -> str:
+async def mergedog_log(pr: int, lines: int = 100, stack: bool = False) -> str:
     """Read the last N lines of a PR's log file."""
-    log_path = LOG_DIR / f"{pr}.log"
+    log_path = LOG_DIR / (f"stack-{pr}.log" if stack else f"{pr}.log")
     if not log_path.exists():
-        return f"No log file for PR {pr}"
+        kind = "stack" if stack else "PR"
+        return f"No log file for {kind} {pr}"
     try:
         all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
@@ -125,19 +130,20 @@ async def mergedog_state(pr: int) -> str:
 
 @mcp.tool(
     description=(
-        "List all PR numbers the mux is tracking (from the durable "
-        "subscription list).  Works even when the mux is not running."
+        "List all jobs the mux is tracking (from the durable subscription "
+        "list).  Works even when the mux is not running."
     ),
 )
 async def mergedog_list_prs() -> str:
-    """List tracked PR numbers from the mux subscription file."""
-    if not MUX_PRS_FILE.exists():
-        return "No tracked PRs (mux-prs.json not found)"
+    """List tracked mux jobs from the subscription file."""
+    path = MUX_JOBS_FILE if MUX_JOBS_FILE.exists() else MUX_PRS_FILE
+    if not path.exists():
+        return "No tracked PRs (mux subscription file not found)"
     try:
-        data = json.loads(MUX_PRS_FILE.read_text())
+        data = json.loads(path.read_text())
         return json.dumps(data, indent=2)
     except (OSError, json.JSONDecodeError) as e:
-        return f"error reading mux-prs.json: {e}"
+        return f"error reading {path.name}: {e}"
 
 
 def main() -> None:

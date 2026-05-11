@@ -12,10 +12,16 @@ Commands typed at the bottom (enter to submit):
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
     restart <pr>                      kill and re-spawn a shepherd
-    restart all                       kill and re-spawn every tracked PR
+    restart all                       kill and re-spawn every tracked job
     restart dead                      re-spawn only exited shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
-    rebase all                        re-run every tracked PR with --rebase
+    rebase all                        re-run every tracked job with --rebase
+    stack <pr>                        start shepherding a ghstack stack
+    stack restart <pr>                kill and re-spawn a stack
+    stack rebase <pr>                 start a stack with --rebase
+    stack cancel <pr>                 SIGTERM a stack shepherd
+    stack remove <pr>                 SIGTERM and forget a stack
+    stack log <pr>                    show the path to its log file
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
@@ -32,6 +38,7 @@ Commands typed at the bottom (enter to submit):
     quit                              terminate everything and exit
 
 Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
+Stack shepherds use ``~/.mergedog/logs/stack-<pr>.log``.
 """
 from __future__ import annotations
 
@@ -99,6 +106,7 @@ from mergedog import github, repo as repo_mod  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
+    MUX_JOBS_FILE,
     MUX_PRS_FILE,
     MUX_SOCKET,
     REPO_SLUG,
@@ -116,6 +124,37 @@ from mergedog.state import TrustDB  # noqa: E402
 LOG_DIR = ROOT / "logs"
 
 TITLE_TRUNC = 20
+JobKey = tuple[str, int]
+PR_JOB = "pr"
+STACK_JOB = "stack"
+
+
+def _pr_job(pr: int) -> JobKey:
+    return (PR_JOB, pr)
+
+
+def _stack_job(pr: int) -> JobKey:
+    return (STACK_JOB, pr)
+
+
+def _coerce_job(job: JobKey | int) -> JobKey:
+    if isinstance(job, tuple):
+        return job
+    return _pr_job(job)
+
+
+def _job_label(job: JobKey | int) -> str:
+    kind, pr = _coerce_job(job)
+    if kind == STACK_JOB:
+        return f"stack {pr}"
+    return str(pr)
+
+
+def _job_log_name(job: JobKey | int) -> str:
+    kind, pr = _coerce_job(job)
+    if kind == STACK_JOB:
+        return f"stack-{pr}.log"
+    return f"{pr}.log"
 
 
 def _read_pr_title(pr: int) -> str:
@@ -192,29 +231,84 @@ def _write_mux_prs(prs: list[int]) -> None:
     os.replace(tmp, MUX_PRS_FILE)
 
 
-def _add_mux_pr(pr: int) -> None:
-    prs = set(_read_mux_prs())
-    if pr in prs:
+def _read_mux_jobs() -> list[JobKey]:
+    """Curated mux jobs, including stack shepherds.
+
+    ``mux-prs.json`` remains as the backwards-compatible regular-PR list
+    for older tools. Newer mux instances persist all jobs here.
+    """
+    if not MUX_JOBS_FILE.exists():
+        return [_pr_job(pr) for pr in _read_mux_prs()]
+    try:
+        data = json.loads(MUX_JOBS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    out: set[JobKey] = set()
+    for item in data:
+        try:
+            if isinstance(item, int):
+                out.add(_pr_job(item))
+            elif isinstance(item, str):
+                out.add(_pr_job(_parse_pr(item)))
+            elif isinstance(item, dict):
+                kind = str(item.get("kind", PR_JOB))
+                pr = int(item["pr"])
+                if kind in (PR_JOB, STACK_JOB):
+                    out.add((kind, pr))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return sorted(out)
+
+
+def _write_mux_jobs(jobs: list[JobKey]) -> None:
+    jobs = sorted(set(jobs))
+    MUX_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MUX_JOBS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps([{"kind": kind, "pr": pr} for kind, pr in jobs]))
+    os.replace(tmp, MUX_JOBS_FILE)
+    _write_mux_prs([pr for kind, pr in jobs if kind == PR_JOB])
+
+
+def _add_mux_job(job: JobKey) -> None:
+    jobs = set(_read_mux_jobs())
+    if job in jobs:
         return
-    prs.add(pr)
-    _write_mux_prs(sorted(prs))
+    jobs.add(job)
+    _write_mux_jobs(sorted(jobs))
+
+
+def _remove_mux_job(job: JobKey) -> None:
+    jobs = set(_read_mux_jobs())
+    if job not in jobs:
+        return
+    jobs.discard(job)
+    _write_mux_jobs(sorted(jobs))
+
+
+def _add_mux_pr(pr: int) -> None:
+    _add_mux_job(_pr_job(pr))
 
 
 def _remove_mux_pr(pr: int) -> None:
-    prs = set(_read_mux_prs())
-    if pr not in prs:
-        return
-    prs.discard(pr)
-    _write_mux_prs(sorted(prs))
+    _remove_mux_job(_pr_job(pr))
 
 
-def _spawn(pr: int, extra: list[str]) -> tuple[subprocess.Popen, object, Path]:
+def _spawn(
+    job: JobKey | int,
+    extra: list[str],
+) -> tuple[subprocess.Popen, object, Path]:
+    job = _coerce_job(job)
+    kind, pr = job
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"{pr}.log"
+    log_path = LOG_DIR / _job_log_name(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
     f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    command = [sys.executable, "-m", "mergedog"]
+    if kind == STACK_JOB:
+        command.append("stack")
+    command.extend([str(pr), *extra])
     p = subprocess.Popen(
-        [sys.executable, "-m", "mergedog", str(pr), *extra],
+        command,
         stdout=f,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -259,7 +353,7 @@ class MuxApp(App):
 
     def __init__(
         self,
-        initial: list[int],
+        initial: list[JobKey | int],
         *,
         ignore_sev: bool = False,
         manage_mergedog_label: bool = False,
@@ -268,10 +362,10 @@ class MuxApp(App):
         lock_fd: int = -1,
     ) -> None:
         super().__init__()
-        self.procs: dict[int, tuple[subprocess.Popen, object, Path]] = {}
-        self._pr_titles: dict[int, str] = {}
-        self._pr_status: dict[int, dict] = {}
-        self._initial = initial
+        self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
+        self._pr_titles: dict[JobKey, str] = {}
+        self._pr_status: dict[JobKey, dict] = {}
+        self._initial = [_coerce_job(job) for job in initial]
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
         self.gchat_to = gchat_to
@@ -284,7 +378,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "mark-spurious <pr> | cancel <pr> | remove <pr> | log <pr> | "
+                "stack <pr> | mark-spurious <pr> | cancel <pr> | remove <pr> | log <pr> | "
                 "mergedog-label | migrate | quit"
             )
         )
@@ -292,8 +386,8 @@ class MuxApp(App):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("PR", "Title", "", "Last")
-        for pr in self._initial:
-            self._do_add(pr, [])
+        for job in self._initial:
+            self._do_add_job(job, [])
         self._refresh()
         self.set_interval(2.0, self._refresh)
         self.query_one(HistoryInput).focus()
@@ -317,27 +411,35 @@ class MuxApp(App):
             out = [f"--repo={self.repo_slug}", *out]
         return out
 
-    def _do_add(self, pr: int, extra: list[str]) -> str:
-        if pr in self.procs and self.procs[pr][0].poll() is None:
-            return f"[{pr}] already running"
+    def _do_add_job(self, job: JobKey | int, extra: list[str]) -> str:
+        job = _coerce_job(job)
+        label = _job_label(job)
+        if job in self.procs and self.procs[job][0].poll() is None:
+            return f"[{label}] already running"
         try:
-            self.procs[pr] = _spawn(pr, self._shepherd_args(extra))
+            self.procs[job] = _spawn(job, self._shepherd_args(extra))
         except Exception as e:
-            return f"[{pr}] spawn failed: {e}"
-        self._pr_titles.pop(pr, None)
-        _add_mux_pr(pr)
-        return f"[{pr}] started"
+            return f"[{label}] spawn failed: {e}"
+        self._pr_titles.pop(job, None)
+        _add_mux_job(job)
+        return f"[{label}] started"
 
-    def _dead_prs(self) -> list[int]:
+    def _do_add(self, pr: int, extra: list[str]) -> str:
+        return self._do_add_job(_pr_job(pr), extra)
+
+    def _do_stack_add(self, pr: int, extra: list[str]) -> str:
+        return self._do_add_job(_stack_job(pr), extra)
+
+    def _dead_jobs(self) -> list[JobKey]:
         return sorted(
-            pr
-            for pr, (p, _, _) in self.procs.items()
+            job
+            for job, (p, _, _) in self.procs.items()
             if p.poll() is not None
         )
 
-    def _restart_prs(
+    def _restart_jobs(
         self,
-        prs: list[int],
+        jobs: list[JobKey | int],
         extra: list[str],
         action: str,
         empty: str,
@@ -345,16 +447,16 @@ class MuxApp(App):
         # Runs in a worker thread so the input bar / table stay responsive
         # while shepherds tear down. ``self.notify`` is thread-safe in
         # Textual (it posts a message to the app loop).
-        prs = [pr for pr in prs if pr in self.procs]
-        if not prs:
+        jobs = [_coerce_job(job) for job in jobs if _coerce_job(job) in self.procs]
+        if not jobs:
             self.notify(empty, severity="warning")
             return
         # Signal every shepherd up front so they all wind down in
         # parallel. Without this, each ``_terminate_group`` below would
         # block up to ``grace`` seconds *per PR* in series before the
         # next SIGTERM was even sent.
-        for pr in prs:
-            p = self.procs[pr][0]
+        for job in jobs:
+            p = self.procs[job][0]
             if p.poll() is None:
                 try:
                     os.killpg(p.pid, signal.SIGTERM)
@@ -363,20 +465,20 @@ class MuxApp(App):
         # Now reap. ``_terminate_group`` is a no-op for already-exited
         # processes, and the second SIGTERM it sends to stragglers is
         # harmless.
-        for pr in prs:
-            _terminate_group(self.procs[pr][0])
+        for job in jobs:
+            _terminate_group(self.procs[job][0])
         shepherd_args = self._shepherd_args(extra)
-        for pr in prs:
+        for job in jobs:
             try:
-                self.procs[pr] = _spawn(pr, shepherd_args)
+                self.procs[job] = _spawn(job, shepherd_args)
             except Exception as e:
-                self.notify(f"[{pr}] failed: {e}", severity="error")
-            self._pr_titles.pop(pr, None)
-        self.notify(f"{action} {len(prs)} PR(s)")
+                self.notify(f"[{_job_label(job)}] failed: {e}", severity="error")
+            self._pr_titles.pop(job, None)
+        self.notify(f"{action} {len(jobs)} job(s)")
 
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_restart_all(self, extra: list[str] | None = None) -> None:
-        self._restart_prs(
+        self._restart_jobs(
             sorted(self.procs),
             extra or [],
             "restarting",
@@ -386,11 +488,11 @@ class MuxApp(App):
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_restart_dead(
         self,
-        prs: list[int] | None = None,
+        jobs: list[JobKey | int] | None = None,
         extra: list[str] | None = None,
     ) -> None:
-        self._restart_prs(
-            prs if prs is not None else self._dead_prs(),
+        self._restart_jobs(
+            jobs if jobs is not None else self._dead_jobs(),
             extra or [],
             "restarting dead",
             "no dead PRs to restart",
@@ -398,7 +500,7 @@ class MuxApp(App):
 
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_rebase_all(self) -> None:
-        self._restart_prs(
+        self._restart_jobs(
             sorted(self.procs),
             ["--rebase"],
             "rebasing",
@@ -445,21 +547,37 @@ class MuxApp(App):
             f"use `rebase all` to apply to running PRs)"
         )
 
-    def _do_cancel(self, pr: int) -> str:
-        entry = self.procs.get(pr)
+    def _do_cancel_job(self, job: JobKey | int) -> str:
+        job = _coerce_job(job)
+        label = _job_label(job)
+        entry = self.procs.get(job)
         if entry is None:
-            return f"[{pr}] unknown"
+            return f"[{label}] unknown"
         _terminate_group(entry[0])
-        return f"[{pr}] terminated"
+        return f"[{label}] terminated"
 
-    def _do_remove(self, pr: int) -> str:
-        entry = self.procs.get(pr)
+    def _do_cancel(self, pr: int) -> str:
+        return self._do_cancel_job(_pr_job(pr))
+
+    def _do_stack_cancel(self, pr: int) -> str:
+        return self._do_cancel_job(_stack_job(pr))
+
+    def _do_remove_job(self, job: JobKey | int) -> str:
+        job = _coerce_job(job)
+        label = _job_label(job)
+        entry = self.procs.get(job)
         if entry is None:
-            return f"[{pr}] unknown"
+            return f"[{label}] unknown"
         if entry[0].poll() is None:
             _terminate_group(entry[0])
-        self._prune_pr(pr)
-        return f"[{pr}] removed"
+        self._prune_job(job)
+        return f"[{label}] removed"
+
+    def _do_remove(self, pr: int) -> str:
+        return self._do_remove_job(_pr_job(pr))
+
+    def _do_stack_remove(self, pr: int) -> str:
+        return self._do_remove_job(_stack_job(pr))
 
     def _do_mark_spurious(self, pr: int) -> str:
         checks = github.get_pr_checks_all(pr)
@@ -479,7 +597,7 @@ class MuxApp(App):
         trust.spurious_check_names = merged
         trust.save()
 
-        if pr in self.procs:
+        if _pr_job(pr) in self.procs:
             self._do_cancel(pr)
             started = self._do_add(pr, [])
             suffix = f"; {started}"
@@ -498,16 +616,17 @@ class MuxApp(App):
         # code and prune them before redrawing the table. We do this here
         # (in the periodic refresh) rather than only on user input so the
         # auto-prune happens even if the operator is just watching.
-        for pr in list(self.procs):
-            p = self.procs[pr][0]
+        for job in list(self.procs):
+            p = self.procs[job][0]
             if p.poll() == EXIT_PR_NOT_ACTIONABLE:
-                self._prune_pr(pr)
-                self.notify(f"[{pr}] pruned (PR no longer open)")
+                self._prune_job(job)
+                self.notify(f"[{_job_label(job)}] pruned (PR no longer open)")
 
         table = self.query_one(DataTable)
         table.clear()
-        for pr in sorted(self.procs):
-            p, _, log_path = self.procs[pr]
+        for job in sorted(self.procs):
+            kind, pr = job
+            p, _, log_path = self.procs[job]
             rc = p.poll()
             if rc is None:
                 state = "🟢"
@@ -516,32 +635,36 @@ class MuxApp(App):
             else:
                 state = "🔴"
             last = _last_log_line(log_path)
-            structured = read_status(pr)
+            structured = read_status(pr) if kind == PR_JOB else None
             if structured is None:
-                self._pr_status.pop(pr, None)
+                self._pr_status.pop(job, None)
             else:
-                self._pr_status[pr] = structured
-            title = self._pr_titles.get(pr, "")
-            if not title:
+                self._pr_status[job] = structured
+            title = self._pr_titles.get(job, "")
+            if not title and kind == PR_JOB:
                 title = _read_pr_title(pr)
                 if title:
-                    self._pr_titles[pr] = title
+                    self._pr_titles[job] = title
+            elif not title:
+                title = "ghstack"
             # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
             # the worktree path is omitted from the table entirely now,
             # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
             # it from the shell.
             pr_cell = Text(
-                str(pr),
+                _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
             table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 
-    def _prune_pr(self, pr: int) -> None:
+    def _prune_job(self, job: JobKey | int) -> None:
         """Forget a shepherd and clean up its on-disk state.
 
         The log file is kept so the operator can audit why the shepherd quit.
         """
-        entry = self.procs.pop(pr, None)
+        job = _coerce_job(job)
+        kind, pr = job
+        entry = self.procs.pop(job, None)
         if entry is not None:
             try:
                 entry[1].close()  # type: ignore[attr-defined]
@@ -553,15 +676,67 @@ class MuxApp(App):
             except Exception:
                 pass
         try:
-            repo_mod.wipe_worktree(pr)
+            if kind == STACK_JOB:
+                repo_mod.wipe_stack_worktree(pr)
+            else:
+                repo_mod.wipe_worktree(pr)
         except Exception:
             pass
-        _remove_mux_pr(pr)
-        self._pr_titles.pop(pr, None)
+        _remove_mux_job(job)
+        self._pr_titles.pop(job, None)
+
+    def _prune_pr(self, pr: int) -> None:
+        self._prune_job(_pr_job(pr))
 
     # ------------------------------------------------------------------
     # Command dispatch (shared by TUI input and IPC server)
     # ------------------------------------------------------------------
+
+    def _dispatch_stack_command(self, rest: list[str]) -> str:
+        if not rest:
+            return "usage: stack <pr> | stack <command> <pr>"
+        subcmd = rest[0]
+        if subcmd.isdigit() or "/pull/" in subcmd:
+            return self._do_stack_add(_parse_pr(subcmd), rest[1:])
+        args = rest[1:]
+        if subcmd in ("add", "a"):
+            if not args:
+                return "usage: stack add <pr> [flags]"
+            return self._do_stack_add(_parse_pr(args[0]), args[1:])
+        if subcmd == "rebase":
+            if not args:
+                return "usage: stack rebase <pr> [flags]"
+            return self._do_stack_add(_parse_pr(args[0]), ["--rebase", *args[1:]])
+        if subcmd in ("restart", "r"):
+            if not args:
+                return "usage: stack restart <pr> [flags]"
+            pr = _parse_pr(args[0])
+            self._do_stack_cancel(pr)
+            return self._do_stack_add(pr, args[1:])
+        if subcmd == "reassess":
+            if not args:
+                return "usage: stack reassess <pr> [flags]"
+            pr = _parse_pr(args[0])
+            self._do_stack_cancel(pr)
+            return self._do_stack_add(pr, ["--reassess", *args[1:]])
+        if subcmd in ("cancel", "c", "kill"):
+            if not args:
+                return "usage: stack cancel <pr>"
+            return self._do_stack_cancel(_parse_pr(args[0]))
+        if subcmd in ("remove", "rm", "forget"):
+            if not args:
+                return "usage: stack remove <pr>"
+            return self._do_stack_remove(_parse_pr(args[0]))
+        if subcmd == "log":
+            if not args:
+                return "usage: stack log <pr>"
+            pr = _parse_pr(args[0])
+            job = _stack_job(pr)
+            entry = self.procs.get(job)
+            if entry is not None:
+                return str(entry[2])
+            return f"[{_job_label(job)}] unknown"
+        return f"unknown stack command: {subcmd!r}"
 
     def _dispatch_command(self, line: str) -> str:
         """Parse and execute a mux command.  Returns a response string."""
@@ -579,6 +754,8 @@ class MuxApp(App):
                 if not rest:
                     return "usage: add <pr> [flags]"
                 return self._do_add(_parse_pr(rest[0]), rest[1:])
+            elif cmd == "stack":
+                return self._dispatch_stack_command(rest)
             elif cmd == "rebase":
                 if not rest:
                     return "usage: rebase <pr> | rebase all"
@@ -587,7 +764,7 @@ class MuxApp(App):
                     if not n:
                         return "no PRs to rebase"
                     self._do_rebase_all()
-                    return f"rebasing {n} PR(s)"
+                    return f"rebasing {n} job(s)"
                 return self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
             elif cmd in ("restart", "r"):
                 if not rest:
@@ -597,13 +774,13 @@ class MuxApp(App):
                     if not n:
                         return "no PRs to restart"
                     self._do_restart_all(rest[1:])
-                    return f"restarting {n} PR(s)"
+                    return f"restarting {n} job(s)"
                 if rest[0] == "dead":
-                    prs = self._dead_prs()
-                    if not prs:
+                    jobs = self._dead_jobs()
+                    if not jobs:
                         return "no dead PRs to restart"
-                    self._do_restart_dead(prs, rest[1:])
-                    return f"restarting dead {len(prs)} PR(s)"
+                    self._do_restart_dead(jobs, rest[1:])
+                    return f"restarting dead {len(jobs)} job(s)"
                 pr = _parse_pr(rest[0])
                 self._do_cancel(pr)
                 return self._do_add(pr, rest[1:])
@@ -620,16 +797,33 @@ class MuxApp(App):
             elif cmd in ("cancel", "c", "kill"):
                 if not rest:
                     return "usage: cancel <pr>"
+                if rest[0] == "stack":
+                    if len(rest) < 2:
+                        return "usage: cancel stack <pr>"
+                    return self._do_stack_cancel(_parse_pr(rest[1]))
                 return self._do_cancel(_parse_pr(rest[0]))
             elif cmd in ("remove", "rm", "forget"):
                 if not rest:
                     return "usage: remove <pr>"
+                if rest[0] == "stack":
+                    if len(rest) < 2:
+                        return "usage: remove stack <pr>"
+                    return self._do_stack_remove(_parse_pr(rest[1]))
                 return self._do_remove(_parse_pr(rest[0]))
             elif cmd == "log":
                 if not rest:
                     return "usage: log <pr>"
+                if rest[0] == "stack":
+                    if len(rest) < 2:
+                        return "usage: log stack <pr>"
+                    pr = _parse_pr(rest[1])
+                    job = _stack_job(pr)
+                    entry = self.procs.get(job)
+                    if entry is not None:
+                        return str(entry[2])
+                    return f"[{_job_label(job)}] unknown"
                 pr = _parse_pr(rest[0])
-                entry = self.procs.get(pr)
+                entry = self.procs.get(_pr_job(pr))
                 if entry is not None:
                     return str(entry[2])
                 return f"[{pr}] unknown"
@@ -649,10 +843,11 @@ class MuxApp(App):
             return f"error: {e}"
 
     def _format_status(self) -> str:
-        """JSON status of all tracked PRs (consumed by MCP server)."""
+        """JSON status of all tracked jobs (consumed by MCP server)."""
         rows = []
-        for pr in sorted(self.procs):
-            p, _, log_path = self.procs[pr]
+        for job in sorted(self.procs):
+            kind, pr = job
+            p, _, log_path = self.procs[job]
             rc = p.poll()
             if rc is None:
                 state = "running"
@@ -663,9 +858,14 @@ class MuxApp(App):
             else:
                 state = "exited_error"
             last = _last_log_line(log_path)
-            title = self._pr_titles.get(pr, "") or _read_pr_title(pr)
-            structured = read_status(pr)
+            if kind == PR_JOB:
+                title = self._pr_titles.get(job, "") or _read_pr_title(pr)
+                structured = read_status(pr)
+            else:
+                title = self._pr_titles.get(job, "") or "ghstack"
+                structured = None
             rows.append({
+                "kind": kind,
                 "pr": pr,
                 "title": title,
                 "state": state,
@@ -675,11 +875,13 @@ class MuxApp(App):
         return json.dumps(rows, indent=2)
 
     def _format_migrate(self) -> str:
-        prs = sorted(self.procs)
-        if not prs:
+        jobs = sorted(self.procs)
+        if not jobs:
             return "no PRs tracked"
+        prs = [pr for kind, pr in jobs if kind == PR_JOB]
+        stack_prs = [pr for kind, pr in jobs if kind == STACK_JOB]
         state_files = [
-            str(state_file(pr)) for pr in prs if state_file(pr).exists()
+            str(state_file(pr)) for _, pr in jobs if state_file(pr).exists()
         ]
         repo_arg = f"--repo {shlex.quote(self.repo_slug)} "
         pr_args = " ".join(str(pr) for pr in prs)
@@ -689,6 +891,11 @@ class MuxApp(App):
             "# Then start the mux there:",
             f"python -m mergedog.mux {repo_arg}{pr_args}",
         ]
+        if stack_prs:
+            lines.extend(
+                ["# Then add stack jobs in the mux:"]
+                + [f"stack {pr}" for pr in stack_prs]
+            )
         return "\n".join(lines)
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
@@ -770,13 +977,13 @@ class MuxApp(App):
             self._ipc_server.close()
         if self._lock_fd >= 0:
             release_lock(self._lock_fd)
-        for _pr, (p, _f, _) in self.procs.items():
+        for _job, (p, _f, _) in self.procs.items():
             if p.poll() is None:
                 try:
                     os.killpg(p.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-        for _pr, (p, f, _) in self.procs.items():
+        for _job, (p, f, _) in self.procs.items():
             _terminate_group(p, grace=2.0)
             try:
                 f.close()  # type: ignore[attr-defined]
@@ -798,8 +1005,8 @@ def main() -> int:
         "--resume-known",
         action="store_true",
         help=(
-            "Start a shepherd for every PR in the mux-tracked list "
-            f"({MUX_PRS_FILE})."
+            "Start a shepherd for every job in the mux-tracked list "
+            f"({MUX_JOBS_FILE}, falling back to {MUX_PRS_FILE})."
         ),
     )
     parser.add_argument(
@@ -864,16 +1071,16 @@ def main() -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    initial: list[int] = []
+    initial: list[JobKey] = []
     if args.resume_known:
-        initial.extend(_read_mux_prs())
+        initial.extend(_read_mux_jobs())
     for raw in args.prs:
         try:
-            initial.append(_parse_pr(raw))
+            initial.append(_pr_job(_parse_pr(raw)))
         except argparse.ArgumentTypeError as e:
             print(f"skipping {raw!r}: {e}", file=sys.stderr)
-    seen: set[int] = set()
-    initial = [pr for pr in initial if not (pr in seen or seen.add(pr))]
+    seen: set[JobKey] = set()
+    initial = [job for job in initial if not (job in seen or seen.add(job))]
 
     app = MuxApp(
         initial,

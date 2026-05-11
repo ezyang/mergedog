@@ -57,7 +57,7 @@ accepts commands, and auto-prunes PRs that merge or close.
 python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
 ```
 
-- `--resume-known` restarts every PR in the tracked list (`~/.mergedog/mux-prs.json`).
+- `--resume-known` restarts every job in the tracked list (`~/.mergedog/mux-jobs.json`, falling back to `~/.mergedog/mux-prs.json`).
 - `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
 - `--manage-mergedog-label` tells all spawned shepherds to add the `mergedog`
   label at startup and remove it on exit. By default, shepherds do not mutate
@@ -80,6 +80,12 @@ TUI commands (type in the input bar at the bottom):
 | Command | Effect |
 |---|---|
 | `add <pr>` or just `<pr>` | Start shepherding a PR |
+| `stack <pr>` or `stack add <pr>` | Start shepherding a ghstack stack |
+| `stack rebase <pr>` | Start shepherding a stack with `--rebase` |
+| `stack restart <pr>` | Kill and re-spawn a stack |
+| `stack cancel <pr>` | SIGTERM the stack shepherd (keeps state) |
+| `stack remove <pr>` | SIGTERM + wipe the `stack-<pr>` worktree, state, context |
+| `stack log <pr>` | Print the stack log file path |
 | `cancel <pr>` | SIGTERM the shepherd (keeps state) |
 | `restart <pr>` | Kill and re-spawn |
 | `restart all` | Kill all shepherds and respawn |
@@ -221,7 +227,8 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── contexts/<pr>.md          # sidecar: PR title/body/comments (untrusted, fed to Claude)
 ├── logs/<pr>.log             # per-PR shepherd stdout/stderr (written by mux)
 ├── logs/stack-<pr>.log       # stack shepherd log, named by bottom PR
-├── mux-prs.json              # mux's tracked PR list
+├── mux-prs.json              # backwards-compatible regular PR tracking list
+├── mux-jobs.json             # mux's tracked regular PR + stack job list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)
 ├── config.json               # persistent operator settings (LLM provider/model)

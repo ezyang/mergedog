@@ -21,8 +21,8 @@ class TestMuxStructuredStatus(unittest.TestCase):
             log_path = Path(d) / "123.log"
             log_path.write_text("[12:00:00] CI status -> pending (1/2 done)\n")
             app = mux.MuxApp.__new__(mux.MuxApp)
-            app.procs = {123: (_FakeProc(None), object(), log_path)}
-            app._pr_titles = {123: "Test PR"}
+            app.procs = {mux._pr_job(123): (_FakeProc(None), object(), log_path)}
+            app._pr_titles = {mux._pr_job(123): "Test PR"}
 
             sidecar = {"schema_version": 1, "phase": "polling_ci"}
             with mock.patch.object(mux, "read_status", return_value=sidecar):
@@ -37,14 +37,14 @@ class TestMuxCommands(unittest.TestCase):
     def test_restart_all_dispatches_bulk_restart_with_flags(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {
-            123: (_FakeProc(None), object(), Path("123.log")),
-            456: (_FakeProc(None), object(), Path("456.log")),
+            mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
+            mux._pr_job(456): (_FakeProc(None), object(), Path("456.log")),
         }
 
         with mock.patch.object(app, "_do_restart_all") as restart_all:
             result = app._dispatch_command("restart all --ignore-sev")
 
-        self.assertEqual(result, "restarting 2 PR(s)")
+        self.assertEqual(result, "restarting 2 job(s)")
         restart_all.assert_called_once_with(["--ignore-sev"])
 
     def test_restart_all_without_prs_is_noop(self):
@@ -57,24 +57,26 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "no PRs to restart")
         restart_all.assert_not_called()
 
-    def test_restart_dead_dispatches_only_when_dead_prs_exist(self):
+    def test_restart_dead_dispatches_only_when_dead_jobs_exist(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {
-            123: (_FakeProc(None), object(), Path("123.log")),
-            456: (_FakeProc(1), object(), Path("456.log")),
-            789: (_FakeProc(0), object(), Path("789.log")),
+            mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
+            mux._pr_job(456): (_FakeProc(1), object(), Path("456.log")),
+            mux._stack_job(789): (_FakeProc(0), object(), Path("stack-789.log")),
         }
 
         with mock.patch.object(app, "_do_restart_dead") as restart_dead:
             result = app._dispatch_command("restart dead --ignore-sev")
 
-        self.assertEqual(result, "restarting dead 2 PR(s)")
-        restart_dead.assert_called_once_with([456, 789], ["--ignore-sev"])
+        self.assertEqual(result, "restarting dead 2 job(s)")
+        restart_dead.assert_called_once_with(
+            [mux._pr_job(456), mux._stack_job(789)], ["--ignore-sev"]
+        )
 
-    def test_restart_dead_without_dead_prs_is_noop(self):
+    def test_restart_dead_without_dead_jobs_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {
-            123: (_FakeProc(None), object(), Path("123.log")),
+            mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
         }
 
         with mock.patch.object(app, "_do_restart_dead") as restart_dead:
@@ -83,6 +85,78 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "no dead PRs to restart")
         restart_dead.assert_not_called()
 
+    def test_stack_command_starts_stack_job(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+
+        with mock.patch.object(app, "_do_stack_add") as stack_add:
+            stack_add.return_value = "[stack 123] started"
+            result = app._dispatch_command("stack 123 --force-ghstack")
+
+        self.assertEqual(result, "[stack 123] started")
+        stack_add.assert_called_once_with(123, ["--force-ghstack"])
+
+    def test_stack_rebase_adds_rebase_flag(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+
+        with mock.patch.object(app, "_do_stack_add") as stack_add:
+            stack_add.return_value = "[stack 123] started"
+            result = app._dispatch_command("stack rebase 123 --force-ghstack")
+
+        self.assertEqual(result, "[stack 123] started")
+        stack_add.assert_called_once_with(
+            123, ["--rebase", "--force-ghstack"]
+        )
+
+    def test_stack_log_uses_stack_job(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {
+            mux._stack_job(123): (
+                _FakeProc(None),
+                object(),
+                Path("stack-123.log"),
+            ),
+        }
+
+        result = app._dispatch_command("stack log 123")
+
+        self.assertEqual(result, "stack-123.log")
+
+
+class TestMuxJobPersistence(unittest.TestCase):
+    def test_read_mux_jobs_falls_back_to_legacy_prs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            prs_file.write_text("[123, 456]")
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs = mux._read_mux_jobs()
+
+        self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
+
+    def test_write_mux_jobs_keeps_legacy_prs_regular_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                mux._write_mux_jobs([mux._pr_job(123), mux._stack_job(456)])
+                jobs_data = json.loads(jobs_file.read_text())
+                prs_data = json.loads(prs_file.read_text())
+
+        self.assertEqual(
+            jobs_data,
+            [{"kind": "pr", "pr": 123}, {"kind": "stack", "pr": 456}],
+        )
+        self.assertEqual(prs_data, [123])
 
 if __name__ == "__main__":
     unittest.main()
