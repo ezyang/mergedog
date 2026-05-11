@@ -10,6 +10,10 @@ source .venv/bin/activate
 
 Before doing repo-specific operations, check for matching project memories under `~/.codex/memories/` (for example, push command shapes or local workflow exceptions).
 
+# Temporary scripts
+
+Put temporary scripts and scratch files under `agent_space/`.
+
 # Commit cadence
 
 Commit proactively at natural breakpoints — don't wait to be asked.

@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+agent_space/
 dist/
 build/
 *.egg-info/
