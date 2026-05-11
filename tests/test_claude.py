@@ -8,10 +8,10 @@ from mergedog.config import LLMConfig
 
 
 class TestInvoke(unittest.TestCase):
-    def test_real_failure_marker_returns_specific_halt_reason(self):
+    def test_too_hard_marker_returns_specific_halt_reason(self):
         with tempfile.TemporaryDirectory() as d:
             worktree = Path(d)
-            marker = worktree / ".mergedog-real-failure"
+            marker = worktree / ".mergedog-too-hard"
             marker.touch()
 
             with (
@@ -44,7 +44,7 @@ class TestInvoke(unittest.TestCase):
         self.assertFalse(result.ran_cleanly)
         self.assertEqual(
             result.halt_reason,
-            "reported a real PR-related failure it could not safely fix",
+            "reported a real PR-related failure that is too hard to fix safely",
         )
         self.assertFalse(marker.exists())
 

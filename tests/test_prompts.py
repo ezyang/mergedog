@@ -12,10 +12,10 @@ _BASE_KWARGS = dict(
 
 
 class TestEarlierStackSection(unittest.TestCase):
-    def test_fix_prompt_separates_real_failure_from_inconclusive(self):
+    def test_fix_prompt_separates_too_hard_from_inconclusive(self):
         prompt = render_fix_prompt(**_BASE_KWARGS)
 
-        self.assertIn("touch .mergedog-real-failure", prompt)
+        self.assertIn("touch .mergedog-too-hard", prompt)
         self.assertIn("real and PR-related", prompt)
         self.assertIn("cannot safely fix it in one commit", prompt)
         self.assertIn("touch .mergedog-inconclusive", prompt)

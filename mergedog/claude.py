@@ -507,10 +507,10 @@ def _invoke(
         log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
-    real_failure_path = worktree / ".mergedog-real-failure"
-    real_failure = real_failure_path.exists()
-    if real_failure:
-        real_failure_path.unlink()
+    too_hard_path = worktree / ".mergedog-too-hard"
+    too_hard = too_hard_path.exists()
+    if too_hard:
+        too_hard_path.unlink()
 
     inconclusive_path = worktree / ".mergedog-inconclusive"
     inconclusive = inconclusive_path.exists()
@@ -524,8 +524,8 @@ def _invoke(
 
     after = head_sha(worktree)
     if after == before:
-        if real_failure:
-            reason = "reported a real PR-related failure it could not safely fix"
+        if too_hard:
+            reason = "reported a real PR-related failure that is too hard to fix safely"
             log(f"{agent} {reason}; halting for human review")
             return LLMResult(False, None, transcript, reason)
         if inconclusive:

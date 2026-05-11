@@ -30,7 +30,7 @@ Your job, right now, is to decide which of four things to do and do exactly it:
      harness will then advance the PR. A human reviews everything at the \
      end, so a wrong call here is recoverable.
 
-  3. Signal REAL_FAILURE by running ``touch .mergedog-real-failure`` and \
+  3. Signal TOO_HARD by running ``touch .mergedog-too-hard`` and \
      then exiting without committing. Choose this if at least one failure \
      is real and PR-related, but you cannot safely fix it in one commit \
      from the evidence available. The harness will HALT for human review \
@@ -54,7 +54,7 @@ Caution on dr. ci FLAKY classifications:
   failure as spurious, check whether the failing test name is semantically \
   related to the PR's domain (read the sidecar for what the PR does). If \
   it is and the log shows a real error, either fix it (option 1) or signal \
-  REAL_FAILURE (option 3). If it is related but the actual error is missing \
+  TOO_HARD (option 3). If it is related but the actual error is missing \
   or too ambiguous to classify, prefer INCONCLUSIVE (option 4) over \
   spurious (option 2). \
   Additionally, the same test failing across multiple independent configs \
@@ -120,7 +120,7 @@ literal log tail):
 {failed_jobs}
 
 Investigate, then either commit a ``[MERGEDOG] ...`` fix (with the body \
-described above), signal REAL_FAILURE, signal INCONCLUSIVE, or exit without \
+described above), signal TOO_HARD, signal INCONCLUSIVE, or exit without \
 committing for spurious failures. Do not narrate -- the harness only looks \
 at ``git log`` and the marker files described above.
 """
