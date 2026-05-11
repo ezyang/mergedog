@@ -14,7 +14,10 @@ from datetime import datetime, timezone
 
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
+from mergedog.project import get_project_policy
 from mergedog.status import write_status
+
+PROJECT = get_project_policy()
 
 
 @dataclass
@@ -58,13 +61,14 @@ def _format_handoff_comment(
         else "<!-- mergedog:handoff -->\n"
     )
     n = len(sessions)
-    if recovering:
+    if recovering and PROJECT.has_pytorch_merge_bot:
         head: list[str] = [
             "## mergedog handoff (after merge failure)",
             "",
-            "pytorchmergebot reported `Merge failed`. mergedog re-inspected "
+            f"{PROJECT.mergebot_login} reported `Merge failed`. "
+            "mergedog re-inspected "
             "CI and is handing back off to you. **Please review the latest "
-            "session(s) below and re-run `@pytorchbot merge` if you're "
+            f"session(s) below and re-run `{PROJECT.merge_command}` if you're "
             "happy** — mergedog will not retrigger the merge itself.",
             "",
         ]
@@ -73,7 +77,11 @@ def _format_handoff_comment(
             "## mergedog handoff",
             "",
             "All CI is green (or skipped). Ready for human review and "
-            "`@pytorchbot merge`.",
+            + (
+                f"`{PROJECT.merge_command}`."
+                if PROJECT.merge_command
+                else "merge."
+            ),
             "",
         ]
     if n == 0:
@@ -155,7 +163,7 @@ def post_handoff_comment(
         log(f"WARNING: failed to post handoff comment: {e}")
 
 
-PYTORCHMERGEBOT_LOGIN = "pytorchmergebot"
+PYTORCHMERGEBOT_LOGIN = PROJECT.mergebot_login
 
 
 _RETRYABLE_FAILURE_PATTERNS = [
@@ -188,6 +196,8 @@ def latest_mergebot_event(
     Returns ``None`` if there are no pytorchmergebot comments after
     ``since_iso``.
     """
+    if PYTORCHMERGEBOT_LOGIN is None:
+        return None
     relevant = [
         c
         for c in github.get_pr_comments(pr)
@@ -210,6 +220,8 @@ def latest_mergebot_failure_event(
     pr: int, since_iso: str
 ) -> tuple[str, str] | None:
     """Return the latest pytorchmergebot ``Merge failed`` event after ``since_iso``."""
+    if PYTORCHMERGEBOT_LOGIN is None:
+        return None
     relevant = [
         c
         for c in github.get_pr_comments(pr)
@@ -292,7 +304,7 @@ def watch_post_handoff(
         event = latest_mergebot_event(pr, since_iso)
         kind = event[0] if event else None
         if kind == "failed":
-            log("pytorchmergebot reported merge failure; halting")
+            log(f"{PROJECT.mergebot_login} reported merge failure; halting")
             return "failed", event[1], event[2]
         if merging:
             msg = _merging_progress_line(pr)
@@ -312,17 +324,27 @@ def watch_post_handoff(
                 new_state = "awaiting_approval"
             if new_state != last_state:
                 if new_state == "started":
-                    log("pytorchmergebot picked up the merge; waiting for outcome")
+                    log(
+                        f"{PROJECT.mergebot_login} picked up the merge; "
+                        "waiting for outcome"
+                    )
                 elif new_state == "awaiting_merge":
-                    log(
-                        "handed off; awaiting `@pytorchbot merge`. Will recover "
-                        "on a Merge failed reply, or auto-prune on close/merge."
-                    )
+                    if PROJECT.has_pytorch_merge_bot:
+                        log(
+                            f"handed off; awaiting `{PROJECT.merge_command}`. "
+                            "Will recover on a Merge failed reply, or "
+                            "auto-prune on close/merge."
+                        )
+                    else:
+                        log("handed off; awaiting human merge.")
                 else:
-                    log(
-                        "handed off; awaiting approval. Will recover "
-                        "on a Merge failed reply, or auto-prune on close/merge."
-                    )
+                    if PROJECT.has_pytorch_merge_bot:
+                        log(
+                            "handed off; awaiting approval. Will recover "
+                            "on a Merge failed reply, or auto-prune on close/merge."
+                        )
+                    else:
+                        log("handed off; awaiting approval.")
                 last_state = new_state
         time.sleep(_POLL_INTERVAL_SEC)
 
@@ -369,7 +391,7 @@ def watch_stack_post_handoff(
             if kind == "failed":
                 set_merging(any_merging)
                 set_approved(any_approved)
-                log(f"pytorchmergebot reported merge failure on PR #{pr}")
+                log(f"{PROJECT.mergebot_login} reported merge failure on PR #{pr}")
                 return "failed", pr, event[1], event[2]
             if kind == "started":
                 started_prs.append(pr)
@@ -397,18 +419,24 @@ def watch_stack_post_handoff(
             if new_state != last_state:
                 if new_state == "started":
                     log(
-                        "pytorchmergebot picked up a stack merge; "
+                        f"{PROJECT.mergebot_login} picked up a stack merge; "
                         "waiting for outcome"
                     )
                 elif new_state == "awaiting_merge":
-                    log(
-                        "handed off stack; awaiting `@pytorchbot merge`. "
-                        "Will recover on a Merge failed reply."
-                    )
+                    if PROJECT.has_pytorch_merge_bot:
+                        log(
+                            f"handed off stack; awaiting `{PROJECT.merge_command}`. "
+                            "Will recover on a Merge failed reply."
+                        )
+                    else:
+                        log("handed off stack; awaiting human merge.")
                 else:
-                    log(
-                        "handed off stack; awaiting approval. Will recover "
-                        "on a Merge failed reply."
-                    )
+                    if PROJECT.has_pytorch_merge_bot:
+                        log(
+                            "handed off stack; awaiting approval. Will recover "
+                            "on a Merge failed reply."
+                        )
+                    else:
+                        log("handed off stack; awaiting approval.")
                 last_state = new_state
         time.sleep(_POLL_INTERVAL_SEC)

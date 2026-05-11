@@ -25,6 +25,7 @@ from mergedog.handoff import (
 )
 from mergedog.log import die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
+from mergedog.project import get_project_policy
 from mergedog.prompts import (
     render_fix_prompt,
     render_merge_conflict_prompt,
@@ -89,7 +90,8 @@ EXIT_PR_NOT_ACTIONABLE = 42
 # before the other 10+ required workflows even exist, and slap the trunk
 # label on prematurely.
 CI_STABILITY_WINDOW_SEC = 60
-TRUNK_LABEL = "ciflow/trunk"
+PROJECT = get_project_policy()
+TRUNK_LABEL = PROJECT.trunk_label
 # Marker label so humans can see at a glance which PRs already have a live
 # mergedog shepherding them -- keeps two operators (or two mergedogs) from
 # fighting over the same PR. Added after validation passes; removed on every
@@ -951,7 +953,11 @@ def _shepherd_body(
     # always owns the land decision (and the skip decision, when claude
     # judges spurious).
     while True:
-        trunk_applied = github.has_label(pr_data, TRUNK_LABEL)
+        trunk_applied = (
+            True
+            if TRUNK_LABEL is None
+            else github.has_label(pr_data, TRUNK_LABEL)
+        )
         last_status: str | None = None
         # (status, check_count) we last observed. Becomes the anchor for
         # the stability window: when it changes (new check arrives,
@@ -1317,7 +1323,7 @@ def _shepherd_body(
             # the PR's own critical signal actually ran before handing off.
             # A trunk failure that masks a job carrying the PR's signal is
             # worse than one on an unrelated job.
-            if not trunk_applied:
+            if not trunk_applied and TRUNK_LABEL is not None:
                 # Adding ciflow/trunk kicks off a fresh wave of trunk
                 # workflows; gate on SEV so we don't pile on broken trunk.
                 _wait_for_no_active_sev(
@@ -1353,9 +1359,14 @@ def _shepherd_body(
         # restart doesn't re-react to the same stale comment.
         handoff_iso = github.latest_mergedog_handoff_iso(pr) or utc_now_iso()
         since_iso = max(handoff_iso, trust.last_observed_failure_iso)
+        merge_instruction = (
+            f"comment `{PROJECT.merge_command}` on "
+            if PROJECT.merge_command
+            else "merge "
+        )
         log(
-            f"Hand off to a human reviewer; have them comment "
-            f"`@pytorchbot merge` on {pr_data.get('url', f'PR #{pr}')}."
+            "Hand off to a human reviewer; have them "
+            f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}."
         )
         _write_status_best_effort(
             pr,
@@ -1384,13 +1395,18 @@ def _shepherd_body(
 
         if fail_body and is_retryable_merge_failure(fail_body):
             if auto_retries < MAX_MERGE_AUTO_RETRIES:
+                if PROJECT.merge_command is None:
+                    die(
+                        "merge failure was retryable, but this repo has no "
+                        "configured merge command to auto-retry"
+                    )
                 auto_retries += 1
                 log(
-                    f"pytorchmergebot merge failure is retryable (infra flake); "
-                    f"auto-retrying `@pytorchbot merge` "
+                    f"{PROJECT.mergebot_login} merge failure is retryable "
+                    f"(infra flake); auto-retrying `{PROJECT.merge_command}` "
                     f"({auto_retries}/{MAX_MERGE_AUTO_RETRIES})"
                 )
-                github.post_pr_comment(pr, "@pytorchbot merge")
+                github.post_pr_comment(pr, PROJECT.merge_command)
                 pr_data = github.get_pr(pr)
                 continue
             log(

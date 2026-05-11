@@ -21,6 +21,7 @@ from mergedog.paths import (
     worktree_dir,
 )
 from mergedog.process import run, run_streamed
+from mergedog.project import get_project_policy
 
 
 _GIT_LOCK_TIMEOUT_SEC = 2.0
@@ -148,14 +149,17 @@ def _fetch_lock() -> Iterator[None]:
 
 
 def fetch_main() -> None:
-    """Fetch ``origin/main`` and ``origin/viable/strict``.
+    """Fetch ``origin/main`` and the repo's known-good ref, if configured.
 
     Much faster than a full ``fetch_origin`` but gives
     ``select_rebase_target`` what it needs.
     """
+    branches = ["main"]
+    if get_project_policy().known_good_ref == "origin/viable/strict":
+        branches.append("viable/strict")
     with _fetch_lock():
         run(
-            ["git", "fetch", "origin", "main", "viable/strict"],
+            ["git", "fetch", "origin", *branches],
             cwd=REPO_DIR,
             capture=False,
             loud=True,
@@ -564,7 +568,18 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
         ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
     ).stdout.strip()
 
-    viable = _resolve_ref(VIABLE_STRICT_REF)
+    known_good_ref = get_project_policy().known_good_ref
+    if known_good_ref is None:
+        main = _resolve_ref("origin/main")
+        if (
+            main is not None
+            and _is_ancestor(merge_base, main)
+            and merge_base != main
+        ):
+            return "origin/main", "origin/main"
+        return merge_base, "already at origin/main (staying put)"
+
+    viable = _resolve_ref(known_good_ref)
     viable_ahead = viable is not None and _is_ancestor(merge_base, viable) and merge_base != viable
 
     revert = _find_latest_revert(merge_base, "origin/main")
@@ -576,9 +591,9 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
     )
 
     if revert is not None and revert_ahead_of_viable:
-        return revert, f"revert commit {revert[:12]} (ahead of viable/strict)"
+        return revert, f"revert commit {revert[:12]} (ahead of {known_good_ref})"
     if viable_ahead:
-        return VIABLE_STRICT_REF, "viable/strict"
+        return known_good_ref, known_good_ref.removeprefix("origin/")
     if revert is not None and _is_ancestor(merge_base, revert) and merge_base != revert:
         return revert, f"revert commit {revert[:12]}"
     return merge_base, "already at best known-good point (staying put)"

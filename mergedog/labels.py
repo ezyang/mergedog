@@ -17,6 +17,7 @@ import time
 from mergedog import github
 from mergedog.log import log
 from mergedog.paths import REPO_SLUG, ROOT
+from mergedog.project import get_project_policy
 from mergedog.taint import taint, untaint
 
 _LABEL_CACHE_TTL_SEC = 24 * 60 * 60
@@ -198,6 +199,9 @@ def _validate_labels(
 
 
 def autolabel_if_needed(pr: int, pr_data: dict) -> None:
+    if get_project_policy().repo_slug != "pytorch/pytorch":
+        log("autolabel: skipped for non-PyTorch repo")
+        return
     if not _pr_needs_autolabel(pr_data):
         log("autolabel: PR already has release notes / topic labels; skipping")
         return

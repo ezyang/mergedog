@@ -65,6 +65,13 @@ python -m mergedog.mux [<pr>...] [--resume-known] [--ignore-sev] [--manage-merge
 - `--root DIR` redirects all on-disk state to a different directory (also
   settable via `MERGEDOG_ROOT` env var).
 
+By default mergedog targets `pytorch/pytorch`. For another GitHub repo, set
+`MERGEDOG_REPO=owner/name` or `MERGEDOG_REPO_SLUG=owner/name` before starting
+the mux or shepherd. `MERGEDOG_REPO_SSH_URL` overrides the clone URL; otherwise
+mergedog derives `git@github.com:owner/name.git`. Non-PyTorch repos skip the
+PyTorch-only hooks (`ci: sev`, `ciflow/trunk`, Dr. CI, autolabeling, and
+`pytorchmergebot` handoff recovery).
+
 TUI commands (type in the input bar at the bottom):
 
 | Command | Effect |
@@ -201,7 +208,7 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 
 ```
 ~/.mergedog/
-├── repo/                     # shared bare clone of pytorch/pytorch
+├── repo/                     # shared bare clone of the configured repo
 ├── worktrees/<pr>/           # per-PR git worktrees
 ├── worktrees/stack-<pr>/     # shared worktree for ghstack stacks
 ├── state/<pr>.json           # trust DB, spurious verdicts, last failure

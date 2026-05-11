@@ -100,10 +100,11 @@ class TestLLMHaltMessage(unittest.TestCase):
             halt_reason="signalled INCONCLUSIVE; halting for human review",
         )
 
-        self.assertEqual(
-            _llm_halt_message(result, "claude exited abnormally"),
-            "claude signalled INCONCLUSIVE; halting for human review",
-        )
+        with mock.patch("mergedog.shepherd._llm_label", return_value="claude"):
+            self.assertEqual(
+                _llm_halt_message(result, "claude exited abnormally"),
+                "claude signalled INCONCLUSIVE; halting for human review",
+            )
 
     def test_falls_back_without_specific_reason(self):
         result = LLMResult(

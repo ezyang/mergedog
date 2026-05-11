@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mergedog import notify, shepherd, stack_shepherd
 from mergedog.config import LLM_PROVIDERS, get_llm_config, set_llm_config
+from mergedog.paths import REPO_SLUG
 
 
 def _parse_pr(value: str) -> int:
@@ -20,7 +21,7 @@ def _parse_pr(value: str) -> int:
         if num.isdigit():
             return int(num)
     raise argparse.ArgumentTypeError(
-        f"expected a PR number or pytorch/pytorch PR URL, got {value!r}"
+        f"expected a PR number or {REPO_SLUG} PR URL, got {value!r}"
     )
 
 
@@ -29,7 +30,7 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "pr",
         type=_parse_pr,
-        help="PR number (or full PR URL) on pytorch/pytorch",
+        help=f"PR number (or full PR URL) on {REPO_SLUG}",
     )
     parser.add_argument(
         "--rebase",
@@ -139,8 +140,8 @@ def _single_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="mergedog",
         description=(
-            "Autonomously shepherd an approved pytorch/pytorch PR through "
-            "CI to the point a human can comment `@pytorchbot merge`."
+            f"Autonomously shepherd an approved {REPO_SLUG} PR through "
+            "CI to the point it is ready for human merge."
         ),
     )
     _add_common_flags(parser)
@@ -221,7 +222,7 @@ def _rage_main(argv: list[str]) -> int:
     parser.add_argument(
         "pr",
         type=_parse_pr,
-        help="PR number (or full PR URL) on pytorch/pytorch",
+        help=f"PR number (or full PR URL) on {REPO_SLUG}",
     )
     parser.add_argument(
         "--root",

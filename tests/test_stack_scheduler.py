@@ -234,6 +234,17 @@ class TestTrunkPromotionTarget(unittest.TestCase):
             )
         )
 
+    def test_no_trunk_label_disables_promotion(self):
+        bottom = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+        )
+        with mock.patch.object(stack_shepherd, "TRUNK_LABEL", None):
+            self.assertIsNone(
+                stack_shepherd._trunk_promotion_target([bottom], time.time())
+            )
+
 
 class TestAllTrunkGreenStable(unittest.TestCase):
     def test_all_satisfied(self):
@@ -285,6 +296,22 @@ class TestAllTrunkGreenStable(unittest.TestCase):
         self.assertFalse(
             stack_shepherd._all_trunk_green_stable([a, b], time.time())
         )
+
+    def test_no_trunk_label_only_requires_green_stable(self):
+        a = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+        )
+        b = _mk_ctx(
+            orig_sha="B",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+        )
+        with mock.patch.object(stack_shepherd, "TRUNK_LABEL", None):
+            self.assertTrue(
+                stack_shepherd._all_trunk_green_stable([a, b], time.time())
+            )
 
 
 class TestRebaseStackPrefix(unittest.TestCase):

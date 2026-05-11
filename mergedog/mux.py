@@ -118,6 +118,7 @@ from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
     MUX_PRS_FILE,
     MUX_SOCKET,
+    REPO_SLUG,
     ROOT,
     context_file,
     ensure_dirs,
@@ -472,7 +473,7 @@ class MuxApp(App):
             # it from the shell.
             pr_cell = Text(
                 str(pr),
-                style=f"link https://github.com/pytorch/pytorch/pull/{pr}",
+                style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
             table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 

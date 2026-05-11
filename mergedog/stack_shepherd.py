@@ -47,6 +47,7 @@ from mergedog.handoff import (
 )
 from mergedog.log import configure_log_file, die, log
 from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, ROOT, context_file
+from mergedog.project import get_project_policy
 from mergedog.prompts import render_fix_prompt, render_rebase_conflict_prompt
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
@@ -810,6 +811,8 @@ def _trunk_promotion_target(
     next time we see ``passed`` and stable, the trunk checks have
     settled.
     """
+    if TRUNK_LABEL is None:
+        return None
     for i, ctx in enumerate(contexts):
         if ctx.trunk_applied:
             continue
@@ -833,6 +836,9 @@ def _apply_trunk(ctx: _MemberCtx, *, ignore_sev: bool) -> None:
     ``trunk_applied`` and resets stability so the next inspection
     starts the window over (because new checks will appear).
     """
+    if TRUNK_LABEL is None:
+        ctx.trunk_applied = True
+        return
     pr = ctx.member.pr
     _wait_for_no_active_sev(
         f"applying {TRUNK_LABEL} to PR #{pr}", ignore_sev=ignore_sev
@@ -854,7 +860,7 @@ def _all_trunk_green_stable(
     ``@pytorchbot merge``.
     """
     for ctx in contexts:
-        if not ctx.trunk_applied:
+        if TRUNK_LABEL is not None and not ctx.trunk_applied:
             return False
         if not _is_green_stable(ctx, now):
             return False
@@ -1163,9 +1169,15 @@ def run_stack(
                     since_by_pr[ctx.member.pr] = max(
                         handoff_iso, ctx.trust.last_observed_failure_iso
                     )
+                project = get_project_policy()
+                merge_instruction = (
+                    f"comment `{project.merge_command}` on "
+                    if project.merge_command
+                    else "merge "
+                )
                 log(
-                    "Hand off stack to a human reviewer; have them comment "
-                    f"`@pytorchbot merge` on PR #{contexts[-1].member.pr}."
+                    "Hand off stack to a human reviewer; have them "
+                    f"{merge_instruction}PR #{contexts[-1].member.pr}."
                 )
 
                 result, event_pr, event_iso, fail_body = watch_stack_post_handoff(
