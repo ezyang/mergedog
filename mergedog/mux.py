@@ -15,6 +15,8 @@ Commands typed at the bottom (enter to submit):
     restart all                       kill and re-spawn every tracked PR
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked PR with --rebase
+    mark-spurious <pr>                mark current failed/cancelled checks
+                                      spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
     remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
@@ -92,7 +94,7 @@ class HistoryInput(Input):
         self._history_index = len(self._history)
         self._saved_line = ""
 
-from mergedog import repo as repo_mod  # noqa: E402
+from mergedog import github, repo as repo_mod  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
@@ -108,6 +110,7 @@ from mergedog.paths import (  # noqa: E402
 )
 from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE  # noqa: E402
 from mergedog.status import read_status  # noqa: E402
+from mergedog.state import TrustDB  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 
@@ -280,7 +283,8 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all> | rebase <pr|all> | reassess <pr> | "
-                "cancel <pr> | remove <pr> | log <pr> | mergedog-label | migrate | quit"
+                "mark-spurious <pr> | cancel <pr> | remove <pr> | log <pr> | "
+                "mergedog-label | migrate | quit"
             )
         )
 
@@ -420,6 +424,38 @@ class MuxApp(App):
         self._prune_pr(pr)
         return f"[{pr}] removed"
 
+    def _do_mark_spurious(self, pr: int) -> str:
+        checks = github.get_pr_checks_all(pr)
+        names = sorted(
+            {
+                c.get("name")
+                for c in checks
+                if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+            }
+        )
+        if not names:
+            return f"[{pr}] no current failed/cancelled checks to mark spurious"
+
+        trust = TrustDB.load_or_create(pr)
+        before = set(trust.spurious_check_names)
+        merged = sorted(before | set(names))
+        trust.spurious_check_names = merged
+        trust.save()
+
+        if pr in self.procs:
+            self._do_cancel(pr)
+            started = self._do_add(pr, [])
+            suffix = f"; {started}"
+        else:
+            suffix = ""
+
+        added = len(set(names) - before)
+        return (
+            f"[{pr}] marked {len(names)} current failed/cancelled check"
+            f"{'' if len(names) == 1 else 's'} spurious "
+            f"({added} new){suffix}"
+        )
+
     def _refresh(self) -> None:
         # Detect any shepherds that exited with the "PR not actionable"
         # code and prune them before redrawing the table. We do this here
@@ -534,6 +570,10 @@ class MuxApp(App):
                 pr = _parse_pr(rest[0])
                 self._do_cancel(pr)
                 return self._do_add(pr, ["--reassess", *rest[1:]])
+            elif cmd in ("mark-spurious", "spurious", "ignore-failures"):
+                if not rest:
+                    return "usage: mark-spurious <pr>"
+                return self._do_mark_spurious(_parse_pr(rest[0]))
             elif cmd in ("cancel", "c", "kill"):
                 if not rest:
                     return "usage: cancel <pr>"

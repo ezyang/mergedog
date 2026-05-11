@@ -1071,8 +1071,20 @@ def _shepherd_body(
             failed_count = sum(
                 1 for c in checks if c.get("bucket") in {"fail", "cancel"}
             )
+            active_failed_check_names = sorted(
+                c.get("name", "")
+                for c in effective_checks
+                if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+            )
+            active_failed_count = len(active_failed_check_names)
             if status == "failed" and not failed_count and workflow_failed_run_ids:
                 failed_count = len(workflow_failed_run_ids)
+            if (
+                status == "failed"
+                and not active_failed_count
+                and workflow_failed_run_ids
+            ):
+                active_failed_count = len(workflow_failed_run_ids)
             _write_status_best_effort(
                 pr,
                 phase="polling_ci",
@@ -1080,7 +1092,7 @@ def _shepherd_body(
                 merging=last_merging,
                 ci_done=done,
                 ci_total=len(checks),
-                ci_failed=failed_count,
+                ci_failed=active_failed_count,
                 fix_attempts=fix_commits_pushed,
                 max_fix_attempts=MAX_FIX_COMMITS,
             )
@@ -1124,7 +1136,13 @@ def _shepherd_body(
                     failed = github.get_failed_job_logs_for_runs(
                         workflow_failed_run_ids
                     )
-                failing_check_count = failed_count
+                if spurious_check_names:
+                    failed = [
+                        (name, text)
+                        for name, text in failed
+                        if name not in spurious_check_names
+                    ]
+                failing_check_count = active_failed_count
                 if not failing_check_count and workflow_failed_run_ids:
                     failing_check_count = len(failed)
                 log_state = describe_log_state(failed, failing_check_count)
@@ -1180,7 +1198,7 @@ def _shepherd_body(
                     merging=last_merging,
                     ci_done=done,
                     ci_total=len(checks),
-                    ci_failed=failed_count,
+                    ci_failed=active_failed_count,
                     fix_attempts=fix_commits_pushed,
                     max_fix_attempts=MAX_FIX_COMMITS,
                 )
@@ -1200,12 +1218,8 @@ def _shepherd_body(
                     branch=branch,
                     context_path=str(ctx_path),
                     failed_jobs=failed,
-                    failing_check_names=sorted(
-                        c.get("name", "")
-                        for c in checks
-                        if c.get("bucket") in {"fail", "cancel"}
-                        and c.get("name")
-                    ) or [name for name, _ in failed],
+                    failing_check_names=active_failed_check_names
+                    or [name for name, _ in failed],
                     is_ghstack=is_ghstack,
                     drci_summary=github.latest_drci_summary(
                         comments, head_sha=current
@@ -1247,7 +1261,9 @@ def _shepherd_body(
                     # still wait out any other pending checks before
                     # handing off -- a green-on-the-non-spurious-set
                     # verdict isn't a green-on-everything verdict.
-                    newly_spurious = _spurious_check_names_from_checks(checks)
+                    newly_spurious = _spurious_check_names_from_checks(
+                        effective_checks
+                    )
                     if not newly_spurious:
                         die(
                             f"{_llm_label()} made no commit, but mergedog "

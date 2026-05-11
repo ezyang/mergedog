@@ -416,7 +416,11 @@ def _try_fix(
             f"commits and CI is still failing; halting"
         )
 
-    failed = github.get_failed_job_logs(pr)
+    failed = [
+        (name, text)
+        for name, text in github.get_failed_job_logs(pr)
+        if name not in ctx.spurious_check_names
+    ]
     log_state = describe_log_state(failed, len(ctx.failing_check_names))
     if (
         _failed_logs_are_content_free(failed)
@@ -434,9 +438,12 @@ def _try_fix(
 
     ctx_path, comments = _refresh_context_for(ctx)
     checks = github.get_pr_checks_all(pr)
+    effective_checks = _apply_spurious_overrides(
+        checks, ctx.spurious_check_names
+    )
     failing_check_names = sorted(
         c.get("name", "")
-        for c in checks
+        for c in effective_checks
         if c.get("bucket") in {"fail", "cancel"} and c.get("name")
     )
 
@@ -501,7 +508,7 @@ def _try_fix(
         )
 
     if new_sha is None:
-        newly_spurious = _spurious_check_names_from_checks(checks)
+        newly_spurious = _spurious_check_names_from_checks(effective_checks)
         if not newly_spurious:
             die(
                 f"PR #{pr}: {_llm_label()} made no commit, but mergedog "

@@ -87,6 +87,7 @@ TUI commands (type in the input bar at the bottom):
 | `rebase <pr>` | Shorthand for `add <pr> --rebase` |
 | `rebase all` | Kill all shepherds and respawn with `--rebase` |
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
+| `mark-spurious <pr>` | Snapshot current failed/cancelled checks as spurious and restart |
 | `log <pr>` | Print the log file path |
 | `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
 | `mergedog-label [on\|off]` | Toggle `mergedog` label management for future spawns |

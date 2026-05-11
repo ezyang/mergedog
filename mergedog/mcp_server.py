@@ -54,6 +54,8 @@ mcp = FastMCP(
         "  rebase <pr>        — restart with --rebase\n"
         "  rebase all         — rebase every tracked PR\n"
         "  reassess <pr>      — restart with --reassess\n"
+        "  mark-spurious <pr> — snapshot current failed/cancelled checks "
+        "as spurious and restart\n"
         "  ignore-sev [on|off] — toggle mux-wide --ignore-sev\n"
         "  mergedog-label [on|off] — toggle mux-wide --manage-mergedog-label\n"
         "  log <pr>           — show log file path\n"
