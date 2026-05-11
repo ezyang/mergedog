@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m mergedog.chat [--root DIR]
+    python -m mergedog.chat [--root DIR] [--repo OWNER/NAME]
 
 This starts ``claude`` with the mergedog MCP wired up via
 ``--mcp-config`` so the user doesn't need to edit any settings files.
@@ -20,8 +20,10 @@ def main() -> int:
     # runs with the same environment regardless of how the user invoked us.
     python = sys.executable
 
-    root_args: list[str] = []
     mergedog_root = os.environ.get("MERGEDOG_ROOT", "")
+    mergedog_repo = os.environ.get("MERGEDOG_REPO_SLUG") or os.environ.get(
+        "MERGEDOG_REPO", ""
+    )
     # Forward --root to the MCP server
     i = 1
     while i < len(sys.argv):
@@ -35,12 +37,21 @@ def main() -> int:
             )
             i += 1
             continue
+        if sys.argv[i] == "--repo" and i + 1 < len(sys.argv):
+            mergedog_repo = sys.argv[i + 1]
+            i += 2
+            continue
+        if sys.argv[i].startswith("--repo="):
+            mergedog_repo = sys.argv[i].split("=", 1)[1]
+            i += 1
+            continue
         i += 1
 
     mcp_args = ["-m", "mergedog.mcp_server"]
     if mergedog_root:
         mcp_args.extend(["--root", mergedog_root])
-        root_args = ["--root", mergedog_root]
+    if mergedog_repo:
+        mcp_args.extend(["--repo", mergedog_repo])
 
     mcp_config = json.dumps({
         "mcpServers": {

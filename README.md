@@ -54,7 +54,7 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
+python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
 ```
 
 - `--resume-known` restarts every PR in the tracked list (`~/.mergedog/mux-prs.json`).
@@ -64,13 +64,16 @@ python -m mergedog.mux [<pr>...] [--resume-known] [--ignore-sev] [--manage-merge
   this label.
 - `--root DIR` redirects all on-disk state to a different directory (also
   settable via `MERGEDOG_ROOT` env var).
+- `--repo OWNER/NAME` targets a GitHub repo other than the default
+  `pytorch/pytorch`.
 
-By default mergedog targets `pytorch/pytorch`. For another GitHub repo, set
-`MERGEDOG_REPO=owner/name` or `MERGEDOG_REPO_SLUG=owner/name` before starting
-the mux or shepherd. `MERGEDOG_REPO_SSH_URL` overrides the clone URL; otherwise
-mergedog derives `git@github.com:owner/name.git`. Non-PyTorch repos skip the
-PyTorch-only hooks (`ci: sev`, `ciflow/trunk`, Dr. CI, autolabeling, and
-`pytorchmergebot` handoff recovery).
+By default mergedog targets `pytorch/pytorch`. `--repo` is the preferred way
+to select another GitHub repo; `MERGEDOG_REPO` / `MERGEDOG_REPO_SLUG` remain
+available as environment defaults for scripts. `MERGEDOG_REPO_SSH_URL`
+overrides the clone URL; otherwise mergedog derives
+`git@github.com:owner/name.git`. Non-PyTorch repos skip the PyTorch-only hooks
+(`ci: sev`, `ciflow/trunk`, Dr. CI, autolabeling, and `pytorchmergebot`
+handoff recovery).
 
 TUI commands (type in the input bar at the bottom):
 
@@ -112,9 +115,9 @@ Requires `claude` on your PATH and a running mux instance.  Honors
 Run a shepherd for a single PR in the foreground:
 
 ```
-mergedog <pr_number_or_url> [flags]
+mergedog <pr_number_or_url> [--repo OWNER/NAME] [flags]
 # or equivalently:
-python -m mergedog <pr_number_or_url> [flags]
+python -m mergedog <pr_number_or_url> [--repo OWNER/NAME] [flags]
 ```
 
 This is useful for one-off runs, debugging, or when you want to pass flags
@@ -165,6 +168,7 @@ These work on both the single-PR and stack entry points:
 | `--extra-context TEXT` | Operator hint injected into Claude's fix prompt (trusted) |
 | `--extra-context-file PATH` | Same, but reads from a file (mutually exclusive with above) |
 | `--root DIR` | Override on-disk root (`~/.mergedog`) |
+| `--repo OWNER/NAME` | Target a GitHub repo other than `pytorch/pytorch` |
 
 ### LLM provider
 

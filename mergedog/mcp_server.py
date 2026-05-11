@@ -16,27 +16,12 @@ Tools:
 from __future__ import annotations
 
 import json
-import os
 import sys
-from pathlib import Path
+
+from mergedog.bootstrap import promote_early_env
 
 
-def _preparse_root() -> None:
-    """Honor ``MERGEDOG_ROOT`` so paths resolve correctly."""
-    for i, a in enumerate(sys.argv[1:]):
-        if a == "--root" and i + 1 < len(sys.argv) - 1:
-            os.environ["MERGEDOG_ROOT"] = str(
-                Path(sys.argv[i + 2]).expanduser().resolve()
-            )
-            return
-        if a.startswith("--root="):
-            os.environ["MERGEDOG_ROOT"] = str(
-                Path(a.split("=", 1)[1]).expanduser().resolve()
-            )
-            return
-
-
-_preparse_root()
+promote_early_env(sys.argv[1:])
 
 from mcp.server import FastMCP  # noqa: E402
 

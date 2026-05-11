@@ -5,9 +5,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from mergedog import notify, shepherd, stack_shepherd
-from mergedog.config import LLM_PROVIDERS, get_llm_config, set_llm_config
-from mergedog.paths import REPO_SLUG
+from mergedog.bootstrap import promote_early_env
+
+promote_early_env(sys.argv[1:])
+
+
+def _repo_slug() -> str:
+    from mergedog.paths import REPO_SLUG
+
+    return REPO_SLUG
 
 
 def _parse_pr(value: str) -> int:
@@ -21,7 +27,7 @@ def _parse_pr(value: str) -> int:
         if num.isdigit():
             return int(num)
     raise argparse.ArgumentTypeError(
-        f"expected a PR number or {REPO_SLUG} PR URL, got {value!r}"
+        f"expected a PR number or {_repo_slug()} PR URL, got {value!r}"
     )
 
 
@@ -30,7 +36,15 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "pr",
         type=_parse_pr,
-        help=f"PR number (or full PR URL) on {REPO_SLUG}",
+        help=f"PR number (or full PR URL) on {_repo_slug()}",
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/NAME",
+        help=(
+            "GitHub repository to shepherd (default: MERGEDOG_REPO, "
+            "MERGEDOG_REPO_SLUG, or pytorch/pytorch)."
+        ),
     )
     parser.add_argument(
         "--rebase",
@@ -137,15 +151,19 @@ def _resolve_extra_context(args: argparse.Namespace) -> str | None:
 
 
 def _single_main(argv: list[str]) -> int:
+    promote_early_env(argv)
+
     parser = argparse.ArgumentParser(
         prog="mergedog",
         description=(
-            f"Autonomously shepherd an approved {REPO_SLUG} PR through "
+            f"Autonomously shepherd an approved {_repo_slug()} PR through "
             "CI to the point it is ready for human merge."
         ),
     )
     _add_common_flags(parser)
     args = parser.parse_args(argv)
+
+    from mergedog import notify, shepherd
 
     notify.configure(pr=args.pr, gchat_to=args.gchat_to)
 
@@ -166,6 +184,8 @@ def _single_main(argv: list[str]) -> int:
 
 
 def _stack_main(argv: list[str]) -> int:
+    promote_early_env(argv)
+
     parser = argparse.ArgumentParser(
         prog="mergedog stack",
         description=(
@@ -189,6 +209,8 @@ def _stack_main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
+    from mergedog import notify, stack_shepherd
+
     notify.configure(pr=args.pr, gchat_to=args.gchat_to)
 
     try:
@@ -209,6 +231,7 @@ def _stack_main(argv: list[str]) -> int:
 
 
 def _rage_main(argv: list[str]) -> int:
+    promote_early_env(argv)
     stack = bool(argv and argv[0] == "stack")
     if stack:
         argv = argv[1:]
@@ -222,7 +245,15 @@ def _rage_main(argv: list[str]) -> int:
     parser.add_argument(
         "pr",
         type=_parse_pr,
-        help=f"PR number (or full PR URL) on {REPO_SLUG}",
+        help=f"PR number (or full PR URL) on {_repo_slug()}",
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/NAME",
+        help=(
+            "GitHub repository to inspect (default: MERGEDOG_REPO, "
+            "MERGEDOG_REPO_SLUG, or pytorch/pytorch)."
+        ),
     )
     parser.add_argument(
         "--root",
@@ -249,6 +280,8 @@ def _rage_main(argv: list[str]) -> int:
 
 
 def _config_main(argv: list[str]) -> int:
+    from mergedog.config import LLM_PROVIDERS, get_llm_config, set_llm_config
+
     parser = argparse.ArgumentParser(
         prog="mergedog config",
         description="Inspect or update persistent mergedog settings.",

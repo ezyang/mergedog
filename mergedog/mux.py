@@ -43,29 +43,9 @@ import sys
 import time
 from pathlib import Path
 
+from mergedog.bootstrap import promote_early_env
 
-def _preparse_root(argv: list[str]) -> None:
-    """Promote ``--root`` to ``MERGEDOG_ROOT`` before mergedog imports.
-
-    ``mergedog.paths`` resolves the root at import time, so we seed the
-    env var here -- before the ``from mergedog...`` block below -- and
-    leave canonical argparse handling to ``main()`` for help text. Env
-    inheritance then carries the same root into every spawned shepherd.
-    """
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--root" and i + 1 < len(argv):
-            os.environ["MERGEDOG_ROOT"] = str(Path(argv[i + 1]).expanduser().resolve())
-            return
-        if a.startswith("--root="):
-            value = a.split("=", 1)[1]
-            os.environ["MERGEDOG_ROOT"] = str(Path(value).expanduser().resolve())
-            return
-        i += 1
-
-
-_preparse_root(sys.argv[1:])
+promote_early_env(sys.argv[1:])
 
 from rich.text import Text  # noqa: E402
 from textual import work  # noqa: E402
@@ -280,6 +260,7 @@ class MuxApp(App):
         ignore_sev: bool = False,
         manage_mergedog_label: bool = False,
         gchat_to: str | None = None,
+        repo_slug: str = REPO_SLUG,
         lock_fd: int = -1,
     ) -> None:
         super().__init__()
@@ -290,6 +271,7 @@ class MuxApp(App):
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
         self.gchat_to = gchat_to
+        self.repo_slug = repo_slug
         self._lock_fd = lock_fd
         self._ipc_server: asyncio.AbstractServer | None = None
 
@@ -324,6 +306,10 @@ class MuxApp(App):
             out = ["--manage-mergedog-label", *out]
         if self.gchat_to and not any(a.startswith("--gchat-to") for a in out):
             out = [f"--gchat-to={self.gchat_to}", *out]
+        if self.repo_slug and not any(
+            a == "--repo" or a.startswith("--repo=") for a in out
+        ):
+            out = [f"--repo={self.repo_slug}", *out]
         return out
 
     def _do_add(self, pr: int, extra: list[str]) -> str:
@@ -612,12 +598,13 @@ class MuxApp(App):
         state_files = [
             str(state_file(pr)) for pr in prs if state_file(pr).exists()
         ]
+        repo_arg = f"--repo {shlex.quote(self.repo_slug)} "
         pr_args = " ".join(str(pr) for pr in prs)
         lines = [
             "# Copy state files to the new server:",
             f"scp {shlex.join(state_files)} NEW_HOST:~/.mergedog/state/",
             "# Then start the mux there:",
-            f"python -m mergedog.mux {pr_args}",
+            f"python -m mergedog.mux {repo_arg}{pr_args}",
         ]
         return "\n".join(lines)
 
@@ -765,6 +752,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--repo",
+        metavar="OWNER/NAME",
+        default=REPO_SLUG,
+        help=(
+            "GitHub repository to shepherd (default: MERGEDOG_REPO, "
+            "MERGEDOG_REPO_SLUG, or pytorch/pytorch). Passed to every "
+            "spawned shepherd."
+        ),
+    )
+    parser.add_argument(
         "--gchat-to",
         metavar="USER",
         help=(
@@ -800,6 +797,7 @@ def main() -> int:
         ignore_sev=args.ignore_sev,
         manage_mergedog_label=args.manage_mergedog_label,
         gchat_to=args.gchat_to,
+        repo_slug=args.repo,
         lock_fd=lock_fd,
     )
     app.run(mouse=False)

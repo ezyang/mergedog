@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 
+from mergedog.bootstrap import promote_early_env
 from mergedog import project
 
 
@@ -31,6 +32,24 @@ class TestProjectPolicy(unittest.TestCase):
         self.assertIsNone(policy.mergebot_login)
         self.assertIsNone(policy.merge_command)
         self.assertIsNone(policy.known_good_ref)
+
+
+class TestEarlyEnv(unittest.TestCase):
+    def test_repo_flag_promotes_to_env(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            promote_early_env(["--repo", "owner/repo"])
+
+            import os
+
+            self.assertEqual(os.environ["MERGEDOG_REPO_SLUG"], "owner/repo")
+
+    def test_repo_equals_flag_promotes_to_env(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            promote_early_env(["--repo=owner/repo"])
+
+            import os
+
+            self.assertEqual(os.environ["MERGEDOG_REPO_SLUG"], "owner/repo")
 
 
 if __name__ == "__main__":

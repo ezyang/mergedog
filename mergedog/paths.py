@@ -1,10 +1,11 @@
 """Filesystem layout used by mergedog.
 
 The root directory defaults to ``~/.mergedog`` but can be overridden via
-the ``MERGEDOG_ROOT`` environment variable. This is honoured at import
-time, so any caller that wants to redirect mergedog at a different root
-should set the env var (or use ``--root`` on the entry-point CLIs, which
-sets it for you) before importing anything from this module.
+the ``MERGEDOG_ROOT`` environment variable. The repo defaults to
+``pytorch/pytorch`` but can be overridden via ``MERGEDOG_REPO`` or
+``MERGEDOG_REPO_SLUG``. These are honoured at import time, so callers that
+want to redirect mergedog should set env vars (or use entry-point CLI flags,
+which set them for you) before importing anything from this module.
 """
 from __future__ import annotations
 
