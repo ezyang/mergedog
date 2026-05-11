@@ -57,6 +57,32 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "no PRs to restart")
         restart_all.assert_not_called()
 
+    def test_restart_dead_dispatches_only_when_dead_prs_exist(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {
+            123: (_FakeProc(None), object(), Path("123.log")),
+            456: (_FakeProc(1), object(), Path("456.log")),
+            789: (_FakeProc(0), object(), Path("789.log")),
+        }
+
+        with mock.patch.object(app, "_do_restart_dead") as restart_dead:
+            result = app._dispatch_command("restart dead --ignore-sev")
+
+        self.assertEqual(result, "restarting dead 2 PR(s)")
+        restart_dead.assert_called_once_with([456, 789], ["--ignore-sev"])
+
+    def test_restart_dead_without_dead_prs_is_noop(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {
+            123: (_FakeProc(None), object(), Path("123.log")),
+        }
+
+        with mock.patch.object(app, "_do_restart_dead") as restart_dead:
+            result = app._dispatch_command("restart dead")
+
+        self.assertEqual(result, "no dead PRs to restart")
+        restart_dead.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

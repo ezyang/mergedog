@@ -13,6 +13,7 @@ Commands typed at the bottom (enter to submit):
     <pr>                              shorthand for ``add <pr>``
     restart <pr>                      kill and re-spawn a shepherd
     restart all                       kill and re-spawn every tracked PR
+    restart dead                      re-spawn only exited shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked PR with --rebase
     mark-spurious <pr>                mark current failed/cancelled checks
@@ -282,7 +283,7 @@ class MuxApp(App):
         yield DataTable()
         yield HistoryInput(
             placeholder=(
-                "<pr> | add <pr> | restart <pr|all> | rebase <pr|all> | reassess <pr> | "
+                "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
                 "mark-spurious <pr> | cancel <pr> | remove <pr> | log <pr> | "
                 "mergedog-label | migrate | quit"
             )
@@ -327,11 +328,24 @@ class MuxApp(App):
         _add_mux_pr(pr)
         return f"[{pr}] started"
 
-    def _restart_all(self, extra: list[str], action: str, empty: str) -> None:
+    def _dead_prs(self) -> list[int]:
+        return sorted(
+            pr
+            for pr, (p, _, _) in self.procs.items()
+            if p.poll() is not None
+        )
+
+    def _restart_prs(
+        self,
+        prs: list[int],
+        extra: list[str],
+        action: str,
+        empty: str,
+    ) -> None:
         # Runs in a worker thread so the input bar / table stay responsive
         # while shepherds tear down. ``self.notify`` is thread-safe in
         # Textual (it posts a message to the app loop).
-        prs = sorted(self.procs)
+        prs = [pr for pr in prs if pr in self.procs]
         if not prs:
             self.notify(empty, severity="warning")
             return
@@ -362,11 +376,34 @@ class MuxApp(App):
 
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_restart_all(self, extra: list[str] | None = None) -> None:
-        self._restart_all(extra or [], "restarting", "no PRs to restart")
+        self._restart_prs(
+            sorted(self.procs),
+            extra or [],
+            "restarting",
+            "no PRs to restart",
+        )
+
+    @work(thread=True, exclusive=True, group="restart-all")
+    def _do_restart_dead(
+        self,
+        prs: list[int] | None = None,
+        extra: list[str] | None = None,
+    ) -> None:
+        self._restart_prs(
+            prs if prs is not None else self._dead_prs(),
+            extra or [],
+            "restarting dead",
+            "no dead PRs to restart",
+        )
 
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_rebase_all(self) -> None:
-        self._restart_all(["--rebase"], "rebasing", "no PRs to rebase")
+        self._restart_prs(
+            sorted(self.procs),
+            ["--rebase"],
+            "rebasing",
+            "no PRs to rebase",
+        )
 
     def _do_ignore_sev(self, rest: list[str]) -> str:
         if not rest:
@@ -554,13 +591,19 @@ class MuxApp(App):
                 return self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
             elif cmd in ("restart", "r"):
                 if not rest:
-                    return "usage: restart <pr> | restart all"
+                    return "usage: restart <pr> | restart all | restart dead"
                 if rest[0] == "all":
                     n = len(self.procs)
                     if not n:
                         return "no PRs to restart"
                     self._do_restart_all(rest[1:])
                     return f"restarting {n} PR(s)"
+                if rest[0] == "dead":
+                    prs = self._dead_prs()
+                    if not prs:
+                        return "no dead PRs to restart"
+                    self._do_restart_dead(prs, rest[1:])
+                    return f"restarting dead {len(prs)} PR(s)"
                 pr = _parse_pr(rest[0])
                 self._do_cancel(pr)
                 return self._do_add(pr, rest[1:])

@@ -18,6 +18,7 @@ user when the PR is ready for `@pytorchbot merge`.
   - `rebase <pr>` — restart a PR with a fresh rebase
   - `rebase all` — rebase every tracked PR
   - `restart all` — restart every tracked PR
+  - `restart dead` — restart only exited shepherds
   - `cancel <pr>` — stop a shepherd (keeps state for restart)
   - `remove <pr>` — stop and forget (wipes worktree + state)
   - `restart <pr>` — cancel + add
