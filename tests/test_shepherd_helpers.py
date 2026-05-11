@@ -7,6 +7,7 @@ from mergedog import shepherd
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     _failed_logs_are_content_free,
+    _filter_spurious_failed_jobs,
     _llm_halt_message,
     _latest_completed_at,
     _spurious_check_names_from_checks,
@@ -199,6 +200,27 @@ class TestSpuriousCheckNames(unittest.TestCase):
 
     def test_workflow_only_failure_has_no_check_to_mark(self):
         self.assertEqual(_spurious_check_names_from_checks([]), set())
+
+
+class TestFilterSpuriousFailedJobs(unittest.TestCase):
+    def test_filters_logs_for_marked_spurious_checks(self):
+        failed = [
+            ("pull / linux", "real"),
+            ("trunk / xpu", "unrelated"),
+            ("trunk / rocm", "unrelated"),
+        ]
+
+        self.assertEqual(
+            _filter_spurious_failed_jobs(
+                failed, {"trunk / xpu", "trunk / rocm"}
+            ),
+            [("pull / linux", "real")],
+        )
+
+    def test_no_spurious_names_preserves_original_list(self):
+        failed = [("pull / linux", "real")]
+
+        self.assertIs(_filter_spurious_failed_jobs(failed, set()), failed)
 
 
 if __name__ == "__main__":

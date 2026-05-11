@@ -273,6 +273,15 @@ def _spurious_check_names_from_checks(checks: list[dict]) -> set[str]:
     }
 
 
+def _filter_spurious_failed_jobs(
+    failed: list[tuple[str, str]], spurious_names: set[str]
+) -> list[tuple[str, str]]:
+    """Remove failed-job logs already classified as spurious."""
+    if not spurious_names:
+        return failed
+    return [(name, text) for name, text in failed if name not in spurious_names]
+
+
 def _write_status_best_effort(pr: int, **fields) -> None:
     try:
         write_status(pr, **fields)
@@ -1136,12 +1145,9 @@ def _shepherd_body(
                     failed = github.get_failed_job_logs_for_runs(
                         workflow_failed_run_ids
                     )
-                if spurious_check_names:
-                    failed = [
-                        (name, text)
-                        for name, text in failed
-                        if name not in spurious_check_names
-                    ]
+                failed = _filter_spurious_failed_jobs(
+                    failed, spurious_check_names
+                )
                 failing_check_count = active_failed_count
                 if not failing_check_count and workflow_failed_run_ids:
                     failing_check_count = len(failed)

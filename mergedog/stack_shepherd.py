@@ -64,6 +64,7 @@ from mergedog.shepherd import (
     _llm_halt_message,
     _llm_label,
     _record_claude_session,
+    _filter_spurious_failed_jobs,
     _spurious_check_names_from_checks,
     _wait_for_pr_head,
     _wait_for_no_active_sev,
@@ -416,11 +417,9 @@ def _try_fix(
             f"commits and CI is still failing; halting"
         )
 
-    failed = [
-        (name, text)
-        for name, text in github.get_failed_job_logs(pr)
-        if name not in ctx.spurious_check_names
-    ]
+    failed = _filter_spurious_failed_jobs(
+        github.get_failed_job_logs(pr), ctx.spurious_check_names
+    )
     log_state = describe_log_state(failed, len(ctx.failing_check_names))
     if (
         _failed_logs_are_content_free(failed)

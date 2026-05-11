@@ -31,6 +31,11 @@ Your job, right now, is to decide which of four things to do and do exactly it:
      harness will then advance the PR. A human reviews everything at the \
      end, so a wrong call here is recoverable.
 
+     Do not fix failures you judge unrelated to this PR, even if the fix \
+     looks obvious, safe, or small. mergedog commits must only address \
+     failures caused by the approved PR. For unrelated trunk breakage, \
+     make no commit.
+
   3. Signal TOO_HARD by running ``touch .mergedog-too-hard`` and \
      then exiting without committing. Choose this if at least one failure \
      is real and PR-related, but you cannot safely fix it in one commit \
