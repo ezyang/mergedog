@@ -72,6 +72,7 @@ TUI commands (type in the input bar at the bottom):
 | `add <pr>` or just `<pr>` | Start shepherding a PR |
 | `cancel <pr>` | SIGTERM the shepherd (keeps state) |
 | `restart <pr>` | Kill and re-spawn |
+| `restart all` | Kill all shepherds and respawn |
 | `remove <pr>` | SIGTERM + wipe worktree, state, context |
 | `rebase <pr>` | Shorthand for `add <pr> --rebase` |
 | `rebase all` | Kill all shepherds and respawn with `--rebase` |

@@ -12,6 +12,7 @@ Commands typed at the bottom (enter to submit):
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
     restart <pr>                      kill and re-spawn a shepherd
+    restart all                       kill and re-spawn every tracked PR
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked PR with --rebase
     cancel <pr>                       SIGTERM a shepherd (keeps state)
@@ -295,7 +296,7 @@ class MuxApp(App):
         yield DataTable()
         yield HistoryInput(
             placeholder=(
-                "<pr> | add <pr> | restart <pr> | rebase <pr|all> | reassess <pr> | "
+                "<pr> | add <pr> | restart <pr|all> | rebase <pr|all> | reassess <pr> | "
                 "cancel <pr> | remove <pr> | log <pr> | mergedog-label | migrate | quit"
             )
         )
@@ -335,14 +336,13 @@ class MuxApp(App):
         _add_mux_pr(pr)
         return f"[{pr}] started"
 
-    @work(thread=True, exclusive=True, group="rebase-all")
-    def _do_rebase_all(self) -> None:
+    def _restart_all(self, extra: list[str], action: str, empty: str) -> None:
         # Runs in a worker thread so the input bar / table stay responsive
         # while shepherds tear down. ``self.notify`` is thread-safe in
         # Textual (it posts a message to the app loop).
         prs = sorted(self.procs)
         if not prs:
-            self.notify("no PRs to rebase", severity="warning")
+            self.notify(empty, severity="warning")
             return
         # Signal every shepherd up front so they all wind down in
         # parallel. Without this, each ``_terminate_group`` below would
@@ -360,14 +360,22 @@ class MuxApp(App):
         # harmless.
         for pr in prs:
             _terminate_group(self.procs[pr][0])
-        rebase_args = self._shepherd_args(["--rebase"])
+        shepherd_args = self._shepherd_args(extra)
         for pr in prs:
             try:
-                self.procs[pr] = _spawn(pr, rebase_args)
+                self.procs[pr] = _spawn(pr, shepherd_args)
             except Exception as e:
                 self.notify(f"[{pr}] failed: {e}", severity="error")
             self._pr_titles.pop(pr, None)
-        self.notify(f"rebasing {len(prs)} PR(s)")
+        self.notify(f"{action} {len(prs)} PR(s)")
+
+    @work(thread=True, exclusive=True, group="restart-all")
+    def _do_restart_all(self, extra: list[str] | None = None) -> None:
+        self._restart_all(extra or [], "restarting", "no PRs to restart")
+
+    @work(thread=True, exclusive=True, group="restart-all")
+    def _do_rebase_all(self) -> None:
+        self._restart_all(["--rebase"], "rebasing", "no PRs to rebase")
 
     def _do_ignore_sev(self, rest: list[str]) -> str:
         if not rest:
@@ -523,7 +531,13 @@ class MuxApp(App):
                 return self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
             elif cmd in ("restart", "r"):
                 if not rest:
-                    return "usage: restart <pr>"
+                    return "usage: restart <pr> | restart all"
+                if rest[0] == "all":
+                    n = len(self.procs)
+                    if not n:
+                        return "no PRs to restart"
+                    self._do_restart_all(rest[1:])
+                    return f"restarting {n} PR(s)"
                 pr = _parse_pr(rest[0])
                 self._do_cancel(pr)
                 return self._do_add(pr, rest[1:])

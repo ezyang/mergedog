@@ -65,6 +65,7 @@ mcp = FastMCP(
         "  cancel <pr>        — stop shepherding (keeps state)\n"
         "  remove <pr>        — stop and forget (wipes worktree)\n"
         "  restart <pr>       — cancel + add\n"
+        "  restart all        — restart every tracked PR\n"
         "  rebase <pr>        — restart with --rebase\n"
         "  rebase all         — rebase every tracked PR\n"
         "  reassess <pr>      — restart with --reassess\n"
