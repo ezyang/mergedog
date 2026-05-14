@@ -81,8 +81,8 @@ POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
 PUSH_VISIBILITY_TIMEOUT_SEC = 90
 # Distinct exit code shepherds use when the PR is no longer actionable
-# (closed, merged, etc.). The mux watches for this and auto-prunes the
-# session and on-disk state -- there's no point retrying.
+# (closed, merged, etc.). The mux keeps these completed sessions visible
+# until the operator runs ``cleanup``.
 EXIT_PR_NOT_ACTIONABLE = 42
 # How long ``(status, check_count)`` must hold steady before we trust a
 # "passed" verdict. Right after a push, GitHub registers the workflow runs
@@ -339,10 +339,11 @@ def _is_fork_pr(pr_data: dict) -> bool:
 def _validate_pr(pr_data: dict) -> None:
     state = pr_data.get("state")
     if state != "OPEN":
-        # Closed or merged: nothing to do here ever again. Use the prune
-        # exit code so the mux removes us automatically.
+        # Closed or merged: nothing to do here ever again. Use the
+        # completed exit code so the mux can show the final row until
+        # the operator explicitly cleans it up.
         die(
-            f"PR is not open (state={state}); pruning local shepherd state",
+            f"PR is not open (state={state}); shepherd complete",
             code=EXIT_PR_NOT_ACTIONABLE,
         )
     if pr_data.get("isDraft"):
@@ -1402,7 +1403,7 @@ def _shepherd_body(
         result, event_iso, fail_body = watch_post_handoff(pr, since_iso)
         if result == "closed":
             die(
-                "PR is no longer open; pruning local shepherd state",
+                "PR is no longer open; shepherd complete",
                 code=EXIT_PR_NOT_ACTIONABLE,
             )
         # result == "failed": pytorchmergebot rejected the merge. Persist

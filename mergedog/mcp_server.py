@@ -52,6 +52,7 @@ mcp = FastMCP(
         "  stack cancel <pr>  — stop shepherding a stack\n"
         "  stack remove <pr>  — stop and forget a stack\n"
         "  cancel <pr>        — stop shepherding (keeps state)\n"
+        "  cleanup            — forget successful completed shepherds\n"
         "  remove <pr>        — stop and forget (wipes worktree)\n"
         "  restart <pr>       — cancel + add\n"
         "  restart all        — restart every tracked PR\n"

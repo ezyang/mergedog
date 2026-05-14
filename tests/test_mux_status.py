@@ -15,6 +15,17 @@ class _FakeProc:
         return self._rc
 
 
+class _FakeTable:
+    def __init__(self):
+        self.rows = []
+
+    def clear(self):
+        self.rows.clear()
+
+    def add_row(self, *cells):
+        self.rows.append(cells)
+
+
 class TestMuxStructuredStatus(unittest.TestCase):
     def test_format_status_includes_shepherd_status_sidecar(self):
         with tempfile.TemporaryDirectory() as d:
@@ -31,6 +42,56 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(rows[0]["pr"], 123)
         self.assertEqual(rows[0]["state"], "running")
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
+    def test_completed_not_actionable_status_is_retained(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] PR is no longer open; shepherd complete\n"
+            )
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (
+                    _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                    object(),
+                    log_path,
+                )
+            }
+            app._pr_titles = {mux._pr_job(123): "Test PR"}
+
+            with mock.patch.object(mux, "read_status", return_value=None):
+                rows = json.loads(app._format_status())
+
+        self.assertEqual(rows[0]["state"], "completed")
+        self.assertIn("shepherd complete", rows[0]["last_log"])
+
+    def test_refresh_keeps_completed_rows_until_cleanup(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] PR is no longer open; shepherd complete\n"
+            )
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (
+                    _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                    object(),
+                    log_path,
+                )
+            }
+            app._pr_titles = {mux._pr_job(123): "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(app, "_prune_job") as prune_job,
+                mock.patch.object(mux, "read_status", return_value=None),
+            ):
+                app._refresh()
+
+        prune_job.assert_not_called()
+        self.assertEqual(len(table.rows), 1)
 
 
 class TestMuxCommands(unittest.TestCase):
@@ -120,6 +181,40 @@ class TestMuxCommands(unittest.TestCase):
         result = app._dispatch_command("stack log 123")
 
         self.assertEqual(result, "stack-123.log")
+
+    def test_cleanup_prunes_successful_completed_jobs(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        completed = mux._pr_job(123)
+        failed = mux._pr_job(456)
+        running = mux._stack_job(789)
+        app.procs = {
+            completed: (
+                _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                object(),
+                Path("123.log"),
+            ),
+            failed: (_FakeProc(1), object(), Path("456.log")),
+            running: (_FakeProc(None), object(), Path("stack-789.log")),
+        }
+
+        with mock.patch.object(app, "_prune_job") as prune_job:
+            result = app._dispatch_command("cleanup")
+
+        self.assertEqual(result, "cleaned up 1 completed job(s)")
+        prune_job.assert_called_once_with(completed)
+
+    def test_cleanup_without_completed_jobs_is_noop(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {
+            mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
+            mux._pr_job(456): (_FakeProc(1), object(), Path("456.log")),
+        }
+
+        with mock.patch.object(app, "_prune_job") as prune_job:
+            result = app._dispatch_command("cleanup")
+
+        self.assertEqual(result, "no completed jobs to cleanup")
+        prune_job.assert_not_called()
 
 
 class TestMuxJobPersistence(unittest.TestCase):

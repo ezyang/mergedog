@@ -285,7 +285,7 @@ def watch_post_handoff(
 
     Returns ``(kind, event_iso, body)``:
       - ``("closed", None, None)``     -- PR is no longer ``OPEN`` (merged or
-        closed by hand); caller should auto-prune.
+        closed by hand); caller should exit as completed.
       - ``("failed", event_iso, body)`` -- pytorchmergebot reported a merge
         failure; caller should persist ``event_iso`` so a future restart
         won't re-react to the same comment.
@@ -333,7 +333,7 @@ def watch_post_handoff(
                         log(
                             f"handed off; awaiting `{PROJECT.merge_command}`. "
                             "Will recover on a Merge failed reply, or "
-                            "auto-prune on close/merge."
+                            "exit completed on close/merge."
                         )
                     else:
                         log("handed off; awaiting human merge.")
@@ -341,7 +341,8 @@ def watch_post_handoff(
                     if PROJECT.has_pytorch_merge_bot:
                         log(
                             "handed off; awaiting approval. Will recover "
-                            "on a Merge failed reply, or auto-prune on close/merge."
+                            "on a Merge failed reply, or exit completed "
+                            "on close/merge."
                         )
                     else:
                         log("handed off; awaiting approval.")

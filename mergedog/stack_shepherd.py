@@ -143,8 +143,8 @@ def _validate_member(pr_data: dict) -> None:
     pr = pr_data.get("number")
     state = pr_data.get("state")
     if state != "OPEN":
-        # Use the prune exit code so the mux removes us automatically
-        # when one member of the stack is no longer actionable. The
+        # Use the completed exit code so the mux keeps the final row
+        # visible until cleanup when one member is no longer actionable. The
         # operator can re-add a smaller stack manually.
         die(
             f"PR #{pr} is not open (state={state}); "
@@ -1191,8 +1191,8 @@ def run_stack(
                 )
                 if result == "closed":
                     die(
-                        f"PR #{event_pr} is no longer open; pruning local "
-                        "stack shepherd state",
+                        f"PR #{event_pr} is no longer open; stack shepherd "
+                        "complete",
                         code=EXIT_PR_NOT_ACTIONABLE,
                     )
 

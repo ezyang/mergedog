@@ -1,6 +1,6 @@
 """Tiny multi-PR supervisor with a Textual TUI.
 
-Top: a DataTable with one row per active shepherd subprocess.
+Top: a DataTable with one row per tracked shepherd subprocess.
 Bottom: an Input field that takes commands.
 
 Run via::
@@ -25,6 +25,7 @@ Commands typed at the bottom (enter to submit):
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
+    cleanup                           forget successful completed shepherds
     remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
     ignore-sev [on|off]               toggle (or show) the mux-wide
@@ -378,8 +379,8 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "stack <pr> | mark-spurious <pr> | cancel <pr> | remove <pr> | log <pr> | "
-                "mergedog-label | migrate | quit"
+                "stack <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
+                "remove <pr> | log <pr> | mergedog-label | migrate | quit"
             )
         )
 
@@ -435,6 +436,13 @@ class MuxApp(App):
             job
             for job, (p, _, _) in self.procs.items()
             if p.poll() is not None
+        )
+
+    def _completed_jobs(self) -> list[JobKey]:
+        return sorted(
+            job
+            for job, (p, _, _) in self.procs.items()
+            if p.poll() in (0, EXIT_PR_NOT_ACTIONABLE)
         )
 
     def _restart_jobs(
@@ -579,6 +587,16 @@ class MuxApp(App):
     def _do_stack_remove(self, pr: int) -> str:
         return self._do_remove_job(_stack_job(pr))
 
+    def _do_cleanup(self, rest: list[str]) -> str:
+        if rest and rest != ["all"]:
+            return "usage: cleanup [all]"
+        jobs = self._completed_jobs()
+        if not jobs:
+            return "no completed jobs to cleanup"
+        for job in jobs:
+            self._prune_job(job)
+        return f"cleaned up {len(jobs)} completed job(s)"
+
     def _do_mark_spurious(self, pr: int) -> str:
         checks = github.get_pr_checks_all(pr)
         names = sorted(
@@ -612,16 +630,6 @@ class MuxApp(App):
         )
 
     def _refresh(self) -> None:
-        # Detect any shepherds that exited with the "PR not actionable"
-        # code and prune them before redrawing the table. We do this here
-        # (in the periodic refresh) rather than only on user input so the
-        # auto-prune happens even if the operator is just watching.
-        for job in list(self.procs):
-            p = self.procs[job][0]
-            if p.poll() == EXIT_PR_NOT_ACTIONABLE:
-                self._prune_job(job)
-                self.notify(f"[{_job_label(job)}] pruned (PR no longer open)")
-
         table = self.query_one(DataTable)
         table.clear()
         for job in sorted(self.procs):
@@ -630,7 +638,7 @@ class MuxApp(App):
             rc = p.poll()
             if rc is None:
                 state = "🟢"
-            elif rc == 0:
+            elif rc in (0, EXIT_PR_NOT_ACTIONABLE):
                 state = "✅"
             else:
                 state = "🔴"
@@ -802,6 +810,8 @@ class MuxApp(App):
                         return "usage: cancel stack <pr>"
                     return self._do_stack_cancel(_parse_pr(rest[1]))
                 return self._do_cancel(_parse_pr(rest[0]))
+            elif cmd == "cleanup":
+                return self._do_cleanup(rest)
             elif cmd in ("remove", "rm", "forget"):
                 if not rest:
                     return "usage: remove <pr>"
@@ -854,7 +864,7 @@ class MuxApp(App):
             elif rc == 0:
                 state = "exited_ok"
             elif rc == EXIT_PR_NOT_ACTIONABLE:
-                state = "prunable"
+                state = "completed"
             else:
                 state = "exited_error"
             last = _last_log_line(log_path)
