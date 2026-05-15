@@ -33,6 +33,16 @@ class ClaudeSession:
     transcript: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PushedChange:
+    """One mergedog-authored change pushed back to the PR branch."""
+
+    sha: str
+    summary: str
+    subject: str | None = None
+    source: str | None = None
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -46,6 +56,7 @@ def _format_handoff_comment(
     pr_data: dict,
     sessions: list[ClaudeSession],
     *,
+    pushed_changes: list[PushedChange] | None = None,
     recovering: bool = False,
 ) -> str:
     """Build the markdown body posted on the PR at handoff.
@@ -62,6 +73,18 @@ def _format_handoff_comment(
         else "<!-- mergedog:handoff -->\n"
     )
     n = len(sessions)
+    changes = list(pushed_changes or [])
+    seen_change_shas = {c.sha for c in changes}
+    for s in sessions:
+        if s.sha_after and s.sha_after not in seen_change_shas:
+            changes.append(
+                PushedChange(
+                    sha=s.sha_after,
+                    summary=s.verdict,
+                    source=f"{s.mode} ({s.started_at})",
+                )
+            )
+            seen_change_shas.add(s.sha_after)
     if recovering and PROJECT.has_pytorch_merge_bot:
         head: list[str] = [
             "## mergedog handoff (after merge failure)",
@@ -88,14 +111,33 @@ def _format_handoff_comment(
     if n == 0:
         if head_sha:
             head.extend(["", f"Current PR head: `{head_sha}`."])
-        head.append(
-            "No LLM was invoked during this run (CI was green from the "
-            "start; no merge or fix needed)."
+        if changes:
+            head.extend(["", "### Autonomous changes pushed", ""])
+            head.extend(_format_pushed_change_lines(changes))
+        else:
+            head.append(
+                "No mergedog-authored commits were pushed during this run."
+            )
+        head.extend(
+            [
+                "",
+                "No LLM was invoked during this run.",
+            ]
         )
         return marker + "\n".join(head) + "\n"
 
     if head_sha:
         head.append(f"Current PR head: `{head_sha}`.")
+    head.append("")
+    if changes:
+        head.append("### Autonomous changes pushed")
+        head.append("")
+        head.extend(_format_pushed_change_lines(changes))
+        head.append("")
+    else:
+        head.append("### Autonomous changes pushed")
+        head.append("")
+        head.append("- None.")
         head.append("")
     head.append(
         f"During shepherding, the configured LLM was invoked **{n}** time"
@@ -136,11 +178,25 @@ def _format_handoff_comment(
     return marker + body
 
 
+def _format_pushed_change_lines(changes: list[PushedChange]) -> list[str]:
+    lines: list[str] = []
+    for change in changes:
+        sha = change.sha[:12]
+        line = f"- `{sha}` — {change.summary}"
+        if change.subject:
+            line += f": {change.subject}"
+        if change.source:
+            line += f" ({change.source})"
+        lines.append(line)
+    return lines
+
+
 def post_handoff_comment(
     pr: int,
     pr_data: dict,
     sessions: list[ClaudeSession],
     *,
+    pushed_changes: list[PushedChange] | None = None,
     force: bool = False,
     recovering: bool = False,
 ) -> None:
@@ -155,7 +211,12 @@ def post_handoff_comment(
     ):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
         return
-    body = _format_handoff_comment(pr_data, sessions, recovering=recovering)
+    body = _format_handoff_comment(
+        pr_data,
+        sessions,
+        pushed_changes=pushed_changes,
+        recovering=recovering,
+    )
     try:
         github.post_pr_comment(pr, body)
         log(f"posted handoff summary to PR #{pr}")

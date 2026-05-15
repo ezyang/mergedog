@@ -19,6 +19,45 @@ class TestHandoffComments(unittest.TestCase):
         self.assertIn(f"<!-- mergedog:handoff head={'a' * 40} -->", body)
         self.assertIn(f"Current PR head: `{'a' * 40}`.", body)
 
+    def test_handoff_comment_leads_with_pushed_changes(self):
+        body = handoff._format_handoff_comment(
+            {
+                "number": 101,
+                "headRefOid": "b" * 40,
+            },
+            [
+                handoff.ClaudeSession(
+                    mode="fix-CI",
+                    started_at="2026-05-08T13:00:00+00:00",
+                    sha_before="a" * 40,
+                    sha_after="c" * 40,
+                    verdict="pushed fix commit cccccccccccc",
+                    transcript=["fixed it"],
+                )
+            ],
+            pushed_changes=[
+                handoff.PushedChange(
+                    sha="d" * 40,
+                    summary="merged main into the PR branch",
+                    subject="[MERGEDOG] Merge main into PR branch",
+                )
+            ],
+        )
+
+        pushed_idx = body.index("### Autonomous changes pushed")
+        sessions_idx = body.index("### Session 1")
+        self.assertLess(pushed_idx, sessions_idx)
+        self.assertIn(
+            "- `dddddddddddd` — merged main into the PR branch: "
+            "[MERGEDOG] Merge main into PR branch",
+            body,
+        )
+        self.assertIn(
+            "- `cccccccccccc` — pushed fix commit cccccccccccc "
+            "(fix-CI (2026-05-08T13:00:00+00:00))",
+            body,
+        )
+
     def test_handoff_comment_idempotency_is_scoped_to_head(self):
         comments = [
             {

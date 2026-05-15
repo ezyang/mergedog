@@ -17,6 +17,7 @@ from mergedog import github, interventions, labels, repo
 from mergedog.config import get_llm_config
 from mergedog.handoff import (
     ClaudeSession,
+    PushedChange,
     is_merge_conflict_failure,
     is_retryable_merge_failure,
     mergebot_ignored_check_names,
@@ -628,6 +629,29 @@ def _record_claude_session(
     )
 
 
+def _record_pushed_change(
+    changes: list[PushedChange],
+    worktree: Path,
+    sha: str,
+    summary: str,
+    *,
+    source: str | None = None,
+) -> None:
+    """Append a pushed-change summary for the handoff comment."""
+    try:
+        subject = repo.commit_message(worktree, sha).splitlines()[0]
+    except Exception:
+        subject = None
+    changes.append(
+        PushedChange(
+            sha=sha,
+            summary=summary,
+            subject=subject,
+            source=source,
+        )
+    )
+
+
 def _approve_pending_runs(
     sha: str, run_state_cache: dict[int, tuple[str | None, str | None]]
 ) -> int:
@@ -881,6 +905,7 @@ def _shepherd_body(
 
     fix_commits_pushed = 0
     sessions: list[ClaudeSession] = []
+    pushed_changes: list[PushedChange] = []
     recovery_attempts = 0
     last_approved: bool | None = None
     last_merging: bool | None = None
@@ -919,6 +944,12 @@ def _shepherd_body(
                     pr, worktree, fork_remote, branch, new_sha,
                     reason="pushing merge-main commit", ignore_sev=ignore_sev,
                 )
+                _record_pushed_change(
+                    pushed_changes,
+                    worktree,
+                    new_sha,
+                    "merged main into the PR branch",
+                )
 
     # On restart, if the last observed failure was a merge conflict that
     # we never resolved (e.g. old code didn't have conflict handling),
@@ -951,6 +982,12 @@ def _shepherd_body(
                     pr, worktree, fork_remote, branch, new_sha,
                     reason="pushing merge-main commit after conflict",
                     ignore_sev=ignore_sev,
+                )
+                _record_pushed_change(
+                    pushed_changes,
+                    worktree,
+                    new_sha,
+                    "merged main into the PR branch after merge failure",
                 )
         trust.last_observed_failure_body = ""
         trust.save()
@@ -1341,6 +1378,20 @@ def _shepherd_body(
                         reason=f"pushing {_llm_label()} fix commit",
                         ignore_sev=ignore_sev,
                     )
+                    _record_pushed_change(
+                        pushed_changes,
+                        worktree,
+                        new_sha,
+                        "pushed an LLM-authored CI fix",
+                        source=f"{_llm_label()} fix-CI",
+                    )
+                    if merge_sha is not None and merge_sha != new_sha:
+                        _record_pushed_change(
+                            pushed_changes,
+                            worktree,
+                            merge_sha,
+                            "merged main into the PR branch after the fix",
+                        )
                     fix_commits_pushed += 1
                     last_status = None
                     continue
@@ -1394,7 +1445,11 @@ def _shepherd_body(
             break
 
         post_handoff_comment(
-            pr, pr_data, sessions, recovering=recovery_attempts > 0
+            pr,
+            pr_data,
+            sessions,
+            pushed_changes=pushed_changes,
+            recovering=recovery_attempts > 0,
         )
         # Anchor the watch loop on the actual handoff comment timestamp,
         # not "now": on restart this lets us notice a "Merge failed" that
@@ -1484,6 +1539,12 @@ def _shepherd_body(
                         pr, worktree, fork_remote, branch, new_sha,
                         reason="pushing merge-main commit after conflict",
                         ignore_sev=ignore_sev,
+                    )
+                    _record_pushed_change(
+                        pushed_changes,
+                        worktree,
+                        new_sha,
+                        "merged main into the PR branch after merge failure",
                     )
             trust.last_observed_failure_body = ""
             trust.save()
