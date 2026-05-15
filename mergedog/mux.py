@@ -61,7 +61,36 @@ promote_early_env(sys.argv[1:])
 from rich.text import Text  # noqa: E402
 from textual import work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
+from textual.suggester import SuggestFromList  # noqa: E402
 from textual.widgets import DataTable, Input  # noqa: E402
+
+
+COMMAND_SUGGESTIONS = [
+    "add ",
+    "cancel ",
+    "cleanup",
+    "cleanup all",
+    "ignore-sev ",
+    "log ",
+    "mark-spurious ",
+    "mergedog-label ",
+    "migrate",
+    "quit",
+    "reassess ",
+    "rebase ",
+    "rebase all",
+    "remove ",
+    "restart ",
+    "restart all",
+    "restart dead",
+    "stack ",
+    "stack cancel ",
+    "stack log ",
+    "stack rebase ",
+    "stack remove ",
+    "stack restart ",
+    "status",
+]
 
 
 class HistoryInput(Input):
@@ -402,7 +431,8 @@ class MuxApp(App):
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
                 "stack <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
                 "remove <pr> | log <pr> | mergedog-label | migrate | quit"
-            )
+            ),
+            suggester=SuggestFromList(COMMAND_SUGGESTIONS),
         )
 
     def on_mount(self) -> None:

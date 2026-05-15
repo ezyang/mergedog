@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -24,6 +25,23 @@ class _FakeTable:
 
     def add_row(self, *cells):
         self.rows.append(cells)
+
+
+class TestMuxInput(unittest.TestCase):
+    def test_command_suggester_completes_cleanup_prefix(self):
+        suggester = mux.SuggestFromList(mux.COMMAND_SUGGESTIONS)
+
+        suggestion = asyncio.run(suggester.get_suggestion("cle"))
+
+        self.assertEqual(suggestion, "cleanup")
+
+    def test_compose_wires_command_suggester_to_input(self):
+        app = mux.MuxApp([], lock_fd=-1)
+        widgets = list(app.compose())
+        inputs = [w for w in widgets if isinstance(w, mux.HistoryInput)]
+
+        self.assertEqual(len(inputs), 1)
+        self.assertIsNotNone(inputs[0].suggester)
 
 
 class TestMuxStructuredStatus(unittest.TestCase):
