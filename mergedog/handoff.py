@@ -18,6 +18,7 @@ from mergedog.project import get_project_policy
 from mergedog.status import write_status
 
 PROJECT = get_project_policy()
+_MERGEBOT_IGNORE_PHRASE = "will be merged while ignoring the following"
 
 
 @dataclass
@@ -233,6 +234,45 @@ def latest_mergebot_failure_event(
         return None
     latest = max(relevant, key=lambda c: c.get("created_at") or "")
     return latest.get("created_at") or "", latest.get("body") or ""
+
+
+def mergebot_ignored_check_names(
+    comments: list[dict], checks: list[dict], *, since_iso: str
+) -> set[str]:
+    """Return current failed checks explicitly ignored by pytorchmergebot.
+
+    A trusted merge-bot reply to ``@pytorchbot merge -i`` names the checks
+    a human authorized it to ignore. Treat only those named, currently-red
+    checks as already handled so mergedog can focus on any new failures from
+    the merge attempt.
+    """
+    if PROJECT.mergebot_login is None:
+        return set()
+
+    from mergedog.taint import untaint
+
+    failed_names = {
+        c.get("name")
+        for c in checks
+        if c.get("bucket") in {"fail", "cancel"} and c.get("name")
+    }
+    if not failed_names:
+        return set()
+
+    ignored: set[str] = set()
+    for comment in comments:
+        if comment.get("author") != PROJECT.mergebot_login:
+            continue
+        if (comment.get("created_at") or "") <= since_iso:
+            continue
+        body = comment.get("body") or ""
+        # pytorchmergebot is trusted repo automation. We use this body only
+        # as data to match against GitHub's current check names.
+        clean_body = untaint(body)
+        if _MERGEBOT_IGNORE_PHRASE not in clean_body.lower():
+            continue
+        ignored.update(name for name in failed_names if name in clean_body)
+    return ignored
 
 
 _POLL_INTERVAL_SEC = 60

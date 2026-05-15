@@ -19,6 +19,7 @@ from mergedog.handoff import (
     ClaudeSession,
     is_merge_conflict_failure,
     is_retryable_merge_failure,
+    mergebot_ignored_check_names,
     post_handoff_comment,
     utc_now_iso,
     watch_post_handoff,
@@ -1135,6 +1136,26 @@ def _shepherd_body(
                 # Hand the failures to claude; only advance once claude is
                 # OK with the situation (either pushed a fix or judged
                 # spurious).
+                comments = github.get_pr_comments(pr)
+                handoff_iso = github.latest_mergedog_handoff_iso_from_comments(
+                    comments
+                )
+                ignore_since = handoff_iso or trust.last_observed_failure_iso
+                newly_ignored = mergebot_ignored_check_names(
+                    comments, checks, since_iso=ignore_since
+                ) - spurious_check_names
+                if newly_ignored:
+                    spurious_check_names |= newly_ignored
+                    trust.spurious_check_names = sorted(spurious_check_names)
+                    trust.save()
+                    log(
+                        f"{PROJECT.mergebot_login} is ignoring "
+                        f"{len(newly_ignored)} failed check"
+                        f"{'' if len(newly_ignored) == 1 else 's'} "
+                        "from merge -i; continuing with remaining CI"
+                    )
+                    last_status = None
+                    continue
                 if fix_commits_pushed >= MAX_FIX_COMMITS:
                     die(
                         f"already pushed {fix_commits_pushed} [MERGEDOG] fix "

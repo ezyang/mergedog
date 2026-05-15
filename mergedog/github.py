@@ -450,9 +450,14 @@ def latest_mergedog_handoff_iso(pr: int) -> str | None:
     ``now`` (which would miss a merge-failed reply that happened before
     we restarted).
     """
+    return latest_mergedog_handoff_iso_from_comments(get_pr_comments(pr))
+
+
+def latest_mergedog_handoff_iso_from_comments(comments: list[dict]) -> str | None:
+    """Return the latest mergedog handoff timestamp from an existing comment list."""
     matches = [
         c.get("created_at") or ""
-        for c in get_pr_comments(pr)
+        for c in comments
         if _mergedog_handoff_marker(c.get("body") or "")[0]
     ]
     return max(matches) if matches else None

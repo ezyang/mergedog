@@ -3,6 +3,7 @@ from unittest import mock
 
 from mergedog import github
 from mergedog import handoff
+from mergedog.taint import taint
 
 
 class TestHandoffComments(unittest.TestCase):
@@ -48,6 +49,93 @@ class TestHandoffComments(unittest.TestCase):
                 github.latest_mergedog_handoff_iso(101),
                 "2026-05-08T14:00:00Z",
             )
+
+    def test_latest_handoff_iso_from_existing_comments(self):
+        comments = [
+            {
+                "created_at": "2026-05-08T13:00:00Z",
+                "body": "<!-- mergedog:handoff head=aaa -->",
+            },
+            {"created_at": "2026-05-08T14:00:00Z", "body": "plain"},
+            {
+                "created_at": "2026-05-08T15:00:00Z",
+                "body": "<!-- mergedog:handoff head=bbb -->",
+            },
+        ]
+
+        self.assertEqual(
+            github.latest_mergedog_handoff_iso_from_comments(comments),
+            "2026-05-08T15:00:00Z",
+        )
+
+
+class TestMergebotIgnoredChecks(unittest.TestCase):
+    def test_extracts_current_failed_checks_from_trusted_mergebot_comment(self):
+        comments = [
+            {
+                "author": "pytorchmergebot",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": taint(
+                    "Your change will be merged while ignoring the following "
+                    "3 checks: pull / linux-jammy-py3.14-clang18 / test "
+                    "(default, 4, 5, linux.4xlarge), B200 Smoke Tests / "
+                    "linux-jammy-cuda13.0-py3.10-gcc11-sm100 / test "
+                    "(smoke_b200, 1, 1, linux.dgx.b200), Limited CI on H100 / "
+                    "linux-jammy-cuda13.0-py3.10-gcc11-sm90 / test "
+                    "(smoke, 1, 1, linux.aws.h100)",
+                    "pr_comment",
+                ),
+            }
+        ]
+        checks = [
+            {
+                "name": "pull / linux-jammy-py3.14-clang18 / test "
+                "(default, 4, 5, linux.4xlarge)",
+                "bucket": "fail",
+            },
+            {
+                "name": "linux-jammy-cuda13.0-py3.10-gcc11-sm100 / test "
+                "(smoke_b200, 1, 1, linux.dgx.b200)",
+                "bucket": "fail",
+            },
+            {"name": "Lint / quick-check", "bucket": "fail"},
+        ]
+
+        self.assertEqual(
+            handoff.mergebot_ignored_check_names(
+                comments, checks, since_iso="2026-05-08T13:00:00Z"
+            ),
+            {
+                "pull / linux-jammy-py3.14-clang18 / test "
+                "(default, 4, 5, linux.4xlarge)",
+                "linux-jammy-cuda13.0-py3.10-gcc11-sm100 / test "
+                "(smoke_b200, 1, 1, linux.dgx.b200)",
+            },
+        )
+
+    def test_ignores_old_or_untrusted_ignore_text(self):
+        checks = [{"name": "pull / linux", "bucket": "fail"}]
+        comments = [
+            {
+                "author": "pytorchmergebot",
+                "created_at": "2026-05-08T12:00:00Z",
+                "body": "Your change will be merged while ignoring the "
+                "following 1 checks: pull / linux",
+            },
+            {
+                "author": "random-user",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": "Your change will be merged while ignoring the "
+                "following 1 checks: pull / linux",
+            },
+        ]
+
+        self.assertEqual(
+            handoff.mergebot_ignored_check_names(
+                comments, checks, since_iso="2026-05-08T13:00:00Z"
+            ),
+            set(),
+        )
 
 
 class TestWatchStackPostHandoff(unittest.TestCase):

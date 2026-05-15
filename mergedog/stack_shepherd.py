@@ -41,6 +41,7 @@ from mergedog.handoff import (
     is_merge_conflict_failure,
     latest_mergebot_failure_event,
     latest_mergebot_event,
+    mergebot_ignored_check_names,
     post_handoff_comment,
     utc_now_iso,
     watch_stack_post_handoff,
@@ -411,6 +412,26 @@ def _try_fix(
     ``ghstack submit --no-stack``.
     """
     pr = ctx.member.pr
+    comments = github.get_pr_comments(pr)
+    handoff_iso = github.latest_mergedog_handoff_iso_from_comments(comments)
+    ignore_since = handoff_iso or ctx.trust.last_observed_failure_iso
+    checks = github.get_pr_checks_all(pr)
+    newly_ignored = mergebot_ignored_check_names(
+        comments, checks, since_iso=ignore_since
+    ) - ctx.spurious_check_names
+    if newly_ignored:
+        ctx.spurious_check_names |= newly_ignored
+        ctx.trust.spurious_check_names = sorted(ctx.spurious_check_names)
+        ctx.trust.save()
+        log(
+            f"PR #{pr}: {PROJECT.mergebot_login} is ignoring "
+            f"{len(newly_ignored)} failed check"
+            f"{'' if len(newly_ignored) == 1 else 's'} from merge -i; "
+            "continuing with remaining CI"
+        )
+        ctx.last_status = None
+        return True
+
     if ctx.fix_commits_pushed >= MAX_FIX_COMMITS:
         die(
             f"PR #{pr}: already pushed {ctx.fix_commits_pushed} fix "
