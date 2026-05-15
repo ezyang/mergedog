@@ -54,10 +54,14 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
+python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
 ```
 
-- `--resume-known` restarts every job in the tracked list (`~/.mergedog/mux-jobs.json`, falling back to `~/.mergedog/mux-prs.json`).
+- With no PR arguments, the mux restarts every job in the tracked list
+  (`~/.mergedog/mux-jobs.json`, falling back to `~/.mergedog/mux-prs.json`).
+- `--resume-known` also includes tracked jobs when PRs are provided.
+- `--no-resume-known` starts only the PRs provided on the command line, or no
+  jobs if none are provided.
 - `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
 - `--manage-mergedog-label` tells all spawned shepherds to add the `mergedog`
   label at startup and remove it on exit. By default, shepherds do not mutate

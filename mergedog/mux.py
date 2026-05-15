@@ -5,7 +5,7 @@ Bottom: an Input field that takes commands.
 
 Run via::
 
-    python -m mergedog.mux [<pr>...] [--resume-known]
+    python -m mergedog.mux [<pr>...] [--resume-known|--no-resume-known]
 
 Commands typed at the bottom (enter to submit):
 
@@ -292,6 +292,27 @@ def _add_mux_pr(pr: int) -> None:
 
 def _remove_mux_pr(pr: int) -> None:
     _remove_mux_job(_pr_job(pr))
+
+
+def _resolve_initial_jobs(
+    raw_prs: list[str],
+    *,
+    resume_known: bool,
+) -> tuple[list[JobKey], list[tuple[str, argparse.ArgumentTypeError]]]:
+    initial: list[JobKey] = []
+    if resume_known:
+        initial.extend(_read_mux_jobs())
+
+    skipped: list[tuple[str, argparse.ArgumentTypeError]] = []
+    for raw in raw_prs:
+        try:
+            initial.append(_pr_job(_parse_pr(raw)))
+        except argparse.ArgumentTypeError as e:
+            skipped.append((raw, e))
+
+    seen: set[JobKey] = set()
+    initial = [job for job in initial if not (job in seen or seen.add(job))]
+    return initial, skipped
 
 
 def _spawn(
@@ -1014,9 +1035,20 @@ def main() -> int:
     parser.add_argument(
         "--resume-known",
         action="store_true",
+        default=None,
         help=(
             "Start a shepherd for every job in the mux-tracked list "
-            f"({MUX_JOBS_FILE}, falling back to {MUX_PRS_FILE})."
+            f"({MUX_JOBS_FILE}, falling back to {MUX_PRS_FILE}). This is "
+            "the default when no PRs are provided."
+        ),
+    )
+    parser.add_argument(
+        "--no-resume-known",
+        action="store_false",
+        dest="resume_known",
+        help=(
+            "Start only the PRs provided on the command line, or no jobs if "
+            "none are provided."
         ),
     )
     parser.add_argument(
@@ -1081,16 +1113,15 @@ def main() -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    initial: list[JobKey] = []
-    if args.resume_known:
-        initial.extend(_read_mux_jobs())
-    for raw in args.prs:
-        try:
-            initial.append(_pr_job(_parse_pr(raw)))
-        except argparse.ArgumentTypeError as e:
-            print(f"skipping {raw!r}: {e}", file=sys.stderr)
-    seen: set[JobKey] = set()
-    initial = [job for job in initial if not (job in seen or seen.add(job))]
+    resume_known = args.resume_known
+    if resume_known is None:
+        resume_known = not args.prs
+    initial, skipped = _resolve_initial_jobs(
+        args.prs,
+        resume_known=resume_known,
+    )
+    for raw, e in skipped:
+        print(f"skipping {raw!r}: {e}", file=sys.stderr)
 
     app = MuxApp(
         initial,

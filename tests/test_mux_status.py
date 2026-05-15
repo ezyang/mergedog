@@ -218,6 +218,62 @@ class TestMuxCommands(unittest.TestCase):
 
 
 class TestMuxJobPersistence(unittest.TestCase):
+    def test_resolve_initial_jobs_resumes_known_jobs_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 123}, {"kind": "stack", "pr": 456}])
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, skipped = mux._resolve_initial_jobs([], resume_known=True)
+
+        self.assertEqual(jobs, [mux._pr_job(123), mux._stack_job(456)])
+        self.assertEqual(skipped, [])
+
+    def test_resolve_initial_jobs_can_skip_resume_known(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123}]))
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, skipped = mux._resolve_initial_jobs(
+                    ["456"],
+                    resume_known=False,
+                )
+
+        self.assertEqual(jobs, [mux._pr_job(456)])
+        self.assertEqual(skipped, [])
+
+    def test_resolve_initial_jobs_deduplicates_known_and_explicit_prs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123}]))
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, skipped = mux._resolve_initial_jobs(
+                    ["123", "456"],
+                    resume_known=True,
+                )
+
+        self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
+        self.assertEqual(skipped, [])
+
     def test_read_mux_jobs_falls_back_to_legacy_prs(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
