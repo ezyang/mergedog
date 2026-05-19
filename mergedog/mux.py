@@ -1,6 +1,6 @@
 """Tiny multi-PR supervisor with a Textual TUI.
 
-Top: a DataTable with one row per tracked shepherd subprocess.
+Top: a DataTable with one row per shepherd subprocess in this mux session.
 Bottom: an Input field that takes commands.
 
 Run via::
@@ -12,14 +12,14 @@ Commands typed at the bottom (enter to submit):
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
     restart <pr>                      kill and re-spawn a shepherd
-    restart all                       kill and re-spawn every tracked job
+    restart all                       kill and re-spawn every session job
     restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
-    rebase all                        re-run every tracked job with --rebase
+    rebase all                        re-run every session job with --rebase
     stack <pr>                        start shepherding a ghstack stack
     stack restart <pr>                kill and re-spawn a stack
     stack rebase <pr>                 start a stack with --rebase
-    stack cancel <pr>                 SIGTERM a stack shepherd
+    stack cancel <pr>                 SIGTERM a stack shepherd (keeps state)
     stack remove <pr>                 SIGTERM and forget a stack
     stack log <pr>                    show the path to its log file
     mark-spurious <pr>                mark current failed/cancelled checks
@@ -606,13 +606,20 @@ class MuxApp(App):
             f"use `rebase all` to apply to running PRs)"
         )
 
-    def _do_cancel_job(self, job: JobKey | int) -> str:
+    def _do_cancel_job(
+        self,
+        job: JobKey | int,
+        *,
+        keep_resumable: bool = False,
+    ) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
         entry = self.procs.get(job)
         if entry is None:
             return f"[{label}] unknown"
         _terminate_group(entry[0])
+        if not keep_resumable:
+            _remove_mux_job(job)
         return f"[{label}] terminated"
 
     def _do_cancel(self, pr: int) -> str:
@@ -667,7 +674,7 @@ class MuxApp(App):
         trust.save()
 
         if _pr_job(pr) in self.procs:
-            self._do_cancel(pr)
+            self._do_cancel_job(_pr_job(pr), keep_resumable=True)
             started = self._do_add(pr, [])
             suffix = f"; {started}"
         else:
@@ -770,13 +777,13 @@ class MuxApp(App):
             if not args:
                 return "usage: stack restart <pr> [flags]"
             pr = _parse_pr(args[0])
-            self._do_stack_cancel(pr)
+            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
             return self._do_stack_add(pr, args[1:])
         if subcmd == "reassess":
             if not args:
                 return "usage: stack reassess <pr> [flags]"
             pr = _parse_pr(args[0])
-            self._do_stack_cancel(pr)
+            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
             return self._do_stack_add(pr, ["--reassess", *args[1:]])
         if subcmd in ("cancel", "c", "kill"):
             if not args:
@@ -841,13 +848,13 @@ class MuxApp(App):
                     self._do_restart_dead(jobs, rest[1:])
                     return f"restarting dead {len(jobs)} job(s)"
                 pr = _parse_pr(rest[0])
-                self._do_cancel(pr)
+                self._do_cancel_job(_pr_job(pr), keep_resumable=True)
                 return self._do_add(pr, rest[1:])
             elif cmd == "reassess":
                 if not rest:
                     return "usage: reassess <pr>"
                 pr = _parse_pr(rest[0])
-                self._do_cancel(pr)
+                self._do_cancel_job(_pr_job(pr), keep_resumable=True)
                 return self._do_add(pr, ["--reassess", *rest[1:]])
             elif cmd in ("mark-spurious", "spurious", "ignore-failures"):
                 if not rest:
@@ -1034,6 +1041,13 @@ class MuxApp(App):
                 pass
 
     def on_unmount(self) -> None:
+        _write_mux_jobs(
+            sorted(
+                job
+                for job, (p, _f, _) in self.procs.items()
+                if p.poll() is None
+            )
+        )
         if self._ipc_server is not None:
             self._ipc_server.close()
         if self._lock_fd >= 0:

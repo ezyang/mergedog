@@ -19,10 +19,10 @@ user when the PR is ready for `@pytorchbot merge`.
   - `stack rebase <pr>` — start a ghstack stack with `--rebase`
   - `stack cancel <pr>` / `stack remove <pr>` — stop or forget a stack
   - `rebase <pr>` — restart a PR with a fresh rebase
-  - `rebase all` — rebase every tracked job
-  - `restart all` — restart every tracked job
+  - `rebase all` — rebase every current mux-session job
+  - `restart all` — restart every current mux-session job
   - `restart dead` — restart only crashed shepherds
-  - `cancel <pr>` — stop a shepherd (keeps state for restart)
+  - `cancel <pr>` — stop a shepherd (keeps state; not auto-resumed)
   - `remove <pr>` — stop and forget (wipes worktree + state)
   - `restart <pr>` — cancel + add
   - `ignore-sev on|off` — toggle whether shepherds ignore CI SEVs

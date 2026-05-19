@@ -11,6 +11,7 @@ from mergedog import mux
 class _FakeProc:
     def __init__(self, rc):
         self._rc = rc
+        self.pid = 12345
 
     def poll(self):
         return self._rc
@@ -239,6 +240,103 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "no completed jobs to cleanup")
         prune_job.assert_not_called()
+
+    def test_cancel_removes_job_from_resume_list_but_keeps_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))
+            }
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group") as terminate_group,
+            ):
+                mux._write_mux_jobs([mux._pr_job(123)])
+                result = app._dispatch_command("cancel 123")
+                jobs_data = json.loads(jobs_file.read_text())
+                prs_data = json.loads(prs_file.read_text())
+
+        self.assertEqual(result, "[123] terminated")
+        terminate_group.assert_called_once()
+        self.assertIn(mux._pr_job(123), app.procs)
+        self.assertEqual(jobs_data, [])
+        self.assertEqual(prs_data, [])
+
+    def test_restart_keeps_job_resumable_while_respawning(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))
+            }
+            app._pr_titles = {}
+            app.ignore_sev = False
+            app.manage_mergedog_label = False
+            app.gchat_to = None
+            app.repo_slug = None
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group") as terminate_group,
+                mock.patch.object(mux, "_spawn") as spawn,
+            ):
+                mux._write_mux_jobs([mux._pr_job(123)])
+                terminate_group.side_effect = lambda p: setattr(p, "_rc", -15)
+                spawn.return_value = (
+                    _FakeProc(None),
+                    object(),
+                    Path("123.log"),
+                )
+                result = app._dispatch_command("restart 123")
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(result, "[123] started")
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+
+    def test_on_unmount_persists_only_running_jobs_for_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (_FakeProc(None), mock.Mock(), Path("123.log")),
+                mux._pr_job(456): (_FakeProc(0), mock.Mock(), Path("456.log")),
+                mux._stack_job(789): (
+                    _FakeProc(1),
+                    mock.Mock(),
+                    Path("stack-789.log"),
+                ),
+            }
+            app._ipc_server = None
+            app._lock_fd = -1
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group"),
+                mock.patch.object(mux.os, "killpg"),
+            ):
+                mux._write_mux_jobs(
+                    [mux._pr_job(123), mux._pr_job(456), mux._stack_job(789)]
+                )
+                app.on_unmount()
+                jobs_data = json.loads(jobs_file.read_text())
+                prs_data = json.loads(prs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+        self.assertEqual(prs_data, [123])
 
 
 class TestMuxJobPersistence(unittest.TestCase):

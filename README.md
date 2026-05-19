@@ -57,9 +57,9 @@ accepts commands, and auto-prunes PRs that merge or close.
 python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
 ```
 
-- With no PR arguments, the mux restarts every job in the tracked list
+- With no PR arguments, the mux restarts every job in the resume list
   (`~/.mergedog/mux-jobs.json`, falling back to `~/.mergedog/mux-prs.json`).
-- `--resume-known` also includes tracked jobs when PRs are provided.
+- `--resume-known` also includes resumable jobs when PRs are provided.
 - `--no-resume-known` starts only the PRs provided on the command line, or no
   jobs if none are provided.
 - `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
@@ -87,16 +87,16 @@ TUI commands (type in the input bar at the bottom):
 | `stack <pr>` or `stack add <pr>` | Start shepherding a ghstack stack |
 | `stack rebase <pr>` | Start shepherding a stack with `--rebase` |
 | `stack restart <pr>` | Kill and re-spawn a stack |
-| `stack cancel <pr>` | SIGTERM the stack shepherd (keeps state) |
+| `stack cancel <pr>` | SIGTERM the stack shepherd; keep state but do not resume it next mux start |
 | `stack remove <pr>` | SIGTERM + wipe the `stack-<pr>` worktree, state, context |
 | `stack log <pr>` | Print the stack log file path |
-| `cancel <pr>` | SIGTERM the shepherd (keeps state) |
+| `cancel <pr>` | SIGTERM the shepherd; keep state but do not resume it next mux start |
 | `restart <pr>` | Kill and re-spawn |
-| `restart all` | Kill all shepherds and respawn |
+| `restart all` | Kill all current session shepherds and respawn |
 | `restart dead` | Re-spawn only crashed shepherds |
 | `remove <pr>` | SIGTERM + wipe worktree, state, context |
 | `rebase <pr>` | Shorthand for `add <pr> --rebase` |
-| `rebase all` | Kill all shepherds and respawn with `--rebase` |
+| `rebase all` | Kill all current session shepherds and respawn with `--rebase` |
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
 | `mark-spurious <pr>` | Snapshot current failed/cancelled checks as spurious and restart |
 | `log <pr>` | Print the log file path |
@@ -231,8 +231,8 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── contexts/<pr>.md          # sidecar: PR title/body/comments (untrusted, fed to Claude)
 ├── logs/<pr>.log             # per-PR shepherd stdout/stderr (written by mux)
 ├── logs/stack-<pr>.log       # stack shepherd log, named by bottom PR
-├── mux-prs.json              # backwards-compatible regular PR tracking list
-├── mux-jobs.json             # mux's tracked regular PR + stack job list
+├── mux-prs.json              # backwards-compatible regular PR resume list
+├── mux-jobs.json             # mux's regular PR + stack job resume list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)
 ├── config.json               # persistent operator settings (LLM provider/model)
