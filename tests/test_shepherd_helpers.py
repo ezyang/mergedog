@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest import mock
 
 from mergedog.claude import LLMResult
@@ -8,7 +9,9 @@ from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
+    _inconclusive_refresh_target,
     _llm_halt_message,
+    _llm_signalled_inconclusive,
     _latest_completed_at,
     _spurious_check_names_from_checks,
     describe_log_state,
@@ -118,6 +121,49 @@ class TestLLMHaltMessage(unittest.TestCase):
             _llm_halt_message(result, "claude exited abnormally"),
             "claude exited abnormally",
         )
+
+
+class TestInconclusiveRefresh(unittest.TestCase):
+    def test_detects_inconclusive_halt_reason(self):
+        self.assertTrue(
+            _llm_signalled_inconclusive(
+                LLMResult(
+                    ran_cleanly=False,
+                    new_sha=None,
+                    transcript=[],
+                    halt_reason="signalled INCONCLUSIVE; halting for human review",
+                )
+            )
+        )
+        self.assertFalse(
+            _llm_signalled_inconclusive(
+                LLMResult(
+                    ran_cleanly=False,
+                    new_sha=None,
+                    transcript=[],
+                    halt_reason=(
+                        "reported a real PR-related failure that is too hard "
+                        "to fix safely"
+                    ),
+                )
+            )
+        )
+
+    def test_refresh_target_reports_advancing_known_good_ref(self):
+        with mock.patch.object(
+            shepherd.repo,
+            "select_rebase_target",
+            return_value=("origin/viable/strict", "viable/strict"),
+        ), mock.patch.object(
+            shepherd.repo,
+            "rebase_target_advances",
+            return_value=True,
+        ) as advances:
+            can_refresh, reason = _inconclusive_refresh_target(Path("/tmp/wt"))
+
+        self.assertTrue(can_refresh)
+        self.assertEqual(reason, "viable/strict")
+        advances.assert_called_once_with(Path("/tmp/wt"), "origin/viable/strict")
 
 
 class TestDescribeLogState(unittest.TestCase):

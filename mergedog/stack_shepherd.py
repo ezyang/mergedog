@@ -62,8 +62,10 @@ from mergedog.shepherd import (
     _apply_spurious_overrides,
     _approve_pending_runs,
     _failed_logs_are_content_free,
+    _inconclusive_refresh_target,
     _llm_halt_message,
     _llm_label,
+    _llm_signalled_inconclusive,
     _record_claude_session,
     _filter_spurious_failed_jobs,
     _spurious_check_names_from_checks,
@@ -519,6 +521,23 @@ def _try_fix(
         ),
     )
     if not ran_cleanly:
+        if _llm_signalled_inconclusive(result):
+            can_refresh, reason = _inconclusive_refresh_target(worktree)
+            if can_refresh:
+                log(
+                    f"PR #{pr}: {_llm_label()} signalled INCONCLUSIVE; "
+                    f"refreshing stale stack base via {reason}"
+                )
+                _rebase_stack_prefix_onto_main(
+                    contexts,
+                    target_idx,
+                    worktree,
+                    sessions,
+                    ignore_sev=ignore_sev,
+                    force_ghstack=force_ghstack,
+                )
+                ctx.last_status = None
+                return True
         die(
             f"PR #{pr}: "
             + _llm_halt_message(

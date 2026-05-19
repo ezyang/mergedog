@@ -124,6 +124,16 @@ def _llm_halt_message(result: object, fallback: str) -> str:
     return fallback
 
 
+def _llm_signalled_inconclusive(result: object) -> bool:
+    reason = getattr(result, "halt_reason", None)
+    return isinstance(reason, str) and reason.startswith("signalled INCONCLUSIVE")
+
+
+def _inconclusive_refresh_target(worktree: Path) -> tuple[bool, str]:
+    target, reason = repo.select_rebase_target(worktree)
+    return repo.rebase_target_advances(worktree, target), reason
+
+
 def _failed_logs_are_content_free(
     failed: list[tuple[str, str]],
 ) -> bool:
@@ -1313,6 +1323,67 @@ def _shepherd_body(
                     ),
                 )
                 if not ran_cleanly:
+                    if _llm_signalled_inconclusive(result):
+                        can_refresh, reason = _inconclusive_refresh_target(worktree)
+                        if can_refresh:
+                            log(
+                                f"{_llm_label()} signalled INCONCLUSIVE; "
+                                f"refreshing stale base via {reason}"
+                            )
+                            if is_ghstack:
+                                _rebase_ghstack_onto_main(
+                                    pr,
+                                    worktree,
+                                    branch,
+                                    trust,
+                                    ignore_sev=ignore_sev,
+                                    pr_data=pr_data,
+                                    sessions=sessions,
+                                )
+                                spurious_check_names.clear()
+                                trust.spurious_check_names = []
+                                trust.save()
+                            else:
+                                assert fork_remote is not None
+                                merge_sha = _merge_main_resolving_conflicts(
+                                    worktree,
+                                    trust,
+                                    branch,
+                                    pr_data,
+                                    sessions,
+                                    ignore_sev=ignore_sev,
+                                    trusted_pr=trusted_pr,
+                                )
+                                if merge_sha is None:
+                                    die(
+                                        f"{_llm_label()} signalled INCONCLUSIVE, "
+                                        "but the selected rebase target no longer "
+                                        "advanced the PR; halting for human review"
+                                    )
+                                log(
+                                    f"pushing refreshed base {merge_sha[:12]} "
+                                    f"to {fork_remote}/{branch}"
+                                )
+                                _safe_push(
+                                    pr,
+                                    worktree,
+                                    fork_remote,
+                                    branch,
+                                    merge_sha,
+                                    reason="pushing known-good base refresh",
+                                    ignore_sev=ignore_sev,
+                                )
+                                spurious_check_names.clear()
+                                trust.spurious_check_names = []
+                                trust.save()
+                                _record_pushed_change(
+                                    pushed_changes,
+                                    worktree,
+                                    merge_sha,
+                                    "merged main into the PR branch after inconclusive CI",
+                                )
+                            last_status = None
+                            continue
                     die(
                         _llm_halt_message(
                             result,

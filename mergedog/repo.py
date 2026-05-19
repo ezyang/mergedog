@@ -613,6 +613,17 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
     return merge_base, "already at best known-good point (staying put)"
 
 
+def rebase_target_advances(worktree: Path, target: str) -> bool:
+    """True if rebasing/merging ``target`` would refresh HEAD's main base."""
+    merge_base = run(
+        ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
+    ).stdout.strip()
+    target_sha = run(
+        ["git", "rev-parse", "--verify", target], cwd=worktree
+    ).stdout.strip()
+    return target_sha != merge_base
+
+
 def trunk_revert_context(worktree: Path) -> str | None:
     """If trunk has recent reverts ahead of the PR's base, describe them.
 

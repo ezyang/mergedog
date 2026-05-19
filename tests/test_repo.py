@@ -31,5 +31,35 @@ class TestTrunkRevertContext(unittest.TestCase):
         self.assertIn('Revert "[CPU][Inductor] Improve cache"', ctx)
 
 
+class TestRebaseTargetAdvances(unittest.TestCase):
+    def test_true_when_target_differs_from_merge_base(self):
+        with mock.patch.object(
+            repo,
+            "run",
+            side_effect=[
+                _Proc("base\n"),
+                _Proc("target\n"),
+            ],
+        ):
+            self.assertTrue(
+                repo.rebase_target_advances(
+                    Path("/tmp/worktree"), "origin/viable/strict"
+                )
+            )
+
+    def test_false_when_target_is_current_merge_base(self):
+        with mock.patch.object(
+            repo,
+            "run",
+            side_effect=[
+                _Proc("base\n"),
+                _Proc("base\n"),
+            ],
+        ):
+            self.assertFalse(
+                repo.rebase_target_advances(Path("/tmp/worktree"), "base")
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
