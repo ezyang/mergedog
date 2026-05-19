@@ -93,7 +93,7 @@ TUI commands (type in the input bar at the bottom):
 | `cancel <pr>` | SIGTERM the shepherd (keeps state) |
 | `restart <pr>` | Kill and re-spawn |
 | `restart all` | Kill all shepherds and respawn |
-| `restart dead` | Re-spawn only exited shepherds |
+| `restart dead` | Re-spawn only crashed shepherds |
 | `remove <pr>` | SIGTERM + wipe worktree, state, context |
 | `rebase <pr>` | Shorthand for `add <pr> --rebase` |
 | `rebase all` | Kill all shepherds and respawn with `--rebase` |

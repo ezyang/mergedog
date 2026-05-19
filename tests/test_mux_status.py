@@ -147,15 +147,21 @@ class TestMuxCommands(unittest.TestCase):
         with mock.patch.object(app, "_do_restart_dead") as restart_dead:
             result = app._dispatch_command("restart dead --ignore-sev")
 
-        self.assertEqual(result, "restarting dead 2 job(s)")
+        self.assertEqual(result, "restarting dead 1 job(s)")
         restart_dead.assert_called_once_with(
-            [mux._pr_job(456), mux._stack_job(789)], ["--ignore-sev"]
+            [mux._pr_job(456)], ["--ignore-sev"]
         )
 
-    def test_restart_dead_without_dead_jobs_is_noop(self):
+    def test_restart_dead_ignores_completed_jobs(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {
             mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
+            mux._pr_job(456): (_FakeProc(0), object(), Path("456.log")),
+            mux._stack_job(789): (
+                _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                object(),
+                Path("stack-789.log"),
+            ),
         }
 
         with mock.patch.object(app, "_do_restart_dead") as restart_dead:

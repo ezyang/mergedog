@@ -13,7 +13,7 @@ Commands typed at the bottom (enter to submit):
     <pr>                              shorthand for ``add <pr>``
     restart <pr>                      kill and re-spawn a shepherd
     restart all                       kill and re-spawn every tracked job
-    restart dead                      re-spawn only exited shepherds
+    restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every tracked job with --rebase
     stack <pr>                        start shepherding a ghstack stack
@@ -486,7 +486,7 @@ class MuxApp(App):
         return sorted(
             job
             for job, (p, _, _) in self.procs.items()
-            if p.poll() is not None
+            if p.poll() not in (None, 0, EXIT_PR_NOT_ACTIONABLE)
         )
 
     def _completed_jobs(self) -> list[JobKey]:
