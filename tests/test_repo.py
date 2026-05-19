@@ -1,4 +1,6 @@
 import unittest
+import subprocess
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -9,6 +11,64 @@ class _Proc:
     def __init__(self, stdout: str, returncode: int = 0):
         self.stdout = stdout
         self.returncode = returncode
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+
+class TestPatchIdMatchesAny(unittest.TestCase):
+    def test_matches_rebased_equivalent_commit(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            repo, "REPO_DIR", Path(td)
+        ):
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "base.txt").write_text("base\n")
+            _git(root, "add", "base.txt")
+            _git(root, "commit", "-q", "-m", "base")
+
+            (root / "change.txt").write_text("change\n")
+            _git(root, "add", "change.txt")
+            _git(root, "commit", "-q", "-m", "change")
+            trusted = _git(root, "rev-parse", "HEAD")
+
+            _git(root, "checkout", "-q", "HEAD^")
+            (root / "main.txt").write_text("new base\n")
+            _git(root, "add", "main.txt")
+            _git(root, "commit", "-q", "-m", "new base")
+            _git(root, "cherry-pick", trusted)
+            rebased = _git(root, "rev-parse", "HEAD")
+
+            self.assertTrue(repo.patch_id_matches_any(rebased, [trusted]))
+
+    def test_rejects_different_patch(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            repo, "REPO_DIR", Path(td)
+        ):
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "one.txt").write_text("one\n")
+            _git(root, "add", "one.txt")
+            _git(root, "commit", "-q", "-m", "one")
+            trusted = _git(root, "rev-parse", "HEAD")
+
+            (root / "two.txt").write_text("two\n")
+            _git(root, "add", "two.txt")
+            _git(root, "commit", "-q", "-m", "two")
+            other = _git(root, "rev-parse", "HEAD")
+
+            self.assertFalse(repo.patch_id_matches_any(other, [trusted]))
 
 
 class TestTrunkRevertContext(unittest.TestCase):

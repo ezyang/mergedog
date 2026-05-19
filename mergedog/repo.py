@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -203,6 +204,57 @@ def fetch_pr_branch(remote: str, branch: str) -> str:
         cwd=REPO_DIR,
     ).stdout.strip()
     return sha
+
+
+def fetch_branch_from_url(url: str, branch: str, local_ref: str) -> str:
+    """Fetch ``branch`` from ``url`` into ``local_ref`` and return its SHA."""
+    with _fetch_lock():
+        run(
+            ["git", "fetch", url, f"+refs/heads/{branch}:{local_ref}"],
+            cwd=REPO_DIR,
+            capture=False,
+            loud=True,
+        )
+    return run(["git", "rev-parse", local_ref], cwd=REPO_DIR).stdout.strip()
+
+
+def commit_patch_id(sha: str) -> str | None:
+    """Return git's stable patch-id for a single-parent commit, if available."""
+    show = run(
+        [
+            "git",
+            "show",
+            "--format=",
+            "--no-ext-diff",
+            "--no-renames",
+            "--binary",
+            sha,
+        ],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if show.returncode != 0 or not show.stdout.strip():
+        return None
+    proc = subprocess.run(
+        ["git", "patch-id", "--stable"],
+        cwd=REPO_DIR,
+        input=show.stdout,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    first = proc.stdout.split()
+    return first[0] if first else None
+
+
+def patch_id_matches_any(sha: str, candidates: Sequence[str]) -> bool:
+    """True if ``sha`` has the same patch-id as any candidate commit."""
+    patch_id = commit_patch_id(sha)
+    if patch_id is None:
+        return False
+    return any(commit_patch_id(candidate) == patch_id for candidate in candidates)
 
 
 def _worktree_alive(wt: Path) -> bool:

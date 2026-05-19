@@ -25,6 +25,7 @@ from mergedog.handoff import (
     utc_now_iso,
     watch_post_handoff,
 )
+from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
 from mergedog.log import die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.project import get_project_policy
@@ -40,6 +41,24 @@ from mergedog.trust_seed import seed_trust_from_reviews
 
 
 SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
+
+
+def _fetch_current_pr_head_for_trust(
+    pr: int, trust: TrustDB, current_sha: str
+) -> bool:
+    if not trust.head_repo_clone_url or not trust.head_branch:
+        return False
+    local_ref = f"refs/remotes/mergedog-trust/{pr}"
+    fetched = repo.fetch_branch_from_url(
+        trust.head_repo_clone_url, trust.head_branch, local_ref
+    )
+    if fetched != current_sha:
+        log(
+            f"PR head moved again while validating mergebot rebase: "
+            f"GitHub reported {current_sha[:12]}, fetched {fetched[:12]}"
+        )
+        return False
+    return True
 
 
 def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> bool:
@@ -1061,6 +1080,14 @@ def _shepherd_body(
                 # by the operator -- roll the trust forward instead of
                 # halting.
                 trust.trust(current)
+            if not trust.is_trusted(current):
+                trust_mergebot_rebase_if_equivalent(
+                    trust,
+                    current,
+                    ensure_current_available=lambda: _fetch_current_pr_head_for_trust(
+                        pr, trust, current
+                    ),
+                )
             if not trust.is_trusted(current):
                 subject = github.get_commit_subject(current)
                 die(

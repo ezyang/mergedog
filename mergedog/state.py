@@ -6,6 +6,8 @@ The trust DB tracks the set of SHAs we consider safe to land:
   the human implicitly approved by running mergedog).
 - Every SHA we ourselves produced and pushed, identifiable by the
   ``[MERGEDOG]`` commit-title prefix.
+- Repository automation rebases whose patch-id matches an already trusted
+  commit.
 
 If GitHub ever reports a PR head SHA that is not in this set, we halt:
 the PR has been touched by someone other than mergedog after approval.

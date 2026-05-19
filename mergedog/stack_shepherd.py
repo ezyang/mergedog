@@ -46,6 +46,7 @@ from mergedog.handoff import (
     utc_now_iso,
     watch_stack_post_handoff,
 )
+from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
 from mergedog.log import configure_log_file, die, log
 from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, ROOT, context_file
 from mergedog.project import get_project_policy
@@ -262,12 +263,32 @@ def _refresh_member_head(ctx: _MemberCtx) -> None:
     if ctx.self_pr:
         ctx.trust.trust(current)
     if not ctx.trust.is_trusted(current):
+        trust_mergebot_rebase_if_equivalent(
+            ctx.trust,
+            current,
+            ensure_current_available=lambda: _fetch_current_stack_head_for_trust(
+                ctx, current
+            ),
+        )
+    if not ctx.trust.is_trusted(current):
         subject = github.get_commit_subject(current)
         die(
             f"PR #{ctx.member.pr} head moved to untrusted commit "
             f"{current[:12]}: {subject!r}. Manual intervention required."
         )
     ctx.head_sha = current
+
+
+def _fetch_current_stack_head_for_trust(ctx: _MemberCtx, current_sha: str) -> bool:
+    local_ref = f"refs/remotes/mergedog-trust/{ctx.member.pr}"
+    fetched = repo.fetch_branch_from_url(REPO_SSH_URL, ctx.member.head_ref, local_ref)
+    if fetched != current_sha:
+        log(
+            f"PR #{ctx.member.pr} head moved again while validating mergebot "
+            f"rebase: GitHub reported {current_sha[:12]}, fetched {fetched[:12]}"
+        )
+        return False
+    return True
 
 
 def _refresh_member_pr_data(ctx: _MemberCtx) -> None:

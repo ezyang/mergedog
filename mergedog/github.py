@@ -493,6 +493,14 @@ def get_commit_subject(sha: str) -> str:
     return taint(subject, "commit_message")
 
 
+def get_commit_actor_logins(sha: str) -> tuple[str | None, str | None]:
+    """Return ``(author_login, committer_login)`` for a commit."""
+    data = _gh_json(["api", f"repos/{REPO}/commits/{sha}"])
+    author = data.get("author") or {}
+    committer = data.get("committer") or {}
+    return author.get("login"), committer.get("login")
+
+
 # Author associations that we treat as "real maintainer" for review-approval
 # trust. Anyone outside this set can leave an APPROVED review on GitHub but
 # their approval does not seed our trust DB. See:
