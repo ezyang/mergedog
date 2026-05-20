@@ -46,6 +46,61 @@ class TestMuxInput(unittest.TestCase):
 
 
 class TestMuxStructuredStatus(unittest.TestCase):
+    def test_stack_display_layout_groups_parented_prs(self):
+        jobs = [mux._pr_job(10), mux._pr_job(20), mux._pr_job(30)]
+        parents = {
+            10: ("C10", "C20"),
+            20: ("C20", "MAIN"),
+            30: ("C30", "MAIN"),
+        }
+
+        with mock.patch.object(
+            mux,
+            "_read_pr_commit_parent",
+            side_effect=lambda pr: parents[pr],
+        ):
+            ordered, depths = mux._stack_display_layout(jobs)
+
+        self.assertEqual(
+            ordered,
+            [mux._pr_job(20), mux._pr_job(10), mux._pr_job(30)],
+        )
+        self.assertEqual(depths[mux._pr_job(20)], 0)
+        self.assertEqual(depths[mux._pr_job(10)], 1)
+        self.assertEqual(depths[mux._pr_job(30)], 0)
+
+    def test_refresh_indents_child_stack_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent_log = Path(d) / "20.log"
+            child_log = Path(d) / "10.log"
+            parent_log.write_text("parent\n")
+            child_log.write_text("child\n")
+
+            parent = mux._pr_job(20)
+            child = mux._pr_job(10)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                child: (_FakeProc(None), object(), child_log),
+                parent: (_FakeProc(None), object(), parent_log),
+            }
+            app._pr_titles = {parent: "Parent commit", child: "Child commit"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([parent, child], {parent: 0, child: 1}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=None),
+            ):
+                app._refresh()
+
+        self.assertEqual(table.rows[0][1].plain, "Parent commit")
+        self.assertEqual(table.rows[1][1].plain, "  Child commit")
+
     def test_format_status_includes_shepherd_status_sidecar(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"

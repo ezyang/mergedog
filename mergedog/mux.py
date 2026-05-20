@@ -234,6 +234,107 @@ def _read_pr_title(pr: int) -> str:
     return proc.stdout.strip()
 
 
+def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:
+    """Best-effort contributor commit and first parent for a tracked PR.
+
+    Independently shepherded ghstack PRs each check out a branch whose
+    contributor commit is parented by the previous PR's contributor commit.
+    This gives mux enough local information to group rows cosmetically
+    without polling GitHub from the refresh loop.
+    """
+    wt = worktree_dir(pr)
+    if not wt.exists():
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "git", "log", "-1", "--format=%H%x00%P",
+                "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
+            ],
+            cwd=wt,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    line = proc.stdout.strip()
+    if not line:
+        return None
+    sha, _, parents = line.partition("\x00")
+    parent = parents.split()[0] if parents.split() else ""
+    if not sha or not parent:
+        return None
+    return sha, parent
+
+
+def _stack_display_layout(jobs: list[JobKey]) -> tuple[list[JobKey], dict[JobKey, int]]:
+    """Return jobs sorted with local PR commit stacks grouped bottom-up."""
+    base_order = sorted(jobs)
+    base_index = {job: i for i, job in enumerate(base_order)}
+
+    sha_by_job: dict[JobKey, str] = {}
+    parent_sha_by_job: dict[JobKey, str] = {}
+    for job in base_order:
+        kind, pr = job
+        if kind != PR_JOB:
+            continue
+        info = _read_pr_commit_parent(pr)
+        if info is None:
+            continue
+        sha, parent_sha = info
+        sha_by_job[job] = sha
+        parent_sha_by_job[job] = parent_sha
+
+    jobs_by_sha: dict[str, list[JobKey]] = {}
+    for job, sha in sha_by_job.items():
+        jobs_by_sha.setdefault(sha, []).append(job)
+    unique_job_by_sha = {
+        sha: sha_jobs[0]
+        for sha, sha_jobs in jobs_by_sha.items()
+        if len(sha_jobs) == 1
+    }
+
+    parent_of: dict[JobKey, JobKey] = {}
+    children: dict[JobKey, list[JobKey]] = {job: [] for job in base_order}
+    for job, parent_sha in parent_sha_by_job.items():
+        parent = unique_job_by_sha.get(parent_sha)
+        if parent is None or parent == job:
+            continue
+        parent_of[job] = parent
+        children[parent].append(job)
+    for child_jobs in children.values():
+        child_jobs.sort(key=lambda job: base_index[job])
+
+    ordered: list[JobKey] = []
+    depths: dict[JobKey, int] = {}
+    seen: set[JobKey] = set()
+
+    def emit(job: JobKey, depth: int) -> None:
+        if job in seen:
+            return
+        seen.add(job)
+        ordered.append(job)
+        depths[job] = depth
+        for child in children[job]:
+            emit(child, depth + 1)
+
+    for job in base_order:
+        if job in seen:
+            continue
+        root = job
+        ancestors: set[JobKey] = set()
+        while root in parent_of and root not in ancestors:
+            ancestors.add(root)
+            root = parent_of[root]
+        emit(root, 0)
+
+    return ordered, depths
+
+
 def _truncate_title(title: str, n: int = TITLE_TRUNC) -> str:
     if len(title) <= n:
         return title
@@ -755,7 +856,8 @@ class MuxApp(App):
     def _refresh(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
-        for job in sorted(self.procs):
+        jobs, depths = _stack_display_layout(list(self.procs))
+        for job in jobs:
             kind, pr = job
             p, _, log_path = self.procs[job]
             rc = p.poll()
@@ -786,7 +888,10 @@ class MuxApp(App):
                 _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
-            table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
+            indent = "  " * depths.get(job, 0)
+            table.add_row(
+                pr_cell, Text(indent + _truncate_title(title)), state, last
+            )
 
     def _prune_job(self, job: JobKey | int) -> None:
         """Forget a shepherd and clean up its on-disk state.
