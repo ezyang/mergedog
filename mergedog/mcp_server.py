@@ -8,8 +8,8 @@ Configure in Claude Code's MCP settings to connect via stdio.
 
 Tools:
 
-    mergedog_command   Send any mux command (add, stack, cancel, rebase, etc.)
-    mergedog_status    Get live status of all tracked mux jobs
+    mergedog_command   Send any mux command (add, cancel, rebase, etc.)
+    mergedog_status    Get live status of all tracked PR jobs
     mergedog_log       Read a PR's shepherd log (tail)
     mergedog_state     Read a PR's trust-DB state
 """
@@ -25,7 +25,7 @@ promote_early_env(sys.argv[1:])
 
 from mcp.server import FastMCP  # noqa: E402
 
-from mergedog.ipc import discover_mux, send_command  # noqa: E402
+from mergedog.ipc import send_command  # noqa: E402
 from mergedog.paths import ROOT, MUX_JOBS_FILE, MUX_PRS_FILE  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
@@ -49,12 +49,6 @@ mcp = FastMCP(
         "  add <pr>           — start shepherding a PR\n"
         "  fix <pr> <request> — make a trusted operator-requested "
         "[MERGEDOG] follow-up commit\n"
-        "  stack <pr>         — start shepherding a ghstack stack\n"
-        "  stack fix <pr> <request> — operator-requested follow-up commit "
-        "on a ghstack member\n"
-        "  stack rebase <pr>  — start a stack with --rebase\n"
-        "  stack cancel <pr>  — stop shepherding a stack; keep state\n"
-        "  stack remove <pr>  — stop and forget a stack\n"
         "  cancel <pr>        — stop shepherding; keep state\n"
         "  cleanup            — forget successful completed shepherds\n"
         "  remove <pr>        — stop and forget (wipes worktree)\n"
@@ -83,7 +77,7 @@ async def mergedog_command(command: str) -> str:
 
 @mcp.tool(
     description=(
-        "Get the current status of all PR/stack jobs tracked by the mux. "
+        "Get the current status of all PR jobs tracked by the mux. "
         "Returns JSON with kind, pr, title, state "
         "(running/exited_ok/exited_error), and last_log for each job."
     ),
@@ -98,16 +92,15 @@ async def mergedog_status() -> str:
 
 @mcp.tool(
     description=(
-        "Read the tail of a PR or stack shepherd log.  Reads directly from "
+        "Read the tail of a PR shepherd log.  Reads directly from "
         "disk, does not require the mux to be running."
     ),
 )
-async def mergedog_log(pr: int, lines: int = 100, stack: bool = False) -> str:
+async def mergedog_log(pr: int, lines: int = 100) -> str:
     """Read the last N lines of a PR's log file."""
-    log_path = LOG_DIR / (f"stack-{pr}.log" if stack else f"{pr}.log")
+    log_path = LOG_DIR / f"{pr}.log"
     if not log_path.exists():
-        kind = "stack" if stack else "PR"
-        return f"No log file for {kind} {pr}"
+        return f"No log file for PR {pr}"
     try:
         all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
@@ -136,12 +129,12 @@ async def mergedog_state(pr: int) -> str:
 
 @mcp.tool(
     description=(
-        "List all jobs the mux is tracking (from the durable subscription "
+        "List all PR jobs the mux is tracking (from the durable subscription "
         "list).  Works even when the mux is not running."
     ),
 )
 async def mergedog_list_prs() -> str:
-    """List tracked mux jobs from the subscription file."""
+    """List tracked mux PR jobs from the subscription file."""
     path = MUX_JOBS_FILE if MUX_JOBS_FILE.exists() else MUX_PRS_FILE
     if not path.exists():
         return "No tracked PRs (mux subscription file not found)"

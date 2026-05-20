@@ -17,13 +17,6 @@ Commands typed at the bottom (enter to submit):
     restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every session job with --rebase
-    stack <pr>                        start shepherding a ghstack stack
-    stack fix <pr> <trusted request>  operator-requested stack follow-up
-    stack restart <pr>                kill and re-spawn a stack
-    stack rebase <pr>                 start a stack with --rebase
-    stack cancel <pr>                 SIGTERM a stack shepherd (keeps state)
-    stack remove <pr>                 SIGTERM and forget a stack
-    stack log <pr>                    show the path to its log file
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
@@ -41,7 +34,6 @@ Commands typed at the bottom (enter to submit):
     quit                              terminate everything and exit
 
 Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
-Stack shepherds use ``~/.mergedog/logs/stack-<pr>.log``.
 """
 from __future__ import annotations
 
@@ -87,13 +79,6 @@ COMMAND_SUGGESTIONS = [
     "restart ",
     "restart all",
     "restart dead",
-    "stack ",
-    "stack cancel ",
-    "stack fix ",
-    "stack log ",
-    "stack rebase ",
-    "stack remove ",
-    "stack restart ",
     "status",
 ]
 
@@ -137,7 +122,7 @@ class HistoryInput(Input):
         self._history_index = len(self._history)
         self._saved_line = ""
 
-from mergedog import github, repo as repo_mod  # noqa: E402
+from mergedog import github  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
@@ -161,16 +146,11 @@ LOG_DIR = ROOT / "logs"
 TITLE_TRUNC = 20
 JobKey = tuple[str, int]
 PR_JOB = "pr"
-STACK_JOB = "stack"
 _STACK_PARENT_RE = re.compile(r"\bstack parent(?: PR)? #(\d+)\b")
 
 
 def _pr_job(pr: int) -> JobKey:
     return (PR_JOB, pr)
-
-
-def _stack_job(pr: int) -> JobKey:
-    return (STACK_JOB, pr)
 
 
 def _coerce_job(job: JobKey | int) -> JobKey:
@@ -180,30 +160,13 @@ def _coerce_job(job: JobKey | int) -> JobKey:
 
 
 def _job_label(job: JobKey | int) -> str:
-    kind, pr = _coerce_job(job)
-    if kind == STACK_JOB:
-        return f"stack {pr}"
+    _, pr = _coerce_job(job)
     return str(pr)
 
 
 def _job_log_name(job: JobKey | int) -> str:
-    kind, pr = _coerce_job(job)
-    if kind == STACK_JOB:
-        return f"stack-{pr}.log"
+    _, pr = _coerce_job(job)
     return f"{pr}.log"
-
-
-def _canonical_stack_pr(pr: int) -> int:
-    """Return the bottom PR for the stack containing ``pr`` when available."""
-    try:
-        from mergedog.stack import resolve_stack
-
-        members, _ = resolve_stack(pr)
-        if members:
-            return members[0].pr
-    except Exception:
-        pass
-    return pr
 
 
 def _read_pr_title(pr: int) -> str:
@@ -410,10 +373,10 @@ def _write_mux_prs(prs: list[int]) -> None:
 
 
 def _read_mux_jobs() -> list[JobKey]:
-    """Curated mux jobs, including stack shepherds.
+    """Curated mux jobs.
 
     ``mux-prs.json`` remains as the backwards-compatible regular-PR list
-    for older tools. Newer mux instances persist all jobs here.
+    for older tools. Newer mux instances persist jobs here.
     """
     if not MUX_JOBS_FILE.exists():
         return [_pr_job(pr) for pr in _read_mux_prs()]
@@ -431,8 +394,8 @@ def _read_mux_jobs() -> list[JobKey]:
             elif isinstance(item, dict):
                 kind = str(item.get("kind", PR_JOB))
                 pr = int(item["pr"])
-                if kind in (PR_JOB, STACK_JOB):
-                    out.add((kind, pr))
+                if kind == PR_JOB:
+                    out.add(_pr_job(pr))
         except (TypeError, ValueError, KeyError):
             continue
     return sorted(out)
@@ -444,7 +407,7 @@ def _write_mux_jobs(jobs: list[JobKey]) -> None:
     tmp = MUX_JOBS_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps([{"kind": kind, "pr": pr} for kind, pr in jobs]))
     os.replace(tmp, MUX_JOBS_FILE)
-    _write_mux_prs([pr for kind, pr in jobs if kind == PR_JOB])
+    _write_mux_prs([pr for _, pr in jobs])
 
 
 def _add_mux_job(job: JobKey) -> None:
@@ -499,15 +462,13 @@ def _spawn(
     spawn_pr: int | None = None,
 ) -> tuple[subprocess.Popen, object, Path]:
     job = _coerce_job(job)
-    kind, pr = job
+    _, pr = job
     arg_pr = spawn_pr if spawn_pr is not None else pr
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / _job_log_name(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
     f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
     command = [sys.executable, "-m", "mergedog"]
-    if kind == STACK_JOB:
-        command.append("stack")
     command.extend([str(arg_pr), *extra])
     p = subprocess.Popen(
         command,
@@ -580,7 +541,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "fix <pr> | stack <pr> | stack fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
+                "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
                 "remove <pr> | log <pr> | mergedog-label | migrate | quit"
             ),
             suggester=SuggestFromList(COMMAND_SUGGESTIONS),
@@ -590,11 +551,7 @@ class MuxApp(App):
         table = self.query_one(DataTable)
         table.add_columns("PR", "Title", "", "Last")
         for job in self._initial:
-            kind, pr = _coerce_job(job)
-            if kind == STACK_JOB:
-                self._do_stack_add(pr, [])
-            else:
-                self._do_add_job(job, [])
+            self._do_add_job(job, [])
         self._refresh()
         self.set_interval(2.0, self._refresh)
         self.query_one(HistoryInput).focus()
@@ -645,38 +602,13 @@ class MuxApp(App):
     def _do_add(self, pr: int, extra: list[str]) -> str:
         return self._do_add_job(_pr_job(pr), extra)
 
-    def _do_stack_add(self, pr: int, extra: list[str]) -> str:
-        bottom_pr = _canonical_stack_pr(pr)
-        if any(
-            a == "--operator-fix-context"
-            or a.startswith("--operator-fix-context=")
-            or a == "--operator-fix-context-file"
-            or a.startswith("--operator-fix-context-file=")
-            for a in extra
-        ) and not any(
-            a == "--operator-fix-pr" or a.startswith("--operator-fix-pr=")
-            for a in extra
-        ):
-            extra = [*extra, f"--operator-fix-pr={pr}"]
-        return self._do_add_job(
-            _stack_job(bottom_pr),
-            extra,
-            spawn_pr=bottom_pr,
-            alias_job=_stack_job(pr),
-        )
-
-    def _operator_fix_args(
-        self, args: list[str], *, pr: int | None = None
-    ) -> list[str] | str:
+    def _operator_fix_args(self, args: list[str]) -> list[str] | str:
         if not args:
             return "missing operator fix request"
         request = " ".join(args).strip()
         if not request:
             return "missing operator fix request"
-        out = [f"--operator-fix-context={request}"]
-        if pr is not None:
-            out.append(f"--operator-fix-pr={pr}")
-        return out
+        return [f"--operator-fix-context={request}"]
 
     def _dead_jobs(self) -> list[JobKey]:
         return sorted(
@@ -821,9 +753,6 @@ class MuxApp(App):
     def _do_cancel(self, pr: int) -> str:
         return self._do_cancel_job(_pr_job(pr))
 
-    def _do_stack_cancel(self, pr: int) -> str:
-        return self._do_cancel_job(_stack_job(pr))
-
     def _do_remove_job(self, job: JobKey | int) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
@@ -837,9 +766,6 @@ class MuxApp(App):
 
     def _do_remove(self, pr: int) -> str:
         return self._do_remove_job(_pr_job(pr))
-
-    def _do_stack_remove(self, pr: int) -> str:
-        return self._do_remove_job(_stack_job(pr))
 
     def _do_cleanup(self, rest: list[str]) -> str:
         if rest and rest != ["all"]:
@@ -888,15 +814,12 @@ class MuxApp(App):
         table.clear()
         parent_hints: dict[JobKey, JobKey] = {}
         for job, (_, _, log_path) in self.procs.items():
-            kind, _ = job
-            if kind != PR_JOB:
-                continue
             parent_pr = _read_stack_parent_pr_from_log(log_path)
             if parent_pr is not None:
                 parent_hints[job] = _pr_job(parent_pr)
         jobs, depths = _stack_display_layout(list(self.procs), parent_hints)
         for job in jobs:
-            kind, pr = job
+            _, pr = job
             p, _, log_path = self.procs[job]
             rc = p.poll()
             if rc is None:
@@ -906,18 +829,16 @@ class MuxApp(App):
             else:
                 state = "🔴"
             last = _last_log_line(log_path)
-            structured = read_status(pr) if kind == PR_JOB else None
+            structured = read_status(pr)
             if structured is None:
                 self._pr_status.pop(job, None)
             else:
                 self._pr_status[job] = structured
             title = self._pr_titles.get(job, "")
-            if not title and kind == PR_JOB:
+            if not title:
                 title = _read_pr_title(pr)
                 if title:
                     self._pr_titles[job] = title
-            elif not title:
-                title = "ghstack"
             # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
             # the worktree path is omitted from the table entirely now,
             # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
@@ -935,7 +856,7 @@ class MuxApp(App):
         The log file is kept so the operator can audit why the shepherd quit.
         """
         job = _coerce_job(job)
-        kind, pr = job
+        _, pr = job
         entry = self.procs.pop(job, None)
         if entry is not None:
             try:
@@ -948,10 +869,9 @@ class MuxApp(App):
             except Exception:
                 pass
         try:
-            if kind == STACK_JOB:
-                repo_mod.wipe_stack_worktree(pr)
-            else:
-                repo_mod.wipe_worktree(pr)
+            from mergedog import repo as repo_mod
+
+            repo_mod.wipe_worktree(pr)
         except Exception:
             pass
         _remove_mux_job(job)
@@ -963,61 +883,6 @@ class MuxApp(App):
     # ------------------------------------------------------------------
     # Command dispatch (shared by TUI input and IPC server)
     # ------------------------------------------------------------------
-
-    def _dispatch_stack_command(self, rest: list[str]) -> str:
-        if not rest:
-            return "usage: stack <pr> | stack <command> <pr>"
-        subcmd = rest[0]
-        if subcmd.isdigit() or "/pull/" in subcmd:
-            return self._do_stack_add(_parse_pr(subcmd), rest[1:])
-        args = rest[1:]
-        if subcmd in ("add", "a"):
-            if not args:
-                return "usage: stack add <pr> [flags]"
-            return self._do_stack_add(_parse_pr(args[0]), args[1:])
-        if subcmd == "rebase":
-            if not args:
-                return "usage: stack rebase <pr> [flags]"
-            return self._do_stack_add(_parse_pr(args[0]), ["--rebase", *args[1:]])
-        if subcmd in ("restart", "r"):
-            if not args:
-                return "usage: stack restart <pr> [flags]"
-            pr = _parse_pr(args[0])
-            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
-            return self._do_stack_add(pr, args[1:])
-        if subcmd == "reassess":
-            if not args:
-                return "usage: stack reassess <pr> [flags]"
-            pr = _parse_pr(args[0])
-            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
-            return self._do_stack_add(pr, ["--reassess", *args[1:]])
-        if subcmd == "fix":
-            if len(args) < 2:
-                return "usage: stack fix <pr> <trusted request>"
-            pr = _parse_pr(args[0])
-            fix_args = self._operator_fix_args(args[1:], pr=pr)
-            if isinstance(fix_args, str):
-                return fix_args
-            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
-            return self._do_stack_add(pr, fix_args)
-        if subcmd in ("cancel", "c", "kill"):
-            if not args:
-                return "usage: stack cancel <pr>"
-            return self._do_stack_cancel(_parse_pr(args[0]))
-        if subcmd in ("remove", "rm", "forget"):
-            if not args:
-                return "usage: stack remove <pr>"
-            return self._do_stack_remove(_parse_pr(args[0]))
-        if subcmd == "log":
-            if not args:
-                return "usage: stack log <pr>"
-            pr = _parse_pr(args[0])
-            job = _stack_job(pr)
-            entry = self.procs.get(job)
-            if entry is not None:
-                return str(entry[2])
-            return f"[{_job_label(job)}] unknown"
-        return f"unknown stack command: {subcmd!r}"
 
     def _dispatch_command(self, line: str) -> str:
         """Parse and execute a mux command.  Returns a response string."""
@@ -1035,8 +900,6 @@ class MuxApp(App):
                 if not rest:
                     return "usage: add <pr> [flags]"
                 return self._do_add(_parse_pr(rest[0]), rest[1:])
-            elif cmd == "stack":
-                return self._dispatch_stack_command(rest)
             elif cmd == "rebase":
                 if not rest:
                     return "usage: rebase <pr> | rebase all"
@@ -1087,33 +950,16 @@ class MuxApp(App):
             elif cmd in ("cancel", "c", "kill"):
                 if not rest:
                     return "usage: cancel <pr>"
-                if rest[0] == "stack":
-                    if len(rest) < 2:
-                        return "usage: cancel stack <pr>"
-                    return self._do_stack_cancel(_parse_pr(rest[1]))
                 return self._do_cancel(_parse_pr(rest[0]))
             elif cmd == "cleanup":
                 return self._do_cleanup(rest)
             elif cmd in ("remove", "rm", "forget"):
                 if not rest:
                     return "usage: remove <pr>"
-                if rest[0] == "stack":
-                    if len(rest) < 2:
-                        return "usage: remove stack <pr>"
-                    return self._do_stack_remove(_parse_pr(rest[1]))
                 return self._do_remove(_parse_pr(rest[0]))
             elif cmd == "log":
                 if not rest:
                     return "usage: log <pr>"
-                if rest[0] == "stack":
-                    if len(rest) < 2:
-                        return "usage: log stack <pr>"
-                    pr = _parse_pr(rest[1])
-                    job = _stack_job(pr)
-                    entry = self.procs.get(job)
-                    if entry is not None:
-                        return str(entry[2])
-                    return f"[{_job_label(job)}] unknown"
                 pr = _parse_pr(rest[0])
                 entry = self.procs.get(_pr_job(pr))
                 if entry is not None:
@@ -1150,12 +996,8 @@ class MuxApp(App):
             else:
                 state = "exited_error"
             last = _last_log_line(log_path)
-            if kind == PR_JOB:
-                title = self._pr_titles.get(job, "") or _read_pr_title(pr)
-                structured = read_status(pr)
-            else:
-                title = self._pr_titles.get(job, "") or "ghstack"
-                structured = None
+            title = self._pr_titles.get(job, "") or _read_pr_title(pr)
+            structured = read_status(pr)
             rows.append({
                 "kind": kind,
                 "pr": pr,
@@ -1170,8 +1012,7 @@ class MuxApp(App):
         jobs = sorted(self.procs)
         if not jobs:
             return "no PRs tracked"
-        prs = [pr for kind, pr in jobs if kind == PR_JOB]
-        stack_prs = [pr for kind, pr in jobs if kind == STACK_JOB]
+        prs = [pr for _, pr in jobs]
         state_files = [
             str(state_file(pr)) for _, pr in jobs if state_file(pr).exists()
         ]
@@ -1183,11 +1024,6 @@ class MuxApp(App):
             "# Then start the mux there:",
             f"python -m mergedog.mux {repo_arg}{pr_args}",
         ]
-        if stack_prs:
-            lines.extend(
-                ["# Then add stack jobs in the mux:"]
-                + [f"stack {pr}" for pr in stack_prs]
-            )
         return "\n".join(lines)
 
     def on_input_submitted(self, message: Input.Submitted) -> None:

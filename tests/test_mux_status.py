@@ -231,7 +231,7 @@ class TestMuxCommands(unittest.TestCase):
         app.procs = {
             mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
             mux._pr_job(456): (_FakeProc(1), object(), Path("456.log")),
-            mux._stack_job(789): (_FakeProc(0), object(), Path("stack-789.log")),
+            mux._pr_job(789): (_FakeProc(0), object(), Path("789.log")),
         }
 
         with mock.patch.object(app, "_do_restart_dead") as restart_dead:
@@ -247,10 +247,10 @@ class TestMuxCommands(unittest.TestCase):
         app.procs = {
             mux._pr_job(123): (_FakeProc(None), object(), Path("123.log")),
             mux._pr_job(456): (_FakeProc(0), object(), Path("456.log")),
-            mux._stack_job(789): (
+            mux._pr_job(789): (
                 _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
                 object(),
-                Path("stack-789.log"),
+                Path("789.log"),
             ),
         }
 
@@ -259,28 +259,6 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "no dead PRs to restart")
         restart_dead.assert_not_called()
-
-    def test_stack_command_starts_stack_job(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-
-        with mock.patch.object(app, "_do_stack_add") as stack_add:
-            stack_add.return_value = "[stack 123] started"
-            result = app._dispatch_command("stack 123 --force-ghstack")
-
-        self.assertEqual(result, "[stack 123] started")
-        stack_add.assert_called_once_with(123, ["--force-ghstack"])
-
-    def test_stack_rebase_adds_rebase_flag(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-
-        with mock.patch.object(app, "_do_stack_add") as stack_add:
-            stack_add.return_value = "[stack 123] started"
-            result = app._dispatch_command("stack rebase 123 --force-ghstack")
-
-        self.assertEqual(result, "[stack 123] started")
-        stack_add.assert_called_once_with(
-            123, ["--rebase", "--force-ghstack"]
-        )
 
     def test_fix_command_restarts_with_operator_context(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -296,90 +274,11 @@ class TestMuxCommands(unittest.TestCase):
             123, ["--operator-fix-context=Return type should be TypeGuard"]
         )
 
-    def test_stack_fix_command_restarts_stack_with_operator_context(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-
-        with mock.patch.object(app, "_do_cancel_job") as cancel, mock.patch.object(
-            app, "_do_stack_add", return_value="[stack 123] started"
-        ) as stack_add:
-            result = app._dispatch_command(
-                "stack fix 123 Return type should be TypeGuard"
-            )
-
-        self.assertEqual(result, "[stack 123] started")
-        cancel.assert_called_once_with(mux._stack_job(123), keep_resumable=True)
-        stack_add.assert_called_once_with(
-            123,
-            [
-                "--operator-fix-context=Return type should be TypeGuard",
-                "--operator-fix-pr=123",
-            ],
-        )
-
-    def test_stack_add_canonicalizes_to_bottom_pr(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-        app.procs = {}
-        app._pr_titles = {}
-        app.ignore_sev = False
-        app.manage_mergedog_label = False
-        app.gchat_to = None
-        app.repo_slug = None
-
-        with mock.patch.object(
-            mux, "_canonical_stack_pr", return_value=100
-        ), mock.patch.object(mux, "_spawn") as spawn:
-            spawn.return_value = (_FakeProc(None), object(), Path("stack-100.log"))
-            result = app._do_stack_add(123, ["--ignore-sev"])
-
-        self.assertEqual(result, "[stack 100] started")
-        self.assertIn(mux._stack_job(100), app.procs)
-        spawn.assert_called_once_with(
-            mux._stack_job(100), ["--ignore-sev"], spawn_pr=100
-        )
-
-    def test_stack_operator_fix_preserves_requested_member(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-        app.procs = {}
-        app._pr_titles = {}
-        app.ignore_sev = False
-        app.manage_mergedog_label = False
-        app.gchat_to = None
-        app.repo_slug = None
-
-        with mock.patch.object(
-            mux, "_canonical_stack_pr", return_value=100
-        ), mock.patch.object(mux, "_spawn") as spawn:
-            spawn.return_value = (_FakeProc(None), object(), Path("stack-100.log"))
-            result = app._do_stack_add(
-                123, ["--operator-fix-context=review request"]
-            )
-
-        self.assertEqual(result, "[stack 100] started")
-        spawn.assert_called_once_with(
-            mux._stack_job(100),
-            ["--operator-fix-context=review request", "--operator-fix-pr=123"],
-            spawn_pr=100,
-        )
-
-    def test_stack_log_uses_stack_job(self):
-        app = mux.MuxApp.__new__(mux.MuxApp)
-        app.procs = {
-            mux._stack_job(123): (
-                _FakeProc(None),
-                object(),
-                Path("stack-123.log"),
-            ),
-        }
-
-        result = app._dispatch_command("stack log 123")
-
-        self.assertEqual(result, "stack-123.log")
-
     def test_cleanup_prunes_successful_completed_jobs(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         completed = mux._pr_job(123)
         failed = mux._pr_job(456)
-        running = mux._stack_job(789)
+        running = mux._pr_job(789)
         app.procs = {
             completed: (
                 _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
@@ -387,7 +286,7 @@ class TestMuxCommands(unittest.TestCase):
                 Path("123.log"),
             ),
             failed: (_FakeProc(1), object(), Path("456.log")),
-            running: (_FakeProc(None), object(), Path("stack-789.log")),
+            running: (_FakeProc(None), object(), Path("789.log")),
         }
 
         with mock.patch.object(app, "_prune_job") as prune_job:
@@ -481,10 +380,10 @@ class TestMuxCommands(unittest.TestCase):
             app.procs = {
                 mux._pr_job(123): (_FakeProc(None), mock.Mock(), Path("123.log")),
                 mux._pr_job(456): (_FakeProc(0), mock.Mock(), Path("456.log")),
-                mux._stack_job(789): (
+                mux._pr_job(789): (
                     _FakeProc(1),
                     mock.Mock(),
-                    Path("stack-789.log"),
+                    Path("789.log"),
                 ),
             }
             app._ipc_server = None
@@ -497,7 +396,7 @@ class TestMuxCommands(unittest.TestCase):
                 mock.patch.object(mux.os, "killpg"),
             ):
                 mux._write_mux_jobs(
-                    [mux._pr_job(123), mux._pr_job(456), mux._stack_job(789)]
+                    [mux._pr_job(123), mux._pr_job(456), mux._pr_job(789)]
                 )
                 app.on_unmount()
                 jobs_data = json.loads(jobs_file.read_text())
@@ -523,7 +422,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             ):
                 jobs, skipped = mux._resolve_initial_jobs([], resume_known=True)
 
-        self.assertEqual(jobs, [mux._pr_job(123), mux._stack_job(456)])
+        self.assertEqual(jobs, [mux._pr_job(123)])
         self.assertEqual(skipped, [])
 
     def test_resolve_initial_jobs_can_skip_resume_known(self):
@@ -579,7 +478,7 @@ class TestMuxJobPersistence(unittest.TestCase):
 
         self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
 
-    def test_write_mux_jobs_keeps_legacy_prs_regular_only(self):
+    def test_write_mux_jobs_updates_legacy_prs(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             prs_file = root / "mux-prs.json"
@@ -589,15 +488,15 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                mux._write_mux_jobs([mux._pr_job(123), mux._stack_job(456)])
+                mux._write_mux_jobs([mux._pr_job(123), mux._pr_job(456)])
                 jobs_data = json.loads(jobs_file.read_text())
                 prs_data = json.loads(prs_file.read_text())
 
         self.assertEqual(
             jobs_data,
-            [{"kind": "pr", "pr": 123}, {"kind": "stack", "pr": 456}],
+            [{"kind": "pr", "pr": 123}, {"kind": "pr", "pr": 456}],
         )
-        self.assertEqual(prs_data, [123])
+        self.assertEqual(prs_data, [123, 456])
 
 if __name__ == "__main__":
     unittest.main()

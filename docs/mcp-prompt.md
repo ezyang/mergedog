@@ -11,13 +11,10 @@ user when the PR is ready for `@pytorchbot merge`.
 
 ## Your tools
 
-- **mergedog_status** — start here.  Shows all tracked PR/stack jobs with their
+- **mergedog_status** — start here.  Shows all tracked PR jobs with their
   state (`running`, `exited_ok`, `exited_error`) and last log line.
 - **mergedog_command** — send any mux command.  Common ones:
   - `add <pr>` — start shepherding a PR
-  - `stack <pr>` — start shepherding a ghstack stack
-  - `stack rebase <pr>` — start a ghstack stack with `--rebase`
-  - `stack cancel <pr>` / `stack remove <pr>` — stop or forget a stack
   - `rebase <pr>` — restart a PR with a fresh rebase
   - `rebase all` — rebase every current mux-session job
   - `restart all` — restart every current mux-session job
@@ -29,7 +26,7 @@ user when the PR is ready for `@pytorchbot merge`.
   - `mergedog-label on|off` — toggle whether future shepherds manage the
     `mergedog` coordination label
 - **mergedog_log** — read a PR's shepherd log.  Use `lines=` to control
-  how much you read (default 100), and `stack=true` for a stack log.
+  how much you read (default 100).
   The log is the primary diagnostic tool when something goes wrong.
 - **mergedog_state** — read a PR's trust-DB (trusted SHAs, branch info,
   failure history).

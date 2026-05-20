@@ -85,13 +85,6 @@ TUI commands (type in the input bar at the bottom):
 |---|---|
 | `add <pr>` or just `<pr>` | Start shepherding a PR |
 | `fix <pr> <trusted request>` | Restart a PR with a trusted operator request for a one-shot `[MERGEDOG]` follow-up commit |
-| `stack <pr>` or `stack add <pr>` | Start shepherding a ghstack stack |
-| `stack fix <pr> <trusted request>` | Restart a ghstack shepherd with a trusted operator request for a one-shot `[MERGEDOG]` follow-up commit on that stack member |
-| `stack rebase <pr>` | Start shepherding a stack with `--rebase` |
-| `stack restart <pr>` | Kill and re-spawn a stack |
-| `stack cancel <pr>` | SIGTERM the stack shepherd; keep state but do not resume it next mux start |
-| `stack remove <pr>` | SIGTERM + wipe the `stack-<pr>` worktree, state, context |
-| `stack log <pr>` | Print the stack log file path |
 | `cancel <pr>` | SIGTERM the shepherd; keep state but do not resume it next mux start |
 | `restart <pr>` | Kill and re-spawn |
 | `restart all` | Kill all current session shepherds and respawn |
@@ -137,40 +130,21 @@ python -m mergedog <pr_number_or_url> [--repo OWNER/NAME] [flags]
 This is useful for one-off runs, debugging, or when you want to pass flags
 that are specific to a particular PR (especially `--extra-context`).
 
-### ghstack stacks
-
-```
-mergedog stack <any_pr_in_stack> [flags]
-```
-
-Discovers the full stack from the PR body and drives every PR bottom-up in
-a single process.  Additional flag: `--force-ghstack` bypasses ghstack's
-anti-clobber check.
-
 ### Rage bundle
 
 ```
 mergedog rage <pr_number_or_url> [--root DIR]
-mergedog rage stack <any_pr_in_stack> [--root DIR]
 ```
 
 Creates a private markdown paste with redacted diagnostics for the PR.  The
 bundle includes the mux/shepherd log, persisted trust/state JSON, context
 sidecar, mux tracking list, pushed-commit records for that PR, and local
-regular/stack worktree branch/HEAD/status summaries.  For non-bottom stack
-members, the bundle also lists existing `worktrees/stack-*` candidates
-because stack mode names the shared worktree after the bottom PR.  Before
-upload, mergedog applies a best-effort credential scrub over the entire
-bundle.
-
-For ghstack runs, use `mergedog rage stack <any_pr_in_stack>`.  It resolves
-the full stack, uses one stack log keyed by the bottom PR
-(`logs/stack-<bottom_pr>.log`), and includes every member's state/context plus
-stack-wide pushed commits and the shared stack worktree summary.
+worktree branch/HEAD/status summaries.  Before upload, mergedog applies a
+best-effort credential scrub over the entire bundle.
 
 ### Common flags
 
-These work on both the single-PR and stack entry points:
+These work on the PR shepherd entry point:
 
 | Flag | Purpose |
 |---|---|
@@ -228,19 +202,17 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ~/.mergedog/
 ├── repo/                     # shared bare clone of the configured repo
 ├── worktrees/<pr>/           # per-PR git worktrees
-├── worktrees/stack-<pr>/     # shared worktree for ghstack stacks
 ├── state/<pr>.json           # trust DB, spurious verdicts, last failure
 ├── contexts/<pr>.md          # sidecar: PR title/body/comments (untrusted, fed to Claude)
 ├── logs/<pr>.log             # per-PR shepherd stdout/stderr (written by mux)
-├── logs/stack-<pr>.log       # stack shepherd log, named by bottom PR
 ├── mux-prs.json              # backwards-compatible regular PR resume list
-├── mux-jobs.json             # mux's regular PR + stack job resume list
+├── mux-jobs.json             # mux's PR job resume list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)
 ├── config.json               # persistent operator settings (LLM provider/model)
 ├── label-cache.json          # cached repo labels for autolabeling (24h TTL)
 ├── lintrunner-venv/          # shared lintrunner virtualenv
-└── pushed-commits.log        # append-only log of pushed commits (stack mode)
+└── pushed-commits.log        # append-only log of pushed commits
 ```
 
 ## Security: taint tracking

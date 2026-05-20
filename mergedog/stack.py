@@ -141,8 +141,7 @@ def resolve_stack(pr: int) -> tuple[list[StackMember], dict[int, dict]]:
         die(
             f"PR #{pr} has no parseable ghstack stack listing in its "
             f"body or comments; "
-            f"refusing to run stack mode (use the regular shepherd for "
-            f"non-stack PRs)"
+            f"cannot resolve decentralized stack membership"
         )
     top_pr = body_nums[-1]
     top_data = github.get_pr(top_pr) if top_pr != pr else pr_data

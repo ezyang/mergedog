@@ -18,7 +18,6 @@ from mergedog.paths import (
     REPO_DIR,
     REPO_SSH_URL,
     ensure_dirs,
-    stack_worktree_dir,
     worktree_dir,
 )
 from mergedog.process import run, run_streamed
@@ -278,20 +277,6 @@ def wipe_worktree(pr: int) -> None:
     run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
 
 
-def wipe_stack_worktree(bottom_pr: int) -> None:
-    wt = stack_worktree_dir(bottom_pr)
-    if wt.exists():
-        run(
-            ["git", "worktree", "remove", "--force", str(wt)],
-            cwd=REPO_DIR,
-            check=False,
-            loud=True,
-        )
-        if wt.exists():
-            shutil.rmtree(wt, ignore_errors=True)
-    run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
-
-
 def ensure_worktree(
     pr: int,
     sha: str,
@@ -378,84 +363,12 @@ def ensure_worktree(
     return wt
 
 
-def ensure_stack_worktree(bottom_pr: int, sha: str) -> Path:
-    """Get the shared stack-mode worktree for a stack rooted at ``bottom_pr``.
-
-    Stack mode operates with one worktree for the whole stack -- we
-    navigate its HEAD between ``/orig_i`` SHAs as we work on different
-    members rather than carrying N worktrees. The path is namespaced
-    ``stack-<bottom_pr>`` so it can't collide with a single-PR worktree
-    of the same number.
-
-    No upstream tracking is configured: ``ghstack submit`` and
-    ``ghstack checkout`` work from commit metadata, not a tracked branch.
-    """
-    wt = stack_worktree_dir(bottom_pr)
-    wt.parent.mkdir(parents=True, exist_ok=True)
-    local_branch = f"mergedog-stack/{bottom_pr}"
-
-    if not _worktree_alive(wt):
-        if wt.exists():
-            run(
-                ["git", "worktree", "remove", "--force", str(wt)],
-                cwd=REPO_DIR,
-                check=False,
-                loud=True,
-            )
-            if wt.exists():
-                shutil.rmtree(wt, ignore_errors=True)
-        run(["git", "worktree", "prune"], cwd=REPO_DIR, check=False)
-        run(["git", "branch", "-D", local_branch], cwd=REPO_DIR, check=False)
-        run(
-            ["git", "worktree", "add", "-B", local_branch, str(wt), sha],
-            cwd=REPO_DIR,
-            capture=False,
-            loud=True,
-        )
-    else:
-        head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        merge_in_progress = is_merge_in_progress(wt)
-        rebase_in_progress = is_rebase_in_progress(wt)
-        clean = run(["git", "status", "--porcelain"], cwd=wt).stdout.strip() == ""
-        current_branch = run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt
-        ).stdout.strip()
-        if (
-            head == sha
-            and not merge_in_progress
-            and not rebase_in_progress
-            and clean
-            and current_branch == local_branch
-        ):
-            log(f"reusing stack worktree at {wt} (already at {sha[:12]}, clean)")
-        else:
-            log(
-                f"resetting stack worktree at {wt} -> {sha[:12]} "
-                f"(was {head[:12]} on {current_branch!r}, "
-                f"clean={clean}, merge_in_progress={merge_in_progress}, "
-                f"rebase_in_progress={rebase_in_progress})"
-            )
-            if merge_in_progress:
-                run(["git", "merge", "--abort"], cwd=wt, check=False, loud=True)
-            if rebase_in_progress:
-                run(["git", "rebase", "--abort"], cwd=wt, check=False, loud=True)
-            if current_branch != local_branch:
-                run(
-                    ["git", "checkout", "-B", local_branch],
-                    cwd=wt,
-                    loud=True,
-                )
-            run(["git", "reset", "--hard", sha], cwd=wt, loud=True)
-    return wt
-
-
 def set_worktree_to_sha(worktree: Path, sha: str) -> None:
     """Move ``worktree``'s HEAD to ``sha``, aborting any in-flight op.
 
-    Used between operations on a shared stack worktree -- e.g. navigating
-    from ``/orig_i`` to ``/orig_j`` before invoking claude on a different
-    stack member. Stays on whichever local branch is current; the branch
-    just gets fast-moved to ``sha``.
+    Used when a ghstack PR needs to reconstruct itself on top of a parent
+    ``/orig`` commit. Stays on whichever local branch is current; the
+    branch just gets fast-moved to ``sha``.
     """
     if is_merge_in_progress(worktree):
         run(["git", "merge", "--abort"], cwd=worktree, check=False, loud=True)
@@ -882,18 +795,15 @@ def ghstack_submit(
 ) -> None:
     """Run ``ghstack submit ... -m <message> HEAD`` in the worktree.
 
-    Default ``no_stack=True`` re-uploads only the commit at HEAD's PR --
-    used by both the single-PR shepherd and stack-mode fix path so siblings
-    don't get hit with fresh CI for an unrelated parent fix.
+    Default ``no_stack=True`` re-uploads only the commit at HEAD's PR so
+    siblings don't get hit with fresh CI for an unrelated parent fix.
 
-    Pass ``no_stack=False`` for stack-mode propagation: ghstack walks
+    Pass ``no_stack=False`` to make ghstack walk
     every commit reachable from HEAD down to the merge-base with main
     and pushes any /head whose contents differ from origin.
 
     ``force=True`` adds ghstack's ``--force`` flag, bypassing its
-    "cowardly refusing to push" anti-clobber check. Used as an
-    operator-controlled escape hatch (``--force-ghstack``) when local
-    bookkeeping disagrees with origin and we know it's safe to push.
+    "cowardly refusing to push" anti-clobber check.
 
     The submit message is prefixed with ``[MERGEDOG] `` so the audit
     line on Phabricator is unambiguously from this harness; idempotent

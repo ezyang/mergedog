@@ -32,7 +32,7 @@ def _parse_pr(value: str) -> int:
 
 
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
-    """Flags shared by the single-PR and stack entry points."""
+    """Flags for the PR shepherd entry point."""
     parser.add_argument(
         "pr",
         type=_parse_pr,
@@ -159,12 +159,6 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
             "from a file. Useful for longer reviewer instructions."
         ),
     )
-    parser.add_argument(
-        "--operator-fix-pr",
-        type=_parse_pr,
-        help=argparse.SUPPRESS,
-    )
-
 
 def _resolve_extra_context(args: argparse.Namespace) -> str | None:
     if args.extra_context_file is not None:
@@ -218,66 +212,11 @@ def _single_main(argv: list[str]) -> int:
     return 0
 
 
-def _stack_main(argv: list[str]) -> int:
-    promote_early_env(argv)
-
-    parser = argparse.ArgumentParser(
-        prog="mergedog stack",
-        description=(
-            "Shepherd a whole ghstack stack from a single foreground "
-            "process. Pass any PR in the stack; mergedog reads the "
-            "stack listing from the PR body and drives every PR in "
-            "bottom-up order."
-        ),
-    )
-    _add_common_flags(parser)
-    parser.add_argument(
-        "--force-ghstack",
-        action="store_true",
-        help=(
-            "Pass ``--force`` to every ``ghstack submit`` invocation, "
-            "bypassing ghstack's anti-clobber 'Cowardly refusing to "
-            "push' check. Use when local bookkeeping disagrees with "
-            "origin and you've decided it's safe to force the push -- "
-            "an operator-controlled escape hatch for testing."
-        ),
-    )
-    args = parser.parse_args(argv)
-
-    from mergedog import notify, stack_shepherd
-
-    notify.configure(pr=args.pr, gchat_to=args.gchat_to)
-
-    try:
-        stack_shepherd.run_stack(
-            args.pr,
-            rebase=args.rebase,
-            accept_divergence=args.accept_divergence,
-            ignore_sev=args.ignore_sev,
-            reassess=args.reassess,
-            force_ghstack=args.force_ghstack,
-            manage_mergedog_label=args.manage_mergedog_label,
-            extra_context=_resolve_extra_context(args),
-            operator_fix_context=_resolve_operator_fix_context(args),
-            operator_fix_pr=args.operator_fix_pr,
-        )
-    except KeyboardInterrupt:
-        print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
-        return 130
-    return 0
-
-
 def _rage_main(argv: list[str]) -> int:
     promote_early_env(argv)
-    stack = bool(argv and argv[0] == "stack")
-    if stack:
-        argv = argv[1:]
     parser = argparse.ArgumentParser(
-        prog="mergedog rage stack" if stack else "mergedog rage",
-        description=(
-            "Create a private paste with redacted diagnostics for "
-            + ("a whole ghstack stack." if stack else "a PR.")
-        ),
+        prog="mergedog rage",
+        description="Create a private paste with redacted diagnostics for a PR.",
     )
     parser.add_argument(
         "pr",
@@ -308,7 +247,7 @@ def _rage_main(argv: list[str]) -> int:
 
     root = args.root if args.root is not None else ROOT
     try:
-        paste = rage_mod.rage(args.pr, root=root, stack=stack)
+        paste = rage_mod.rage(args.pr, root=root)
     except Exception as e:
         print(f"rage failed: {e}", file=sys.stderr)
         return 1
@@ -378,11 +317,6 @@ def _config_main(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    # Subcommand dispatch: ``mergedog stack <pr> [...]`` runs the stack
-    # shepherd; everything else stays on the single-PR path so existing
-    # ``mergedog <pr>`` invocations (and ``mux.py`` spawns) keep working.
-    if argv and argv[0] == "stack":
-        return _stack_main(argv[1:])
     if argv and argv[0] == "rage":
         return _rage_main(argv[1:])
     if argv and argv[0] == "config":
