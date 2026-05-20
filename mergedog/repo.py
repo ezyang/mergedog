@@ -430,12 +430,16 @@ def fetch_stack_refs(
 
 def parent_sha(sha: str) -> str:
     """Return the first parent of ``sha`` from the local object database.
-
-    Used for ghstack staleness checks: a child ``/orig`` is up-to-date iff
-    its parent SHA equals its parent member's current ``/orig`` SHA.
     """
     return run(
         ["git", "rev-parse", f"{sha}^"], cwd=REPO_DIR
+    ).stdout.strip()
+
+
+def tree_sha(sha: str) -> str:
+    """Return the tree object for ``sha`` from the local object database."""
+    return run(
+        ["git", "rev-parse", f"{sha}^{{tree}}"], cwd=REPO_DIR
     ).stdout.strip()
 
 

@@ -34,6 +34,10 @@ def _dep():
     )
 
 
+def _tree_sha(tree_map):
+    return lambda sha: tree_map[sha]
+
+
 class TestGhstackParentStatus(unittest.TestCase):
     def test_stale_parent_not_ready_while_pending(self):
         dep = _dep()
@@ -49,6 +53,12 @@ class TestGhstackParentStatus(unittest.TestCase):
         ), mock.patch.object(
             shepherd.repo, "parent_sha", return_value="P_OLD"
         ), mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+            ),
+        ), mock.patch.object(
             shepherd.github, "get_pr_checks_all", return_value=checks
         ), mock.patch.object(
             shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
@@ -60,6 +70,40 @@ class TestGhstackParentStatus(unittest.TestCase):
             status = shepherd._refresh_ghstack_parent_status(dep)
 
         self.assertTrue(status.stale)
+        self.assertFalse(status.parent_ready)
+        self.assertEqual(status.reason, "parent CI is pending")
+
+    def test_equivalent_parent_rewrite_is_not_stale(self):
+        dep = _dep()
+        refs = {
+            "gh/u/100/head": "P_HEAD",
+            "gh/u/100/orig": "P_NEW",
+            "gh/u/101/head": "C_HEAD",
+            "gh/u/101/orig": "C_ORIG",
+        }
+        checks = [{"name": "linux", "bucket": "pending"}]
+        with mock.patch.object(
+            shepherd.repo, "fetch_stack_refs", return_value=refs
+        ), mock.patch.object(
+            shepherd.repo, "parent_sha", return_value="P_OLD"
+        ), mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_NEW": "SAME_TREE", "P_OLD": "SAME_TREE"}
+            ),
+        ), mock.patch.object(
+            shepherd.github, "get_pr_checks_all", return_value=checks
+        ), mock.patch.object(
+            shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
+        ), mock.patch.object(
+            shepherd.github, "evaluate_checks", return_value="pending"
+        ), mock.patch.object(
+            shepherd.TrustDB, "load_or_create", return_value=_Trust()
+        ):
+            status = shepherd._refresh_ghstack_parent_status(dep)
+
+        self.assertFalse(status.stale)
         self.assertFalse(status.parent_ready)
         self.assertEqual(status.reason, "parent CI is pending")
 
@@ -80,6 +124,12 @@ class TestGhstackParentStatus(unittest.TestCase):
             shepherd.repo, "fetch_stack_refs", return_value=refs
         ), mock.patch.object(
             shepherd.repo, "parent_sha", return_value="P_OLD"
+        ), mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+            ),
         ), mock.patch.object(
             shepherd.github, "get_pr_checks_all", return_value=checks
         ), mock.patch.object(
@@ -107,6 +157,12 @@ class TestGhstackParentStatus(unittest.TestCase):
             shepherd.repo, "fetch_stack_refs", return_value=refs
         ), mock.patch.object(
             shepherd.repo, "parent_sha", return_value="P_OLD"
+        ), mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+            ),
         ), mock.patch.object(
             shepherd.github, "get_pr_checks_all", return_value=[]
         ), mock.patch.object(

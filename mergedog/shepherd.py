@@ -463,7 +463,9 @@ def _refresh_ghstack_parent_status(
     parent_orig_sha = refs[dep.parent_orig_ref]
     child_orig_sha = refs[dep.child_orig_ref]
     child_parent_sha = repo.parent_sha(child_orig_sha)
-    stale = child_parent_sha != parent_orig_sha
+    parent_orig_tree = repo.tree_sha(parent_orig_sha)
+    child_parent_tree = repo.tree_sha(child_parent_sha)
+    stale = child_parent_tree != parent_orig_tree
 
     checks = github.get_pr_checks_all(dep.parent_pr)
     parent_trust = _check_trusted_ghstack_parent(
