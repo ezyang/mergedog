@@ -193,6 +193,36 @@ class TestMuxCommands(unittest.TestCase):
             123, ["--rebase", "--force-ghstack"]
         )
 
+    def test_fix_command_restarts_with_operator_context(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+
+        with mock.patch.object(app, "_do_cancel_job") as cancel, mock.patch.object(
+            app, "_do_add", return_value="[123] started"
+        ) as add:
+            result = app._dispatch_command("fix 123 Return type should be TypeGuard")
+
+        self.assertEqual(result, "[123] started")
+        cancel.assert_called_once_with(mux._pr_job(123), keep_resumable=True)
+        add.assert_called_once_with(
+            123, ["--operator-fix-context=Return type should be TypeGuard"]
+        )
+
+    def test_stack_fix_command_restarts_stack_with_operator_context(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+
+        with mock.patch.object(app, "_do_cancel_job") as cancel, mock.patch.object(
+            app, "_do_stack_add", return_value="[stack 123] started"
+        ) as stack_add:
+            result = app._dispatch_command(
+                "stack fix 123 Return type should be TypeGuard"
+            )
+
+        self.assertEqual(result, "[stack 123] started")
+        cancel.assert_called_once_with(mux._stack_job(123), keep_resumable=True)
+        stack_add.assert_called_once_with(
+            123, ["--operator-fix-context=Return type should be TypeGuard"]
+        )
+
     def test_stack_log_uses_stack_job(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {

@@ -32,6 +32,7 @@ from mergedog.project import get_project_policy
 from mergedog.prompts import (
     render_fix_prompt,
     render_merge_conflict_prompt,
+    render_operator_fix_prompt,
     render_rebase_conflict_prompt,
 )
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
@@ -532,6 +533,90 @@ def _publish_ghstack_fix(
     _wait_for_pr_head(pr, new_head_sha)
 
 
+def _run_operator_fix(
+    *,
+    pr: int,
+    pr_data: dict,
+    worktree: Path,
+    branch: str,
+    trust: TrustDB,
+    operator_context: str,
+    is_ghstack: bool,
+    fork_remote: str | None,
+    ignore_sev: bool,
+    trusted_pr: bool,
+    sessions: list[ClaudeSession],
+    pushed_changes: list[PushedChange],
+) -> bool:
+    """Apply one trusted operator-requested follow-up to this PR."""
+    request = operator_context.strip()
+    if not request:
+        die("operator fix requested with empty context")
+
+    log(f"invoking {_llm_label()} for trusted operator fix")
+    ctx_path, _comments = _refresh_context_file(pr_data, trusted=trusted_pr)
+    prompt = render_operator_fix_prompt(
+        url=pr_data.get("url", ""),
+        branch=branch,
+        context_path=str(ctx_path),
+        operator_context=request,
+        is_ghstack=is_ghstack,
+    )
+
+    sha_before = repo.head_sha(worktree)
+    started_at = utc_now_iso()
+    result = claude_mod.invoke_operator_fix(worktree, prompt)
+    ran_cleanly, new_sha, transcript = result
+    _record_claude_session(
+        sessions,
+        mode="operator-fix",
+        sha_before=sha_before,
+        started_at=started_at,
+        ran_cleanly=ran_cleanly,
+        new_sha=new_sha,
+        transcript=transcript,
+        on_commit="pushed operator fix commit {sha}",
+        on_clean_noop="operator fix request already satisfied",
+    )
+    if not ran_cleanly:
+        die(
+            _llm_halt_message(
+                result,
+                f"{_llm_label()} exited abnormally or produced an invalid commit",
+            )
+        )
+    if new_sha is None:
+        log(f"{_llm_label()} made no operator-fix commit")
+        return False
+
+    trust.spurious_check_names = []
+    if is_ghstack:
+        _publish_ghstack_fix(
+            pr, worktree, branch, new_sha, trust, ignore_sev=ignore_sev
+        )
+    else:
+        assert fork_remote is not None
+        trust.trust(new_sha)
+        _safe_push(
+            pr,
+            worktree,
+            fork_remote,
+            branch,
+            new_sha,
+            reason=f"pushing {_llm_label()} operator fix commit",
+            ignore_sev=ignore_sev,
+        )
+        _record_pushed_change(
+            pushed_changes,
+            worktree,
+            new_sha,
+            "pushed an LLM-authored operator fix",
+            source=f"{_llm_label()} operator-fix",
+        )
+    trust.save()
+    return True
+
+
 def _rebase_ghstack_onto_main(
     pr: int,
     worktree: Path,
@@ -831,6 +916,7 @@ def shepherd(
     ignore_sev: bool = False,
     reassess: bool = False,
     extra_context: str | None = None,
+    operator_fix_context: str | None = None,
     manage_mergedog_label: bool = False,
 ) -> None:
     repo.ensure_clone()
@@ -860,6 +946,7 @@ def shepherd(
             ignore_sev,
             reassess,
             extra_context,
+            operator_fix_context,
         )
     finally:
         if labelled:
@@ -877,6 +964,7 @@ def _shepherd_body(
     ignore_sev: bool,
     reassess: bool = False,
     extra_context: str | None = None,
+    operator_fix_context: str | None = None,
 ) -> None:
     is_ghstack = _is_ghstack(pr_data)
     branch = pr_data["headRefName"]
@@ -1033,6 +1121,23 @@ def _shepherd_body(
                 )
         trust.last_observed_failure_body = ""
         trust.save()
+
+    if operator_fix_context is not None:
+        if _run_operator_fix(
+            pr=pr,
+            pr_data=pr_data,
+            worktree=worktree,
+            branch=branch,
+            trust=trust,
+            operator_context=operator_fix_context,
+            is_ghstack=is_ghstack,
+            fork_remote=fork_remote,
+            ignore_sev=ignore_sev,
+            trusted_pr=trusted_pr,
+            sessions=sessions,
+            pushed_changes=pushed_changes,
+        ):
+            fix_commits_pushed += 1
 
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
 

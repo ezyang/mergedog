@@ -11,12 +11,14 @@ Commands typed at the bottom (enter to submit):
 
     add <pr> [extra mergedog flags]   start a shepherd
     <pr>                              shorthand for ``add <pr>``
+    fix <pr> <trusted request>        make an operator-requested follow-up
     restart <pr>                      kill and re-spawn a shepherd
     restart all                       kill and re-spawn every session job
     restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       shorthand for ``add <pr> --rebase``
     rebase all                        re-run every session job with --rebase
     stack <pr>                        start shepherding a ghstack stack
+    stack fix <pr> <trusted request>  operator-requested stack follow-up
     stack restart <pr>                kill and re-spawn a stack
     stack rebase <pr>                 start a stack with --rebase
     stack cancel <pr>                 SIGTERM a stack shepherd (keeps state)
@@ -70,6 +72,7 @@ COMMAND_SUGGESTIONS = [
     "cancel ",
     "cleanup",
     "cleanup all",
+    "fix ",
     "ignore-sev ",
     "log ",
     "mark-spurious ",
@@ -85,6 +88,7 @@ COMMAND_SUGGESTIONS = [
     "restart dead",
     "stack ",
     "stack cancel ",
+    "stack fix ",
     "stack log ",
     "stack rebase ",
     "stack remove ",
@@ -429,7 +433,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "stack <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
+                "fix <pr> | stack <pr> | stack fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
                 "remove <pr> | log <pr> | mergedog-label | migrate | quit"
             ),
             suggester=SuggestFromList(COMMAND_SUGGESTIONS),
@@ -481,6 +485,14 @@ class MuxApp(App):
 
     def _do_stack_add(self, pr: int, extra: list[str]) -> str:
         return self._do_add_job(_stack_job(pr), extra)
+
+    def _operator_fix_args(self, args: list[str]) -> list[str] | str:
+        if not args:
+            return "missing operator fix request"
+        request = " ".join(args).strip()
+        if not request:
+            return "missing operator fix request"
+        return [f"--operator-fix-context={request}"]
 
     def _dead_jobs(self) -> list[JobKey]:
         return sorted(
@@ -785,6 +797,15 @@ class MuxApp(App):
             pr = _parse_pr(args[0])
             self._do_cancel_job(_stack_job(pr), keep_resumable=True)
             return self._do_stack_add(pr, ["--reassess", *args[1:]])
+        if subcmd == "fix":
+            if len(args) < 2:
+                return "usage: stack fix <pr> <trusted request>"
+            pr = _parse_pr(args[0])
+            fix_args = self._operator_fix_args(args[1:])
+            if isinstance(fix_args, str):
+                return fix_args
+            self._do_cancel_job(_stack_job(pr), keep_resumable=True)
+            return self._do_stack_add(pr, fix_args)
         if subcmd in ("cancel", "c", "kill"):
             if not args:
                 return "usage: stack cancel <pr>"
@@ -856,6 +877,15 @@ class MuxApp(App):
                 pr = _parse_pr(rest[0])
                 self._do_cancel_job(_pr_job(pr), keep_resumable=True)
                 return self._do_add(pr, ["--reassess", *rest[1:]])
+            elif cmd == "fix":
+                if len(rest) < 2:
+                    return "usage: fix <pr> <trusted request>"
+                pr = _parse_pr(rest[0])
+                fix_args = self._operator_fix_args(rest[1:])
+                if isinstance(fix_args, str):
+                    return fix_args
+                self._do_cancel_job(_pr_job(pr), keep_resumable=True)
+                return self._do_add(pr, fix_args)
             elif cmd in ("mark-spurious", "spurious", "ignore-failures"):
                 if not rest:
                     return "usage: mark-spurious <pr>"

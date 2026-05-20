@@ -1,6 +1,6 @@
 import unittest
 
-from mergedog.prompts import render_fix_prompt
+from mergedog.prompts import render_fix_prompt, render_operator_fix_prompt
 
 
 _BASE_KWARGS = dict(
@@ -112,6 +112,21 @@ class TestEarlierStackSection(unittest.TestCase):
         )
         self.assertIn('"earlier-stack status" section above', prompt)
         self.assertIn("share a root cause", prompt)
+
+    def test_operator_fix_prompt_uses_trusted_context_without_ci_logs(self):
+        prompt = render_operator_fix_prompt(
+            url="https://github.com/pytorch/pytorch/pull/1",
+            branch="gh/u/1/head",
+            context_path="/tmp/ctx.txt",
+            operator_context="Return type should be a TypeGuard.",
+            is_ghstack=True,
+        )
+
+        self.assertIn("trusted mergedog operator", prompt)
+        self.assertIn("--- begin operator context ---", prompt)
+        self.assertIn("Return type should be a TypeGuard.", prompt)
+        self.assertIn("Do NOT push", prompt)
+        self.assertNotIn("Failed CI jobs", prompt)
 
 
 if __name__ == "__main__":

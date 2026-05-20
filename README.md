@@ -84,7 +84,9 @@ TUI commands (type in the input bar at the bottom):
 | Command | Effect |
 |---|---|
 | `add <pr>` or just `<pr>` | Start shepherding a PR |
+| `fix <pr> <trusted request>` | Restart a PR with a trusted operator request for a one-shot `[MERGEDOG]` follow-up commit |
 | `stack <pr>` or `stack add <pr>` | Start shepherding a ghstack stack |
+| `stack fix <pr> <trusted request>` | Restart a ghstack shepherd with a trusted operator request for a one-shot `[MERGEDOG]` follow-up commit on that stack member |
 | `stack rebase <pr>` | Start shepherding a stack with `--rebase` |
 | `stack restart <pr>` | Kill and re-spawn a stack |
 | `stack cancel <pr>` | SIGTERM the stack shepherd; keep state but do not resume it next mux start |

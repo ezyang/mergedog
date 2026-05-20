@@ -139,6 +139,26 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
             "--extra-context."
         ),
     )
+    operator_fix = parser.add_mutually_exclusive_group()
+    operator_fix.add_argument(
+        "--operator-fix-context",
+        metavar="TEXT",
+        help=(
+            "Trusted operator request for a one-shot mergedog follow-up "
+            "commit. The shepherd invokes the LLM immediately, requires a "
+            "[MERGEDOG] commit or clean no-op, pushes through its normal "
+            "publication path, then resumes shepherding."
+        ),
+    )
+    operator_fix.add_argument(
+        "--operator-fix-context-file",
+        metavar="PATH",
+        type=Path,
+        help=(
+            "Like --operator-fix-context, but reads the trusted request "
+            "from a file. Useful for longer reviewer instructions."
+        ),
+    )
 
 
 def _resolve_extra_context(args: argparse.Namespace) -> str | None:
@@ -148,6 +168,15 @@ def _resolve_extra_context(args: argparse.Namespace) -> str | None:
         except OSError as e:
             raise SystemExit(f"failed to read --extra-context-file: {e}")
     return args.extra_context
+
+
+def _resolve_operator_fix_context(args: argparse.Namespace) -> str | None:
+    if args.operator_fix_context_file is not None:
+        try:
+            return args.operator_fix_context_file.read_text()
+        except OSError as e:
+            raise SystemExit(f"failed to read --operator-fix-context-file: {e}")
+    return args.operator_fix_context
 
 
 def _single_main(argv: list[str]) -> int:
@@ -176,6 +205,7 @@ def _single_main(argv: list[str]) -> int:
             reassess=args.reassess,
             manage_mergedog_label=args.manage_mergedog_label,
             extra_context=_resolve_extra_context(args),
+            operator_fix_context=_resolve_operator_fix_context(args),
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
@@ -223,6 +253,7 @@ def _stack_main(argv: list[str]) -> int:
             force_ghstack=args.force_ghstack,
             manage_mergedog_label=args.manage_mergedog_label,
             extra_context=_resolve_extra_context(args),
+            operator_fix_context=_resolve_operator_fix_context(args),
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)

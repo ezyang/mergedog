@@ -599,6 +599,11 @@ def invoke_fixer(worktree: Path, prompt: str) -> LLMResult:
     return _invoke(worktree, prompt, mode="fix-CI", expect_merge_commit=False)
 
 
+def invoke_operator_fix(worktree: Path, prompt: str) -> LLMResult:
+    """Run the configured LLM in the worktree for a trusted operator request."""
+    return _invoke(worktree, prompt, mode="operator-fix", expect_merge_commit=False)
+
+
 def invoke_merge_resolver(worktree: Path, prompt: str) -> LLMResult:
     """Run the configured LLM in a mid-merge worktree to resolve conflicts."""
     return _invoke(worktree, prompt, mode="merge-resolver", expect_merge_commit=True)

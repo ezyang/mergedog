@@ -50,7 +50,11 @@ from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
 from mergedog.log import configure_log_file, die, log
 from mergedog.paths import PUSHED_COMMITS_LOG, REPO_SSH_URL, ROOT, context_file
 from mergedog.project import get_project_policy
-from mergedog.prompts import render_fix_prompt, render_rebase_conflict_prompt
+from mergedog.prompts import (
+    render_fix_prompt,
+    render_operator_fix_prompt,
+    render_rebase_conflict_prompt,
+)
 from mergedog.shepherd import (
     APPROVAL_SETTLE_SEC,
     CI_STABILITY_WINDOW_SEC,
@@ -605,6 +609,84 @@ def _try_fix(
     return True
 
 
+def _operator_fix(
+    ctx: _MemberCtx,
+    contexts: list[_MemberCtx],
+    target_idx: int,
+    worktree: Path,
+    sessions: list[ClaudeSession],
+    *,
+    operator_context: str,
+    ignore_sev: bool,
+    force_ghstack: bool,
+) -> bool:
+    """Apply one trusted operator-requested follow-up to a stack member."""
+    pr = ctx.member.pr
+    request = operator_context.strip()
+    if not request:
+        die(f"PR #{pr}: operator fix requested with empty context")
+
+    log(f"PR #{pr}: invoking {_llm_label()} for trusted operator fix")
+    ctx_path, _comments = _refresh_context_for(ctx)
+    prompt = render_operator_fix_prompt(
+        url=ctx.pr_data.get("url", ""),
+        branch=ctx.member.head_ref,
+        context_path=str(ctx_path),
+        operator_context=request,
+        is_ghstack=True,
+        earlier_in_stack=target_idx,
+    )
+
+    _reconstruct_stack_up_to(contexts, target_idx, worktree)
+
+    sha_before = ctx.head_sha
+    started_at = utc_now_iso()
+    result = claude_mod.invoke_operator_fix(worktree, prompt)
+    ran_cleanly, new_sha, transcript = result
+    _record_claude_session(
+        sessions,
+        mode=f"operator-fix #{pr}",
+        sha_before=sha_before,
+        started_at=started_at,
+        ran_cleanly=ran_cleanly,
+        new_sha=new_sha,
+        transcript=transcript,
+        on_commit=f"pushed operator fix commit {{sha}} on PR #{pr}",
+        on_clean_noop=f"operator fix request already satisfied on PR #{pr}",
+    )
+    if not ran_cleanly:
+        die(
+            f"PR #{pr}: "
+            + _llm_halt_message(
+                result,
+                f"{_llm_label()} exited abnormally or produced an invalid commit",
+            )
+        )
+
+    if new_sha is None:
+        log(f"PR #{pr}: {_llm_label()} made no operator-fix commit")
+        return False
+
+    ctx.spurious_check_names.clear()
+    ctx.trust.spurious_check_names = []
+    ctx.trust.save()
+
+    fix_message = repo.commit_message(worktree, new_sha)
+    repo.fixup_into_parent(worktree)
+
+    _publish_fix(
+        ctx,
+        worktree,
+        submit_message=fix_message,
+        ignore_sev=ignore_sev,
+        force_ghstack=force_ghstack,
+    )
+    _record_pushed_commit("fix", pr, ctx.head_sha, fix_message)
+    ctx.fix_commits_pushed += 1
+    ctx.last_status = None
+    return True
+
+
 def _propagation_needed(
     contexts: list[_MemberCtx], now: float
 ) -> bool:
@@ -1085,6 +1167,7 @@ def run_stack(
     force_ghstack: bool = False,
     manage_mergedog_label: bool = False,
     extra_context: str | None = None,
+    operator_fix_context: str | None = None,
 ) -> None:
     repo.ensure_clone()
     # Fetch just origin/main (needed for merge-base in stack discovery)
@@ -1148,6 +1231,23 @@ def run_stack(
         sessions_by_pr: dict[int, list[ClaudeSession]] = {
             ctx.member.pr: [] for ctx in contexts
         }
+        if operator_fix_context is not None:
+            target_idx = next(
+                i for i, ctx in enumerate(contexts) if ctx.member.pr == pr
+            )
+            _operator_fix(
+                contexts[target_idx],
+                contexts,
+                target_idx,
+                worktree,
+                sessions_by_pr[contexts[target_idx].member.pr],
+                operator_context=operator_fix_context,
+                ignore_sev=ignore_sev,
+                force_ghstack=force_ghstack,
+            )
+            for ctx in contexts:
+                ctx.last_status = None
+
         if rebase:
             log("user requested upfront rebase of stack onto origin/main")
             _rebase_stack_prefix_onto_main(
