@@ -1,9 +1,9 @@
 """PR autolabeling via Claude.
 
 Fetches available labels from GitHub (with a file-based cache), asks Claude
-to classify the PR, and applies the suggested labels. Runs at most once per
-PR: if the PR already carries a ``release notes:`` or ``topic:`` label, the
-labeling step is skipped entirely.
+to classify the PR, and applies the suggested labels. Runs when the PR does
+not yet carry sufficient release-note labels: either ``topic: not user facing``
+or both a ``release notes:`` label and a ``topic:`` label.
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _pr_needs_autolabel(pr_data: dict) -> bool:
         return False
     has_release_notes = any(n.startswith(_RELEASE_NOTES_PREFIX) for n in existing)
     has_topic = any(n.startswith(_TOPIC_PREFIX) for n in existing)
-    return not (has_release_notes or has_topic)
+    return not (has_release_notes and has_topic)
 
 
 _LABEL_PROMPT = """\
@@ -78,6 +78,8 @@ There are two independent label groups to consider:
 
 1. **Release notes / topic labels** (exactly one required):
    These classify the PR for release note generation.
+   Treat existing labels as already applied, and only suggest the missing \
+   label(s) needed to make the PR satisfy these rules.
    - If the PR is NOT user-facing (internal refactoring, CI fixes, test-only \
      changes, build system changes, documentation-only, etc.), apply ONLY \
      ``topic: not user facing``. Do NOT also add a ``release notes:`` label.
@@ -98,6 +100,7 @@ PR information:
 
   Title: {title}
   URL: {url}
+  Existing labels: {existing_labels}
 
   Body:
 {body}
@@ -203,10 +206,11 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
         log("autolabel: skipped for non-PyTorch repo")
         return
     if not _pr_needs_autolabel(pr_data):
-        log("autolabel: PR already has release notes / topic labels; skipping")
+        log("autolabel: PR already has sufficient release notes labels; skipping")
         return
 
     ciflow, release_notes, topic = _get_relevant_labels()
+    existing = {l.get("name", "") for l in pr_data.get("labels", [])}
     changed_files = _get_changed_files(pr)
     body = pr_data.get("body", "") or ""
     if len(body) > 3000:
@@ -221,6 +225,7 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
         labels_section=_format_labels_section(ciflow, release_notes, topic),
         title=untaint(pr_data.get("title", "")),
         url=pr_data.get("url", ""),
+        existing_labels=untaint(", ".join(sorted(existing)) or "(none)"),
         body=untaint(body),
         changed_files=untaint(files_str) if files_str else "    (unavailable)",
     )
@@ -232,7 +237,6 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
         log("autolabel: no valid labels suggested")
         return
 
-    existing = {l.get("name", "") for l in pr_data.get("labels", [])}
     for label in validated:
         if label not in existing:
             log(f"autolabel: adding {label!r}")
