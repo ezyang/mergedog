@@ -57,6 +57,8 @@ def _format_handoff_comment(
     sessions: list[ClaudeSession],
     *,
     pushed_changes: list[PushedChange] | None = None,
+    suppressed_failures: list[str] | None = None,
+    drci_summary: str | None = None,
     recovering: bool = False,
 ) -> str:
     """Build the markdown body posted on the PR at handoff.
@@ -74,6 +76,7 @@ def _format_handoff_comment(
     )
     n = len(sessions)
     changes = list(pushed_changes or [])
+    suppressed = sorted(set(suppressed_failures or []))
     seen_change_shas = {c.sha for c in changes}
     for s in sessions:
         if s.sha_after and s.sha_after not in seen_change_shas:
@@ -118,6 +121,7 @@ def _format_handoff_comment(
             head.append(
                 "No mergedog-authored commits were pushed during this run."
             )
+        head.extend(_format_ci_notes(suppressed, drci_summary))
         head.extend(
             [
                 "",
@@ -139,6 +143,7 @@ def _format_handoff_comment(
         head.append("")
         head.append("- None.")
         head.append("")
+    head.extend(_format_ci_notes(suppressed, drci_summary))
     head.append(
         f"During shepherding, the configured LLM was invoked **{n}** time"
         f"{'' if n == 1 else 's'}. If any CI shows red, it judged that "
@@ -178,6 +183,47 @@ def _format_handoff_comment(
     return marker + body
 
 
+def _format_ci_notes(
+    suppressed_failures: list[str], drci_summary: str | None
+) -> list[str]:
+    if not suppressed_failures and not drci_summary:
+        return []
+    lines = ["### CI notes at handoff", ""]
+    if suppressed_failures:
+        lines.extend(
+            [
+                "mergedog is treating these still-failing checks as "
+                "unrelated/spurious. Please verify before merging:",
+                "",
+            ]
+        )
+        lines.extend(f"- `{name}`" for name in suppressed_failures)
+        lines.append("")
+    if drci_summary:
+        lines.extend(
+            [
+                "<details><summary>Latest Dr. CI summary</summary>",
+                "",
+                "```markdown",
+                _truncate_drci_summary(drci_summary),
+                "```",
+                "",
+                "</details>",
+                "",
+            ]
+        )
+    return lines
+
+
+def _truncate_drci_summary(summary: str, limit: int = 8000) -> str:
+    if len(summary) <= limit:
+        return summary
+    return (
+        summary[:limit]
+        + "\n\n_[truncated; see the PR's Dr. CI comment for the full summary]_"
+    )
+
+
 def _format_pushed_change_lines(changes: list[PushedChange]) -> list[str]:
     lines: list[str] = []
     for change in changes:
@@ -197,6 +243,8 @@ def post_handoff_comment(
     sessions: list[ClaudeSession],
     *,
     pushed_changes: list[PushedChange] | None = None,
+    suppressed_failures: list[str] | None = None,
+    drci_summary: str | None = None,
     force: bool = False,
     recovering: bool = False,
 ) -> None:
@@ -215,6 +263,8 @@ def post_handoff_comment(
         pr_data,
         sessions,
         pushed_changes=pushed_changes,
+        suppressed_failures=suppressed_failures,
+        drci_summary=drci_summary,
         recovering=recovering,
     )
     try:

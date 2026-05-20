@@ -58,6 +58,31 @@ class TestHandoffComments(unittest.TestCase):
             body,
         )
 
+    def test_handoff_comment_surfaces_suppressed_failures(self):
+        body = handoff._format_handoff_comment(
+            {
+                "number": 101,
+                "headRefOid": "b" * 40,
+            },
+            [],
+            suppressed_failures=[
+                "lintrunner-noclang-all / lint",
+                "dtensor-test / test-osdc",
+            ],
+            drci_summary=(
+                "Dr. CI detected failures:\n"
+                "- lintrunner-noclang-all / lint failed"
+            ),
+        )
+
+        self.assertIn("### CI notes at handoff", body)
+        self.assertIn(
+            "still-failing checks as unrelated/spurious", body
+        )
+        self.assertIn("`lintrunner-noclang-all / lint`", body)
+        self.assertIn("Latest Dr. CI summary", body)
+        self.assertIn("lintrunner-noclang-all / lint failed", body)
+
     def test_handoff_comment_idempotency_is_scoped_to_head(self):
         comments = [
             {

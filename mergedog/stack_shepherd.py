@@ -921,6 +921,20 @@ def _apply_trunk(ctx: _MemberCtx, *, ignore_sev: bool) -> None:
     ctx.stable_observation = None
 
 
+def _latest_drci_summary_for_handoff(ctx: _MemberCtx) -> str | None:
+    if not ctx.spurious_check_names:
+        return None
+    try:
+        comments = github.get_pr_comments(ctx.member.pr)
+        return github.latest_drci_summary(comments, head_sha=ctx.head_sha)
+    except Exception as e:
+        log(
+            f"WARNING: could not fetch Dr. CI summary for PR "
+            f"#{ctx.member.pr} handoff: {e}"
+        )
+        return None
+
+
 def _all_trunk_green_stable(
     contexts: list[_MemberCtx], now: float
 ) -> bool:
@@ -1229,6 +1243,8 @@ def run_stack(
                         ctx.member.pr,
                         ctx.pr_data,
                         sessions_by_pr[ctx.member.pr],
+                        suppressed_failures=sorted(ctx.spurious_check_names),
+                        drci_summary=_latest_drci_summary_for_handoff(ctx),
                     )
 
                 since_by_pr: dict[int, str] = {}

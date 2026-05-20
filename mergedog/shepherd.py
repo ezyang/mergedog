@@ -681,6 +681,19 @@ def _record_pushed_change(
     )
 
 
+def _latest_drci_summary_for_handoff(
+    pr: int, head_sha: str, spurious_check_names: set[str]
+) -> str | None:
+    if not spurious_check_names:
+        return None
+    try:
+        comments = github.get_pr_comments(pr)
+        return github.latest_drci_summary(comments, head_sha=head_sha)
+    except Exception as e:
+        log(f"WARNING: could not fetch Dr. CI summary for handoff: {e}")
+        return None
+
+
 def _approve_pending_runs(
     sha: str, run_state_cache: dict[int, tuple[str | None, str | None]]
 ) -> int:
@@ -1551,6 +1564,10 @@ def _shepherd_body(
             pr_data,
             sessions,
             pushed_changes=pushed_changes,
+            suppressed_failures=sorted(spurious_check_names),
+            drci_summary=_latest_drci_summary_for_handoff(
+                pr, current, spurious_check_names
+            ),
             recovering=recovery_attempts > 0,
         )
         # Anchor the watch loop on the actual handoff comment timestamp,
