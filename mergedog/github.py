@@ -22,6 +22,15 @@ REPO = REPO_SLUG
 PROJECT = get_project_policy()
 
 _GH_TRANSIENT_CODES = ("502", "504", "503")
+_GH_TRANSIENT_MESSAGES = (
+    "error connecting to api.github.com",
+    "connection reset",
+    "connection refused",
+    "connection timed out",
+    "i/o timeout",
+    "tls handshake timeout",
+    "temporary failure",
+)
 _GH_MAX_RETRIES = 3
 _GH_RETRY_DELAY = 5  # seconds
 
@@ -31,7 +40,10 @@ def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
     if proc.returncode == 0:
         return False
     stderr = proc.stderr or ""
-    return any(code in stderr for code in _GH_TRANSIENT_CODES)
+    stderr_lower = stderr.lower()
+    return any(code in stderr for code in _GH_TRANSIENT_CODES) or any(
+        msg in stderr_lower for msg in _GH_TRANSIENT_MESSAGES
+    )
 
 
 def _gh(
@@ -40,6 +52,8 @@ def _gh(
     for attempt in range(_GH_MAX_RETRIES):
         proc = run(["gh", *args], check=False, loud=(loud and attempt == 0))
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
+            if attempt > 0 and proc.returncode == 0:
+                log("  gh recovered after transient failure")
             if check and proc.returncode != 0:
                 # Replicate the stderr logging that run(check=True) does.
                 err = (proc.stderr or "").rstrip()
