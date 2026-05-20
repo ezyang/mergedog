@@ -49,6 +49,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -161,6 +162,7 @@ TITLE_TRUNC = 20
 JobKey = tuple[str, int]
 PR_JOB = "pr"
 STACK_JOB = "stack"
+_STACK_PARENT_RE = re.compile(r"\bstack parent(?: PR)? #(\d+)\b")
 
 
 def _pr_job(pr: int) -> JobKey:
@@ -271,10 +273,30 @@ def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:
     return sha, parent
 
 
-def _stack_display_layout(jobs: list[JobKey]) -> tuple[list[JobKey], dict[JobKey, int]]:
+def _read_stack_parent_pr_from_log(path: Path) -> int | None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fp:
+            lines = fp.readlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        m = _STACK_PARENT_RE.search(line)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _stack_display_layout(
+    jobs: list[JobKey],
+    parent_hints: dict[JobKey, JobKey] | None = None,
+) -> tuple[list[JobKey], dict[JobKey, int]]:
     """Return jobs sorted with local PR commit stacks grouped bottom-up."""
     base_order = sorted(jobs)
     base_index = {job: i for i, job in enumerate(base_order)}
+    job_set = set(base_order)
 
     sha_by_job: dict[JobKey, str] = {}
     parent_sha_by_job: dict[JobKey, str] = {}
@@ -300,11 +322,19 @@ def _stack_display_layout(jobs: list[JobKey]) -> tuple[list[JobKey], dict[JobKey
 
     parent_of: dict[JobKey, JobKey] = {}
     children: dict[JobKey, list[JobKey]] = {job: [] for job in base_order}
+    for job, parent in (parent_hints or {}).items():
+        if job not in job_set or parent not in job_set or parent == job:
+            continue
+        parent_of[job] = parent
+
     for job, parent_sha in parent_sha_by_job.items():
+        if job in parent_of:
+            continue
         parent = unique_job_by_sha.get(parent_sha)
         if parent is None or parent == job:
             continue
         parent_of[job] = parent
+    for job, parent in parent_of.items():
         children[parent].append(job)
     for child_jobs in children.values():
         child_jobs.sort(key=lambda job: base_index[job])
@@ -856,7 +886,15 @@ class MuxApp(App):
     def _refresh(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
-        jobs, depths = _stack_display_layout(list(self.procs))
+        parent_hints: dict[JobKey, JobKey] = {}
+        for job, (_, _, log_path) in self.procs.items():
+            kind, _ = job
+            if kind != PR_JOB:
+                continue
+            parent_pr = _read_stack_parent_pr_from_log(log_path)
+            if parent_pr is not None:
+                parent_hints[job] = _pr_job(parent_pr)
+        jobs, depths = _stack_display_layout(list(self.procs), parent_hints)
         for job in jobs:
             kind, pr = job
             p, _, log_path = self.procs[job]
@@ -884,14 +922,12 @@ class MuxApp(App):
             # the worktree path is omitted from the table entirely now,
             # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
             # it from the shell.
+            indent = "  " * depths.get(job, 0)
             pr_cell = Text(
-                _job_label(job),
+                indent + _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
-            indent = "  " * depths.get(job, 0)
-            table.add_row(
-                pr_cell, Text(indent + _truncate_title(title)), state, last
-            )
+            table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
 
     def _prune_job(self, job: JobKey | int) -> None:
         """Forget a shepherd and clean up its on-disk state.

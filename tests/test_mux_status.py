@@ -69,6 +69,37 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(depths[mux._pr_job(10)], 1)
         self.assertEqual(depths[mux._pr_job(30)], 0)
 
+    def test_stack_display_layout_uses_parent_hints_before_commit_graph(self):
+        jobs = [mux._pr_job(10), mux._pr_job(20)]
+        parents = {
+            10: ("C10", "OLD_PARENT"),
+            20: ("C20", "MAIN"),
+        }
+
+        with mock.patch.object(
+            mux,
+            "_read_pr_commit_parent",
+            side_effect=lambda pr: parents[pr],
+        ):
+            ordered, depths = mux._stack_display_layout(
+                jobs,
+                {mux._pr_job(10): mux._pr_job(20)},
+            )
+
+        self.assertEqual(ordered, [mux._pr_job(20), mux._pr_job(10)])
+        self.assertEqual(depths[mux._pr_job(10)], 1)
+
+    def test_read_stack_parent_pr_from_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "10.log"
+            log_path.write_text(
+                "[12:29:22] stack parent PR #20 advanced; parent CI is pending\n"
+            )
+
+            parent = mux._read_stack_parent_pr_from_log(log_path)
+
+        self.assertEqual(parent, 20)
+
     def test_refresh_indents_child_stack_rows(self):
         with tempfile.TemporaryDirectory() as d:
             parent_log = Path(d) / "20.log"
@@ -98,8 +129,10 @@ class TestMuxStructuredStatus(unittest.TestCase):
             ):
                 app._refresh()
 
+        self.assertEqual(table.rows[0][0].plain, "20")
+        self.assertEqual(table.rows[1][0].plain, "  10")
         self.assertEqual(table.rows[0][1].plain, "Parent commit")
-        self.assertEqual(table.rows[1][1].plain, "  Child commit")
+        self.assertEqual(table.rows[1][1].plain, "Child commit")
 
     def test_format_status_includes_shepherd_status_sidecar(self):
         with tempfile.TemporaryDirectory() as d:
