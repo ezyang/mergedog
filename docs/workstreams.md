@@ -180,8 +180,8 @@ which is an implementation detail, not a user-facing concept.
 > rather than implementation details.
 >
 > Context: the mux is a Textual TUI (`mergedog/mux.py`) showing a
-> DataTable with columns: PR, Title, status-emoji, Last-log-line.
-> The status emoji is 🟢 (alive), ✅ (exited 0), 🔴 (exited non-zero).
+> DataTable with columns: PR, Title, status indicator, Last-log-line.
+> The status indicator is 🟢 (alive), blank (exited 0), 🔴 (exited non-zero).
 > Users don't know what these mean — a dogfooder thought 🟢 meant
 > "ready to merge."
 >

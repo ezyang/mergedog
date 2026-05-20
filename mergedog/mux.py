@@ -762,7 +762,7 @@ class MuxApp(App):
             if rc is None:
                 state = "🟢"
             elif rc in (0, EXIT_PR_NOT_ACTIONABLE):
-                state = "✅"
+                state = ""
             else:
                 state = "🔴"
             last = _last_log_line(log_path)

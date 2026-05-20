@@ -111,6 +111,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         prune_job.assert_not_called()
         self.assertEqual(len(table.rows), 1)
+        self.assertEqual(table.rows[0][2], "")
 
 
 class TestMuxCommands(unittest.TestCase):
