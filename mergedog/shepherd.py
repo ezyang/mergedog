@@ -1523,7 +1523,11 @@ def _shepherd_body(
                     f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
                 )
                 log(f"CI green; applying {TRUNK_LABEL} label")
-                github.add_label(pr, TRUNK_LABEL)
+                github.add_label(pr, TRUNK_LABEL, loud=False)
+                log(
+                    f"{TRUNK_LABEL} label applied; "
+                    "waiting for trunk workflows to appear"
+                )
                 trunk_applied = True
                 last_status = None
                 time.sleep(APPROVAL_SETTLE_SEC)

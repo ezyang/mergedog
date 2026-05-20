@@ -246,6 +246,39 @@ class TestTrunkPromotionTarget(unittest.TestCase):
             )
 
 
+class TestApplyTrunk(unittest.TestCase):
+    def test_logs_state_after_silent_label_application(self):
+        ctx = _mk_ctx(
+            orig_sha="A",
+            status="passed",
+            stable_for=CI_STABILITY_WINDOW_SEC + 1,
+        )
+        ctx.member = StackMember(
+            pr=123,
+            head_ref="gh/u/123/head",
+            orig_ref="gh/u/123/orig",
+        )
+
+        with mock.patch.object(
+            stack_shepherd, "_wait_for_no_active_sev"
+        ) as wait_sev, mock.patch.object(
+            stack_shepherd.github, "add_label"
+        ) as add_label, mock.patch.object(
+            stack_shepherd, "log"
+        ) as log:
+            stack_shepherd._apply_trunk(ctx, ignore_sev=True)
+
+        wait_sev.assert_called_once()
+        add_label.assert_called_once_with(
+            123, stack_shepherd.TRUNK_LABEL, loud=False
+        )
+        self.assertTrue(ctx.trunk_applied)
+        self.assertIsNone(ctx.last_status)
+        self.assertIsNone(ctx.stable_observation)
+        self.assertIn("CI green; applying", log.call_args_list[0].args[0])
+        self.assertIn("waiting for trunk workflows", log.call_args_list[1].args[0])
+
+
 class TestAllTrunkGreenStable(unittest.TestCase):
     def test_all_satisfied(self):
         a = _mk_ctx(

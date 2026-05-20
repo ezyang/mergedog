@@ -911,7 +911,11 @@ def _apply_trunk(ctx: _MemberCtx, *, ignore_sev: bool) -> None:
         f"applying {TRUNK_LABEL} to PR #{pr}", ignore_sev=ignore_sev
     )
     log(f"PR #{pr}: CI green; applying {TRUNK_LABEL} label")
-    github.add_label(pr, TRUNK_LABEL)
+    github.add_label(pr, TRUNK_LABEL, loud=False)
+    log(
+        f"PR #{pr}: {TRUNK_LABEL} label applied; "
+        "waiting for trunk workflows to appear"
+    )
     ctx.trunk_applied = True
     ctx.last_status = None
     ctx.stable_observation = None

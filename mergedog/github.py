@@ -346,10 +346,10 @@ def get_pr_checks_all(pr: int) -> list[dict]:
     )
 
 
-def add_label(pr: int, label: str) -> None:
+def add_label(pr: int, label: str, *, loud: bool = True) -> None:
     _gh(
         ["pr", "edit", str(pr), "--repo", REPO, "--add-label", label],
-        loud=True,
+        loud=loud,
     )
 
 
