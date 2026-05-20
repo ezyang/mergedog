@@ -224,6 +224,37 @@ class TestFetchFailedJobLogs(unittest.TestCase):
             [("job one", "FAILED: job 101"), ("job two", "FAILED: job 102")],
         )
 
+    def test_trims_parallel_failed_logs_on_main_thread(self):
+        checks = [
+            {
+                "name": "job one",
+                "state": "FAILURE",
+                "link": "https://github.com/pytorch/pytorch/actions/runs/1/job/101",
+            },
+            {
+                "name": "job two",
+                "state": "FAILURE",
+                "link": "https://github.com/pytorch/pytorch/actions/runs/2/job/102",
+            },
+        ]
+
+        def fake_trim(text: str, max_chars: int) -> str:
+            self.assertIs(threading.current_thread(), threading.main_thread())
+            return text
+
+        with (
+            mock.patch.object(github, "get_pr_checks_all", return_value=checks),
+            mock.patch.object(github, "_fetch_job_log", return_value="FAILED"),
+            mock.patch.object(github, "_trim_log_for_prompt", side_effect=fake_trim),
+            mock.patch.object(github, "log"),
+        ):
+            out = github.get_failed_job_logs(123, max_jobs=2, max_chars=1000)
+
+        self.assertEqual(
+            [(str(name), str(text)) for name, text in out],
+            [("job one", "FAILED"), ("job two", "FAILED")],
+        )
+
     def test_caches_full_failed_log_before_trimming(self):
         checks = [
             {

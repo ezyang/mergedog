@@ -795,13 +795,18 @@ def _cache_failed_job_log(
         log(f"PR #{pr}: could not cache full log for {name!r}: {e}")
 
 
-def _fetch_and_trim_job_log(
-    spec: tuple[str, int, int | None], max_chars: int, pr: int | None = None
+def _fetch_raw_job_log(
+    spec: tuple[str, int, int | None], pr: int | None = None
 ) -> tuple[str, str]:
     name, run_id, job_id = spec
     text = _fetch_job_log(run_id, job_id)
     if pr is not None and text != "<no log available>":
         _cache_failed_job_log(pr, name, run_id, job_id, text)
+    return (name, text)
+
+
+def _trim_failed_job_log(raw: tuple[str, str], max_chars: int) -> tuple[str, str]:
+    name, text = raw
     text = _trim_log_for_prompt(text, max_chars)
     return (taint(name, "ci_log"), taint(text, "ci_log"))
 
@@ -810,13 +815,17 @@ def _fetch_failed_job_logs_parallel(
     specs: list[tuple[str, int, int | None]], max_chars: int, pr: int | None = None
 ) -> list[tuple[str, str]]:
     if len(specs) <= 1:
-        return [_fetch_and_trim_job_log(spec, max_chars, pr) for spec in specs]
-    with ThreadPoolExecutor(max_workers=len(specs)) as ex:
-        futures = [
-            ex.submit(_fetch_and_trim_job_log, spec, max_chars, pr)
+        return [
+            _trim_failed_job_log(_fetch_raw_job_log(spec, pr), max_chars)
             for spec in specs
         ]
-        return [future.result() for future in futures]
+    with ThreadPoolExecutor(max_workers=len(specs)) as ex:
+        futures = [
+            ex.submit(_fetch_raw_job_log, spec, pr)
+            for spec in specs
+        ]
+        raw_logs = [future.result() for future in futures]
+    return [_trim_failed_job_log(raw, max_chars) for raw in raw_logs]
 
 
 def get_failed_job_logs(
