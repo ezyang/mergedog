@@ -159,6 +159,11 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
             "from a file. Useful for longer reviewer instructions."
         ),
     )
+    parser.add_argument(
+        "--operator-fix-pr",
+        type=_parse_pr,
+        help=argparse.SUPPRESS,
+    )
 
 
 def _resolve_extra_context(args: argparse.Namespace) -> str | None:
@@ -254,6 +259,7 @@ def _stack_main(argv: list[str]) -> int:
             manage_mergedog_label=args.manage_mergedog_label,
             extra_context=_resolve_extra_context(args),
             operator_fix_context=_resolve_operator_fix_context(args),
+            operator_fix_pr=args.operator_fix_pr,
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)

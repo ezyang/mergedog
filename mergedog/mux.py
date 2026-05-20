@@ -191,6 +191,19 @@ def _job_log_name(job: JobKey | int) -> str:
     return f"{pr}.log"
 
 
+def _canonical_stack_pr(pr: int) -> int:
+    """Return the bottom PR for the stack containing ``pr`` when available."""
+    try:
+        from mergedog.stack import resolve_stack
+
+        members, _ = resolve_stack(pr)
+        if members:
+            return members[0].pr
+    except Exception:
+        pass
+    return pr
+
+
 def _read_pr_title(pr: int) -> str:
     """Best-effort PR title from the worktree's HEAD subject.
 
@@ -351,9 +364,12 @@ def _resolve_initial_jobs(
 def _spawn(
     job: JobKey | int,
     extra: list[str],
+    *,
+    spawn_pr: int | None = None,
 ) -> tuple[subprocess.Popen, object, Path]:
     job = _coerce_job(job)
     kind, pr = job
+    arg_pr = spawn_pr if spawn_pr is not None else pr
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / _job_log_name(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
@@ -361,7 +377,7 @@ def _spawn(
     command = [sys.executable, "-m", "mergedog"]
     if kind == STACK_JOB:
         command.append("stack")
-    command.extend([str(pr), *extra])
+    command.extend([str(arg_pr), *extra])
     p = subprocess.Popen(
         command,
         stdout=f,
@@ -443,7 +459,11 @@ class MuxApp(App):
         table = self.query_one(DataTable)
         table.add_columns("PR", "Title", "", "Last")
         for job in self._initial:
-            self._do_add_job(job, [])
+            kind, pr = _coerce_job(job)
+            if kind == STACK_JOB:
+                self._do_stack_add(pr, [])
+            else:
+                self._do_add_job(job, [])
         self._refresh()
         self.set_interval(2.0, self._refresh)
         self.query_one(HistoryInput).focus()
@@ -467,16 +487,27 @@ class MuxApp(App):
             out = [f"--repo={self.repo_slug}", *out]
         return out
 
-    def _do_add_job(self, job: JobKey | int, extra: list[str]) -> str:
+    def _do_add_job(
+        self,
+        job: JobKey | int,
+        extra: list[str],
+        *,
+        spawn_pr: int | None = None,
+        alias_job: JobKey | None = None,
+    ) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
         if job in self.procs and self.procs[job][0].poll() is None:
             return f"[{label}] already running"
         try:
-            self.procs[job] = _spawn(job, self._shepherd_args(extra))
+            self.procs[job] = _spawn(
+                job, self._shepherd_args(extra), spawn_pr=spawn_pr
+            )
         except Exception as e:
             return f"[{label}] spawn failed: {e}"
         self._pr_titles.pop(job, None)
+        if alias_job is not None and alias_job != job:
+            _remove_mux_job(alias_job)
         _add_mux_job(job)
         return f"[{label}] started"
 
@@ -484,15 +515,37 @@ class MuxApp(App):
         return self._do_add_job(_pr_job(pr), extra)
 
     def _do_stack_add(self, pr: int, extra: list[str]) -> str:
-        return self._do_add_job(_stack_job(pr), extra)
+        bottom_pr = _canonical_stack_pr(pr)
+        if any(
+            a == "--operator-fix-context"
+            or a.startswith("--operator-fix-context=")
+            or a == "--operator-fix-context-file"
+            or a.startswith("--operator-fix-context-file=")
+            for a in extra
+        ) and not any(
+            a == "--operator-fix-pr" or a.startswith("--operator-fix-pr=")
+            for a in extra
+        ):
+            extra = [*extra, f"--operator-fix-pr={pr}"]
+        return self._do_add_job(
+            _stack_job(bottom_pr),
+            extra,
+            spawn_pr=bottom_pr,
+            alias_job=_stack_job(pr),
+        )
 
-    def _operator_fix_args(self, args: list[str]) -> list[str] | str:
+    def _operator_fix_args(
+        self, args: list[str], *, pr: int | None = None
+    ) -> list[str] | str:
         if not args:
             return "missing operator fix request"
         request = " ".join(args).strip()
         if not request:
             return "missing operator fix request"
-        return [f"--operator-fix-context={request}"]
+        out = [f"--operator-fix-context={request}"]
+        if pr is not None:
+            out.append(f"--operator-fix-pr={pr}")
+        return out
 
     def _dead_jobs(self) -> list[JobKey]:
         return sorted(
@@ -801,7 +854,7 @@ class MuxApp(App):
             if len(args) < 2:
                 return "usage: stack fix <pr> <trusted request>"
             pr = _parse_pr(args[0])
-            fix_args = self._operator_fix_args(args[1:])
+            fix_args = self._operator_fix_args(args[1:], pr=pr)
             if isinstance(fix_args, str):
                 return fix_args
             self._do_cancel_job(_stack_job(pr), keep_resumable=True)

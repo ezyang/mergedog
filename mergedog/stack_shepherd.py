@@ -1168,6 +1168,7 @@ def run_stack(
     manage_mergedog_label: bool = False,
     extra_context: str | None = None,
     operator_fix_context: str | None = None,
+    operator_fix_pr: int | None = None,
 ) -> None:
     repo.ensure_clone()
     # Fetch just origin/main (needed for merge-base in stack discovery)
@@ -1232,8 +1233,9 @@ def run_stack(
             ctx.member.pr: [] for ctx in contexts
         }
         if operator_fix_context is not None:
+            target_pr = operator_fix_pr or pr
             target_idx = next(
-                i for i, ctx in enumerate(contexts) if ctx.member.pr == pr
+                i for i, ctx in enumerate(contexts) if ctx.member.pr == target_pr
             )
             _operator_fix(
                 contexts[target_idx],

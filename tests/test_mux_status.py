@@ -220,7 +220,56 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "[stack 123] started")
         cancel.assert_called_once_with(mux._stack_job(123), keep_resumable=True)
         stack_add.assert_called_once_with(
-            123, ["--operator-fix-context=Return type should be TypeGuard"]
+            123,
+            [
+                "--operator-fix-context=Return type should be TypeGuard",
+                "--operator-fix-pr=123",
+            ],
+        )
+
+    def test_stack_add_canonicalizes_to_bottom_pr(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {}
+        app._pr_titles = {}
+        app.ignore_sev = False
+        app.manage_mergedog_label = False
+        app.gchat_to = None
+        app.repo_slug = None
+
+        with mock.patch.object(
+            mux, "_canonical_stack_pr", return_value=100
+        ), mock.patch.object(mux, "_spawn") as spawn:
+            spawn.return_value = (_FakeProc(None), object(), Path("stack-100.log"))
+            result = app._do_stack_add(123, ["--ignore-sev"])
+
+        self.assertEqual(result, "[stack 100] started")
+        self.assertIn(mux._stack_job(100), app.procs)
+        spawn.assert_called_once_with(
+            mux._stack_job(100), ["--ignore-sev"], spawn_pr=100
+        )
+
+    def test_stack_operator_fix_preserves_requested_member(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {}
+        app._pr_titles = {}
+        app.ignore_sev = False
+        app.manage_mergedog_label = False
+        app.gchat_to = None
+        app.repo_slug = None
+
+        with mock.patch.object(
+            mux, "_canonical_stack_pr", return_value=100
+        ), mock.patch.object(mux, "_spawn") as spawn:
+            spawn.return_value = (_FakeProc(None), object(), Path("stack-100.log"))
+            result = app._do_stack_add(
+                123, ["--operator-fix-context=review request"]
+            )
+
+        self.assertEqual(result, "[stack 100] started")
+        spawn.assert_called_once_with(
+            mux._stack_job(100),
+            ["--operator-fix-context=review request", "--operator-fix-pr=123"],
+            spawn_pr=100,
         )
 
     def test_stack_log_uses_stack_job(self):
