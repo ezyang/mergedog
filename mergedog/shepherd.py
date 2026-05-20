@@ -8,6 +8,7 @@ import faulthandler
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -131,6 +132,31 @@ MAX_EMPTY_LOG_DEFERS = 3
 # Below this many post-strip chars (across all failing jobs combined) the
 # prompt's logs section is considered content-free.
 MIN_USEFUL_LOG_CHARS = 200
+
+
+@dataclass
+class _GhstackParentDependency:
+    parent_pr: int
+    parent_head_ref: str
+    parent_orig_ref: str
+    child_head_ref: str
+    child_orig_ref: str
+    stable_observation: tuple[str, int] | None = None
+    stable_since: float = 0.0
+    last_log_state: str | None = None
+
+
+@dataclass
+class _GhstackParentStatus:
+    stale: bool
+    parent_ready: bool
+    parent_status: str
+    parent_done: int
+    parent_total: int
+    parent_orig_sha: str
+    child_orig_sha: str
+    child_parent_sha: str
+    reason: str
 
 
 def _llm_label() -> str:
@@ -352,6 +378,186 @@ def _is_ghstack(pr_data: dict) -> bool:
     if "ghstack-source-id" in body:
         return True
     return False
+
+
+def _resolve_ghstack_parent_dependency(
+    pr: int, child_head_ref: str
+) -> _GhstackParentDependency | None:
+    """Return the immediate ghstack parent for ``pr``, if it has one.
+
+    Single-PR mode remains best-effort for odd ghstack shapes: if stack
+    discovery fails, keep shepherding the PR with the historical isolated
+    behavior instead of refusing to run.
+    """
+    try:
+        from mergedog.stack import resolve_stack
+
+        members, _ = resolve_stack(pr)
+    except SystemExit as e:
+        log(
+            f"WARNING: could not resolve ghstack parent for PR #{pr} "
+            f"(exit {e.code}); continuing without decentralized stack "
+            "propagation"
+        )
+        return None
+    except Exception as e:
+        log(
+            f"WARNING: could not resolve ghstack parent for PR #{pr}: {e}; "
+            "continuing without decentralized stack propagation"
+        )
+        return None
+
+    idx = next((i for i, m in enumerate(members) if m.pr == pr), None)
+    if idx is None:
+        log(
+            f"WARNING: PR #{pr} was not present in resolved ghstack; "
+            "continuing without decentralized stack propagation"
+        )
+        return None
+    if idx == 0:
+        return None
+    parent = members[idx - 1]
+    child = members[idx]
+    return _GhstackParentDependency(
+        parent_pr=parent.pr,
+        parent_head_ref=parent.head_ref,
+        parent_orig_ref=parent.orig_ref,
+        child_head_ref=child.head_ref or child_head_ref,
+        child_orig_ref=child.orig_ref,
+    )
+
+
+def _check_trusted_ghstack_parent(
+    dep: _GhstackParentDependency, current_sha: str
+) -> bool:
+    trust = TrustDB.load_or_create(dep.parent_pr)
+    trust.head_branch = dep.parent_head_ref
+    trust.head_repo_clone_url = REPO_SSH_URL
+    trust.save()
+    if trust.is_trusted(current_sha):
+        return True
+    trust_mergebot_rebase_if_equivalent(
+        trust,
+        current_sha,
+        ensure_current_available=lambda: (
+            repo.fetch_branch_from_url(
+                REPO_SSH_URL,
+                dep.parent_head_ref,
+                f"refs/remotes/mergedog-trust/{dep.parent_pr}",
+            )
+            == current_sha
+        ),
+    )
+    return trust.is_trusted(current_sha)
+
+
+def _refresh_ghstack_parent_status(
+    dep: _GhstackParentDependency,
+) -> _GhstackParentStatus:
+    refs = repo.fetch_stack_refs(
+        [
+            (dep.parent_head_ref, dep.parent_orig_ref),
+            (dep.child_head_ref, dep.child_orig_ref),
+        ]
+    )
+    parent_orig_sha = refs[dep.parent_orig_ref]
+    child_orig_sha = refs[dep.child_orig_ref]
+    child_parent_sha = repo.parent_sha(child_orig_sha)
+    stale = child_parent_sha != parent_orig_sha
+
+    checks = github.get_pr_checks_all(dep.parent_pr)
+    parent_trust = _check_trusted_ghstack_parent(
+        dep, github.get_pr_head_sha(dep.parent_pr)
+    )
+    if parent_trust:
+        effective_checks = _apply_spurious_overrides(
+            checks, set(TrustDB.load_or_create(dep.parent_pr).spurious_check_names)
+        )
+        parent_status = github.evaluate_checks(effective_checks)
+    else:
+        parent_status = "untrusted"
+
+    done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
+    total = len(checks)
+    observation = (parent_status, total)
+    if dep.stable_observation != observation:
+        dep.stable_observation = observation
+        anchor: float | None = None
+        if parent_status == "passed":
+            anchor = _latest_completed_at(checks)
+        dep.stable_since = anchor if anchor is not None else time.time()
+    parent_ready = (
+        parent_status == "passed"
+        and time.time() - dep.stable_since >= CI_STABILITY_WINDOW_SEC
+    )
+    if not parent_trust:
+        reason = "parent head is not trusted"
+    elif parent_status != "passed":
+        reason = f"parent CI is {parent_status}"
+    elif not parent_ready:
+        remaining = int(CI_STABILITY_WINDOW_SEC - (time.time() - dep.stable_since))
+        reason = f"parent CI is waiting {max(remaining, 0)}s for stability"
+    else:
+        reason = "parent is green-stable"
+    return _GhstackParentStatus(
+        stale=stale,
+        parent_ready=parent_ready,
+        parent_status=parent_status,
+        parent_done=done,
+        parent_total=total,
+        parent_orig_sha=parent_orig_sha,
+        child_orig_sha=child_orig_sha,
+        child_parent_sha=child_parent_sha,
+        reason=reason,
+    )
+
+
+def _publish_ghstack_parent_rebase(
+    pr: int,
+    worktree: Path,
+    dep: _GhstackParentDependency,
+    status: _GhstackParentStatus,
+    trust: TrustDB,
+    *,
+    ignore_sev: bool,
+) -> bool:
+    """Rebase this ghstack PR onto its current parent and submit only itself."""
+    if _wait_for_no_active_sev(
+        f"propagating stack parent PR #{dep.parent_pr} to PR #{pr}",
+        ignore_sev=ignore_sev,
+    ):
+        return False
+
+    refs = repo.fetch_stack_refs(
+        [
+            (dep.parent_head_ref, dep.parent_orig_ref),
+            (dep.child_head_ref, dep.child_orig_ref),
+        ]
+    )
+    if (
+        refs[dep.parent_orig_ref] != status.parent_orig_sha
+        or refs[dep.child_orig_ref] != status.child_orig_sha
+    ):
+        log(
+            "stack refs changed while preparing parent propagation; "
+            "rechecking before submitting"
+        )
+        return False
+
+    log(
+        f"rebasing PR #{pr} onto updated stack parent PR #{dep.parent_pr} "
+        f"({status.child_parent_sha[:12]} -> {status.parent_orig_sha[:12]})"
+    )
+    repo.set_worktree_to_sha(worktree, status.parent_orig_sha)
+    repo.ghstack_cherry_pick(worktree, pr)
+    repo.ghstack_submit(worktree, "Propagate parent update downstream")
+    new_head_sha = repo.fetch_ghstack_head(dep.child_head_ref)
+    trust.trust(new_head_sha)
+    trust.spurious_check_names = []
+    trust.save()
+    log(f"ghstack submitted; new {dep.child_head_ref} = {new_head_sha[:12]}")
+    _wait_for_pr_head(pr, new_head_sha)
+    return True
 
 
 def _is_fork_pr(pr_data: dict) -> bool:
@@ -1031,6 +1237,15 @@ def _shepherd_body(
         log(f"  fork:       {fork_remote} -> {fork_url}")
     log(f"  worktree:   {worktree}")
 
+    ghstack_parent = (
+        _resolve_ghstack_parent_dependency(pr, branch) if is_ghstack else None
+    )
+    if ghstack_parent is not None:
+        log(
+            f"  stack parent: PR #{ghstack_parent.parent_pr} "
+            f"({ghstack_parent.parent_orig_ref})"
+        )
+
     labels.autolabel_if_needed(pr, pr_data)
 
     fix_commits_pushed = 0
@@ -1303,6 +1518,51 @@ def _shepherd_body(
             if summary != last_status:
                 log(f"CI status -> {summary}")
                 last_status = summary
+
+            if ghstack_parent is not None:
+                parent_status = _refresh_ghstack_parent_status(ghstack_parent)
+                if parent_status.stale:
+                    log_state_key = (
+                        f"{parent_status.reason}; "
+                        f"parent {parent_status.parent_done}/"
+                        f"{parent_status.parent_total} done; "
+                        f"child parent={parent_status.child_parent_sha[:12]} "
+                        f"current parent={parent_status.parent_orig_sha[:12]}"
+                    )
+                    if log_state_key != ghstack_parent.last_log_state:
+                        log(
+                            f"stack parent PR #{ghstack_parent.parent_pr} "
+                            f"advanced; {log_state_key}"
+                        )
+                        ghstack_parent.last_log_state = log_state_key
+                    if not parent_status.parent_ready:
+                        _write_status_best_effort(
+                            pr,
+                            phase="waiting_stack_parent",
+                            approved=last_approved,
+                            merging=last_merging,
+                            ci_done=done,
+                            ci_total=len(checks),
+                            ci_failed=active_failed_count,
+                            fix_attempts=fix_commits_pushed,
+                            max_fix_attempts=MAX_FIX_COMMITS,
+                        )
+                        time.sleep(POLL_INTERVAL_SEC)
+                        continue
+                    if _publish_ghstack_parent_rebase(
+                        pr,
+                        worktree,
+                        ghstack_parent,
+                        parent_status,
+                        trust,
+                        ignore_sev=ignore_sev,
+                    ):
+                        spurious_check_names.clear()
+                        stable_observation = None
+                    last_status = None
+                    ghstack_parent.last_log_state = None
+                    continue
+                ghstack_parent.last_log_state = None
 
             # Track stability: any change in (status, check_count) restarts
             # the quiescence timer. We only gate on it for the "passed"
