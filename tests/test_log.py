@@ -12,7 +12,7 @@ class TestLog(unittest.TestCase):
         log_mod.set_merging(False)
         log_mod.set_approved(False)
 
-    def test_complete_uses_outcome_prefix_without_halt(self):
+    def test_complete_uses_done_prefix_without_halt(self):
         log_mod.set_approved(True)
         stderr = io.StringIO()
 
@@ -24,12 +24,11 @@ class TestLog(unittest.TestCase):
             log_mod.complete(
                 "PR is no longer open; shepherd complete",
                 code=42,
-                outcome="MERGED",
             )
 
         self.assertEqual(raised.exception.code, 42)
         self.assertIn(
-            "[MERGED] PR is no longer open; shepherd complete",
+            "[DONE] PR is no longer open; shepherd complete",
             stderr.getvalue(),
         )
         self.assertNotIn("HALT", stderr.getvalue())

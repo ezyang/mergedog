@@ -70,7 +70,7 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
-def complete(msg: str, *, code: int = 0, outcome: str = "COMPLETE") -> None:
+def complete(msg: str, *, code: int = 0, outcome: str = "DONE") -> None:
     set_outcome(outcome)
     log(msg)
     sys.exit(code)

@@ -598,7 +598,6 @@ def _validate_pr(pr_data: dict) -> None:
         complete(
             f"PR is not open (state={state}); shepherd complete",
             code=EXIT_PR_NOT_ACTIONABLE,
-            outcome="MERGED" if state == "MERGED" else "CLOSED",
         )
     if pr_data.get("isDraft"):
         die("PR is a draft")
@@ -2193,7 +2192,6 @@ def _shepherd_body(
             complete(
                 "PR is no longer open; shepherd complete",
                 code=EXIT_PR_NOT_ACTIONABLE,
-                outcome="MERGED",
             )
         # result == "failed": pytorchmergebot rejected the merge. Persist
         # the failure timestamp so we don't re-fire on this same comment,
