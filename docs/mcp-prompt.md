@@ -20,6 +20,7 @@ user when the PR is ready for `@pytorchbot merge`.
   - `restart all` — restart every current mux-session job
   - `restart dead` — restart only crashed shepherds
   - `cancel <pr>` — stop a shepherd (keeps state; not auto-resumed)
+  - `cleanup` or `clean` — forget successful completed shepherds
   - `remove <pr>` — stop and forget (wipes worktree + state)
   - `restart <pr>` — cancel + add
   - `ignore-sev on|off` — toggle whether shepherds ignore CI SEVs

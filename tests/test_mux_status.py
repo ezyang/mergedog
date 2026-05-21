@@ -339,6 +339,23 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "cleaned up 1 completed job(s)")
         prune_job.assert_called_once_with(completed)
 
+    def test_clean_alias_prunes_successful_completed_jobs(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        completed = mux._pr_job(123)
+        app.procs = {
+            completed: (
+                _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                object(),
+                Path("123.log"),
+            ),
+        }
+
+        with mock.patch.object(app, "_prune_job") as prune_job:
+            result = app._dispatch_command("clean")
+
+        self.assertEqual(result, "cleaned up 1 completed job(s)")
+        prune_job.assert_called_once_with(completed)
+
     def test_cleanup_without_completed_jobs_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {

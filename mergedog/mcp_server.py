@@ -50,7 +50,7 @@ mcp = FastMCP(
         "  fix <pr> <request> — make a trusted operator-requested "
         "[MERGEDOG] follow-up commit\n"
         "  cancel <pr>        — stop shepherding; keep state\n"
-        "  cleanup            — forget successful completed shepherds\n"
+        "  cleanup | clean    — forget successful completed shepherds\n"
         "  remove <pr>        — stop and forget (wipes worktree)\n"
         "  restart <pr>       — cancel + add\n"
         "  restart all        — restart every current mux-session job\n"

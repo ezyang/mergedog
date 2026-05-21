@@ -20,7 +20,7 @@ Commands typed at the bottom (enter to submit):
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
-    cleanup                           forget successful completed shepherds
+    cleanup | clean                   forget successful completed shepherds
     remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
     ignore-sev [on|off]               toggle (or show) the mux-wide
@@ -68,6 +68,8 @@ COMMAND_SUGGESTIONS = [
     "cancel ",
     "cleanup",
     "cleanup all",
+    "clean",
+    "clean all",
     "fix ",
     "fix-cap ",
     "ignore-sev ",
@@ -547,7 +549,7 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
+                "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | clean | "
                 "remove <pr> | log <pr> | fix-cap | mergedog-label | "
                 "migrate | quit"
             ),
@@ -990,7 +992,7 @@ class MuxApp(App):
                 if not rest:
                     return "usage: cancel <pr>"
                 return self._do_cancel(_parse_pr(rest[0]))
-            elif cmd == "cleanup":
+            elif cmd in ("cleanup", "clean"):
                 return self._do_cleanup(rest)
             elif cmd in ("remove", "rm", "forget"):
                 if not rest:
