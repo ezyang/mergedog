@@ -543,6 +543,7 @@ class MuxApp(App):
         self.repo_slug = repo_slug
         self._lock_fd = lock_fd
         self._ipc_server: asyncio.AbstractServer | None = None
+        self._unresumable_jobs: set[JobKey] = set()
 
     def compose(self) -> ComposeResult:
         yield DataTable()
@@ -609,6 +610,7 @@ class MuxApp(App):
         except Exception as e:
             return f"[{label}] spawn failed: {e}"
         self._pr_titles.pop(job, None)
+        self._unresumable_jobs.discard(job)
         if alias_job is not None and alias_job != job:
             _remove_mux_job(alias_job)
         _add_mux_job(job)
@@ -788,6 +790,7 @@ class MuxApp(App):
             return f"[{label}] unknown"
         _terminate_group(entry[0])
         if not keep_resumable:
+            self._unresumable_jobs.add(job)
             _remove_mux_job(job)
         return f"[{label}] terminated"
 
@@ -917,6 +920,7 @@ class MuxApp(App):
             pass
         _remove_mux_job(job)
         self._pr_titles.pop(job, None)
+        self._unresumable_jobs.discard(job)
 
     def _prune_pr(self, pr: int) -> None:
         self._prune_job(_pr_job(pr))
@@ -1144,11 +1148,13 @@ class MuxApp(App):
                 pass
 
     def on_unmount(self) -> None:
+        unresumable_jobs = getattr(self, "_unresumable_jobs", set())
         _write_mux_jobs(
             sorted(
                 job
                 for job, (p, _f, _) in self.procs.items()
-                if p.poll() is None
+                if job not in unresumable_jobs
+                and p.poll() not in (0, EXIT_PR_NOT_ACTIONABLE)
             )
         )
         if self._ipc_server is not None:
