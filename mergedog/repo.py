@@ -26,6 +26,73 @@ from mergedog.project import get_project_policy
 
 _GIT_LOCK_TIMEOUT_SEC = 2.0
 _GIT_LOCK_MAX_BACKOFF_SEC = 0.5
+_GHSTACK_MAX_RETRIES = 3
+_GHSTACK_RETRY_DELAY_SEC = 5
+_GHSTACK_TRANSIENT_CODES = ("502", "503", "504")
+_GHSTACK_TRANSIENT_MESSAGES = (
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "error connecting to api.github.com",
+    "failed to establish a new connection",
+    "i/o timeout",
+    "max retries exceeded",
+    "newconnectionerror",
+    "proxyerror",
+    "temporary failure",
+    "tls handshake timeout",
+    "unable to connect to proxy",
+)
+
+
+def _log_completed_process_output(proc: subprocess.CompletedProcess[str]) -> None:
+    for text in (proc.stdout, proc.stderr):
+        text = (text or "").rstrip()
+        if not text:
+            continue
+        for line in text.splitlines():
+            log(line)
+
+
+def _is_transient_ghstack_failure(proc: subprocess.CompletedProcess[str]) -> bool:
+    if proc.returncode == 0:
+        return False
+    text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    text_lower = text.lower()
+    return any(code in text for code in _GHSTACK_TRANSIENT_CODES) or any(
+        msg in text_lower for msg in _GHSTACK_TRANSIENT_MESSAGES
+    )
+
+
+def _run_ghstack(args: Sequence[str], *, cwd: Path) -> None:
+    """Run ghstack, retrying transient GitHub/proxy failures.
+
+    ghstack uses the GitHub API even for ``cherry-pick --no-fetch`` to resolve
+    the PR's head ref. Local proxy hiccups should not kill the shepherd.
+    """
+    for attempt in range(_GHSTACK_MAX_RETRIES):
+        proc = run(
+            args,
+            cwd=cwd,
+            check=False,
+            capture=True,
+            loud=(attempt == 0),
+        )
+        _log_completed_process_output(proc)
+        if proc.returncode == 0:
+            if attempt > 0:
+                log("  ghstack recovered after transient failure")
+            return
+        if not _is_transient_ghstack_failure(proc):
+            proc.check_returncode()
+        if attempt + 1 == _GHSTACK_MAX_RETRIES:
+            proc.check_returncode()
+        log(
+            "  ! ghstack transient failure "
+            f"(attempt {attempt + 1}/{_GHSTACK_MAX_RETRIES}), "
+            f"retrying in {_GHSTACK_RETRY_DELAY_SEC}s"
+        )
+        time.sleep(_GHSTACK_RETRY_DELAY_SEC)
 
 
 def _git_write_with_retry(
@@ -843,7 +910,7 @@ def ghstack_submit(
         args.insert(2, "--no-stack")
     if force:
         args.insert(2, "--force")
-    run(args, cwd=worktree, capture=False, loud=True)
+    _run_ghstack(args, cwd=worktree)
 
 
 def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> None:
@@ -857,7 +924,7 @@ def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> No
     args = ["ghstack", "cherry-pick", str(pr)]
     if no_fetch:
         args.append("--no-fetch")
-    run(args, cwd=worktree, capture=False, loud=True)
+    _run_ghstack(args, cwd=worktree)
 
 
 

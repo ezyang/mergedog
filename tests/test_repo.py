@@ -11,6 +11,25 @@ class _Proc:
     def __init__(self, stdout: str, returncode: int = 0):
         self.stdout = stdout
         self.returncode = returncode
+        self.stderr = ""
+
+    def check_returncode(self):
+        if self.returncode:
+            raise subprocess.CalledProcessError(
+                self.returncode,
+                ["cmd"],
+                output=self.stdout,
+                stderr=self.stderr,
+            )
+
+
+def _completed(returncode: int, stdout: str = "", stderr: str = ""):
+    return subprocess.CompletedProcess(
+        ["ghstack"],
+        returncode,
+        stdout,
+        stderr,
+    )
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -89,6 +108,41 @@ class TestTrunkRevertContext(unittest.TestCase):
         self.assertIn("Do not treat a revert-area match", ctx)
         self.assertIn("choose INCONCLUSIVE instead of spurious", ctx)
         self.assertIn('Revert "[CPU][Inductor] Improve cache"', ctx)
+
+
+class TestGhstackRetry(unittest.TestCase):
+    def test_retries_transient_proxy_failure(self):
+        with mock.patch.object(
+            repo,
+            "run",
+            side_effect=[
+                _completed(
+                    1,
+                    stderr=(
+                        "requests.exceptions.ProxyError: "
+                        "Failed to establish a new connection: "
+                        "[Errno 111] Connection refused"
+                    ),
+                ),
+                _completed(0, stdout="Cherry-picked gh/u/1/orig\n"),
+            ],
+        ) as run, mock.patch.object(repo.time, "sleep") as sleep:
+            repo.ghstack_cherry_pick(Path("/tmp/worktree"), 123)
+
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(repo._GHSTACK_RETRY_DELAY_SEC)
+
+    def test_does_not_retry_non_transient_failure(self):
+        with mock.patch.object(
+            repo,
+            "run",
+            return_value=_completed(1, stderr="fatal: bad revision\n"),
+        ) as run, mock.patch.object(repo.time, "sleep") as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                repo.ghstack_cherry_pick(Path("/tmp/worktree"), 123)
+
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
 
 
 class TestRebaseTargetAdvances(unittest.TestCase):
