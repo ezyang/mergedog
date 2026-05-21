@@ -45,9 +45,14 @@ class LLMResult:
         yield self.transcript
 
 
+def _escape_embedded_nuls(text: str) -> str:
+    return text.replace("\x00", "\\0")
+
+
 def _build_llm_invocation(
     prompt: str, cwd: Path, config: LLMConfig
 ) -> _LLMInvocation:
+    prompt = _escape_embedded_nuls(prompt)
     model = config.effective_model
     if config.provider == "claude":
         cmd = [
@@ -246,13 +251,24 @@ def _run_llm_streaming(
     summaries we wrote to the log, kept in order, so the shepherd can
     later quote them in a handoff comment.
     """
+    nul_count = prompt.count("\x00")
+    if nul_count:
+        log(f"WARNING: replacing {nul_count} embedded NUL byte(s) in LLM prompt")
     invocation = _build_llm_invocation(prompt, cwd, config)
     # Quote everything except the prompt itself, which is huge and would
     # bury the rest of the line.
-    redacted = [c if c is not prompt else "<prompt>" for c in invocation.cmd]
+    redacted = [
+        (
+            "<prompt>"
+            if invocation.provider in ("codex", "metacode")
+            and i == len(invocation.cmd) - 1
+            else c
+        )
+        for i, c in enumerate(invocation.cmd)
+    ]
     log("$ " + " ".join(shlex.quote(c) for c in redacted))
     env = os.environ.copy()
-    env.update(env_extra)
+    env.update({k: _escape_embedded_nuls(v) for k, v in env_extra.items()})
     proc = subprocess.Popen(
         invocation.cmd,
         cwd=str(cwd),
