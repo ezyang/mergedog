@@ -80,13 +80,14 @@ Caution on XPASS / unexpected-success failures:
   An XPASS means a test marked as an expected failure unexpectedly passed. \
   Removing or weakening an existing ``xfail``, ``expectedFailure``, skip, \
   or OpInfo failure decorator is a test-policy change, not a normal code \
-  fix. Do NOT do it just because CI says "Unexpected success" and the edit \
-  looks small. Only remove or narrow such a marker when the sidecar or \
-  trusted operator context makes clear that this PR intentionally fixes the \
-  underlying expected failure, or when the marker itself is plainly part of \
-  the approved PR change you are shepherding. If the PR's code change makes \
-  a pre-existing expected-failure test pass as a side effect, prefer \
-  INCONCLUSIVE (or TOO_HARD if the relation is clear but the right policy \
+  fix. The edit can be correct when the XPASSing test directly exercises \
+  behavior changed by this PR, but do not do it just because CI says \
+  "Unexpected success" and the edit looks small. Before committing, write \
+  down the causal link in your commit body: why this test is in the PR's \
+  area, what behavior changed, and why the marker is now stale rather than \
+  unrelated trunk drift or a pre-existing test-policy cleanup. If you cannot \
+  explain that link concretely from the sidecar, code, and logs, prefer \
+  INCONCLUSIVE (or TOO_HARD if the relation is plausible but the policy \
   call needs human review) instead of committing a marker removal.
 
 Commit message contract (when you do commit):
@@ -101,6 +102,9 @@ Commit message contract (when you do commit):
         able to see WHAT went wrong without opening CI.
       * A short explanation of what you changed and why it addresses the \
         failure.
+      * If the fix removes or weakens an expected-failure marker, explicitly \
+        explain why the XPASSing test is caused by this PR's approved change \
+        rather than unrelated trunk drift or a standalone test-policy cleanup.
 
   Example:
 

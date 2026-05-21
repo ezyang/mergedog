@@ -30,8 +30,10 @@ class TestEarlierStackSection(unittest.TestCase):
 
         self.assertIn("Caution on XPASS / unexpected-success failures", prompt)
         self.assertIn("test-policy change", prompt)
-        self.assertIn("Do NOT do it just because CI says", prompt)
-        self.assertIn("prefer INCONCLUSIVE", prompt)
+        self.assertIn("directly exercises", prompt)
+        self.assertIn("causal link", prompt)
+        self.assertIn("rather than unrelated trunk drift", prompt)
+        self.assertIn("standalone test-policy cleanup", prompt)
 
     def test_section_omitted_when_no_earlier_members(self):
         prompt = render_fix_prompt(**_BASE_KWARGS)
