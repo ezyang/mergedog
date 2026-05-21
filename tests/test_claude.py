@@ -136,6 +136,86 @@ class TestInvoke(unittest.TestCase):
         self.assertTrue(result.ran_cleanly)
         self.assertEqual(result.new_sha, "b" * 40)
 
+    def test_cherry_pick_resolution_allows_original_commit_subject(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(
+                    claude,
+                    "head_sha",
+                    side_effect=["a" * 40, "b" * 40],
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("claude"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "is_cherry_pick_in_progress",
+                    return_value=False,
+                ),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+                mock.patch.object(claude, "_commits_between", return_value=1),
+                mock.patch.object(
+                    claude,
+                    "head_subject",
+                    return_value="Use PyTorch Min/Max throughout Inductor",
+                ),
+            ):
+                result = claude.invoke_cherry_pick_resolver(worktree, "prompt")
+
+        self.assertTrue(result.ran_cleanly)
+        self.assertEqual(result.new_sha, "b" * 40)
+
+    def test_cherry_pick_resolution_rejects_unfinished_cherry_pick(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("claude"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "is_cherry_pick_in_progress",
+                    return_value=True,
+                ),
+            ):
+                result = claude.invoke_cherry_pick_resolver(worktree, "prompt")
+
+        self.assertFalse(result.ran_cleanly)
+        self.assertEqual(
+            result.halt_reason,
+            "exited but the cherry-pick is still in progress; refusing to push",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

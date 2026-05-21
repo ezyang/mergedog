@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import faulthandler
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from mergedog.log import complete, die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.project import get_project_policy
 from mergedog.prompts import (
+    render_cherry_pick_conflict_prompt,
     render_fix_prompt,
     render_merge_conflict_prompt,
     render_operator_fix_prompt,
@@ -535,6 +537,8 @@ def _publish_ghstack_parent_rebase(
     trust: TrustDB,
     *,
     ignore_sev: bool,
+    pr_data: dict | None = None,
+    sessions: list[ClaudeSession] | None = None,
 ) -> bool:
     """Rebase this ghstack PR onto its current parent and submit only itself."""
     if _wait_for_no_active_sev(
@@ -564,7 +568,61 @@ def _publish_ghstack_parent_rebase(
         f"({status.child_parent_sha[:12]} -> {status.parent_orig_sha[:12]})"
     )
     repo.set_worktree_to_sha(worktree, status.parent_orig_sha)
-    repo.ghstack_cherry_pick(worktree, pr)
+    try:
+        repo.ghstack_cherry_pick(worktree, pr)
+    except subprocess.CalledProcessError:
+        if not repo.is_cherry_pick_in_progress(worktree):
+            raise
+        if pr_data is None or sessions is None:
+            repo.run(
+                ["git", "cherry-pick", "--abort"],
+                cwd=worktree,
+                check=False,
+                loud=True,
+            )
+            die(
+                "stack parent propagation produced conflicts; halting for "
+                "human intervention (no pr_data/sessions available for "
+                "LLM resolution)"
+            )
+        log(
+            "stack parent replay produced conflicts; "
+            f"asking {_llm_label()} to resolve"
+        )
+        ctx_path, _ = _refresh_context_file(pr_data, trusted=True)
+        prompt = render_cherry_pick_conflict_prompt(
+            url=pr_data.get("url", ""),
+            branch=dep.child_head_ref,
+            context_path=str(ctx_path),
+        )
+        sha_before = repo.head_sha(worktree)
+        started_at = utc_now_iso()
+        result = claude_mod.invoke_cherry_pick_resolver(worktree, prompt)
+        ran_cleanly, new_orig_sha, transcript = result
+        _record_claude_session(
+            sessions,
+            mode="cherry-pick-resolver",
+            sha_before=sha_before,
+            started_at=started_at,
+            ran_cleanly=ran_cleanly,
+            new_sha=new_orig_sha,
+            transcript=transcript,
+            on_commit="resolved stack parent replay conflicts in commit {sha}",
+            on_clean_noop="aborted the cherry-pick",
+        )
+        if not ran_cleanly:
+            die(
+                _llm_halt_message(
+                    result,
+                    f"{_llm_label()} failed to resolve the stack parent "
+                    "replay conflict cleanly",
+                )
+            )
+        if new_orig_sha is None:
+            die(
+                f"{_llm_label()} aborted the cherry-pick; halting for "
+                "human intervention"
+            )
     repo.ghstack_submit(worktree, "Propagate parent update downstream")
     new_head_sha = repo.fetch_ghstack_head(dep.child_head_ref)
     trust.trust(new_head_sha)
@@ -1598,6 +1656,8 @@ def _shepherd_body(
                         parent_status,
                         trust,
                         ignore_sev=ignore_sev,
+                        pr_data=pr_data,
+                        sessions=sessions,
                     ):
                         spurious_check_names.clear()
                         stable_observation = None

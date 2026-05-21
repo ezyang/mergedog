@@ -2,6 +2,7 @@ import unittest
 
 from mergedog.prompts import (
     render_fix_prompt,
+    render_cherry_pick_conflict_prompt,
     render_operator_fix_prompt,
     render_rebase_conflict_prompt,
 )
@@ -153,6 +154,19 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("may replay multiple existing PR", prompt)
         self.assertIn("mergedog commits; that is expected", prompt)
         self.assertIn("let git continue the in-progress rebase", prompt)
+
+    def test_cherry_pick_prompt_describes_stack_parent_replay(self):
+        prompt = render_cherry_pick_conflict_prompt(
+            url="https://github.com/pytorch/pytorch/pull/1",
+            branch="gh/u/1/head",
+            context_path="/tmp/ctx.txt",
+        )
+
+        self.assertIn("ghstack parent PR advanced", prompt)
+        self.assertIn(".git/CHERRY_PICK_HEAD", prompt)
+        self.assertIn("git cherry-pick --continue", prompt)
+        self.assertIn("git cherry-pick --abort", prompt)
+        self.assertIn("Do NOT push", prompt)
 
 
 if __name__ == "__main__":

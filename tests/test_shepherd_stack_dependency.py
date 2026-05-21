@@ -1,3 +1,4 @@
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -285,6 +286,81 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
 
         self.assertFalse(changed)
         submit.assert_not_called()
+
+    def test_conflicted_child_replay_invokes_resolver_then_submits(self):
+        dep = _dep()
+        status = shepherd._GhstackParentStatus(
+            stale=True,
+            parent_ready=True,
+            parent_status="passed",
+            parent_done=1,
+            parent_total=1,
+            parent_orig_sha="P_NEW",
+            child_orig_sha="C_OLD",
+            child_parent_sha="P_OLD",
+            reason="parent is green-stable",
+        )
+        refs = {
+            "gh/u/100/head": "P_HEAD",
+            "gh/u/100/orig": "P_NEW",
+            "gh/u/101/head": "C_HEAD",
+            "gh/u/101/orig": "C_OLD",
+        }
+        pr_data = {
+            "number": 101,
+            "url": "https://github.com/pytorch/pytorch/pull/101",
+        }
+        trust = _Trust()
+        sessions = []
+        worktree = Path("/tmp/worktree")
+        error = subprocess.CalledProcessError(
+            1, ["ghstack", "cherry-pick", "101"]
+        )
+
+        with mock.patch.object(
+            shepherd, "_wait_for_no_active_sev", return_value=False
+        ), mock.patch.object(
+            shepherd.repo, "fetch_stack_refs", return_value=refs
+        ), mock.patch.object(
+            shepherd.repo, "set_worktree_to_sha"
+        ), mock.patch.object(
+            shepherd.repo, "ghstack_cherry_pick", side_effect=error
+        ), mock.patch.object(
+            shepherd.repo, "is_cherry_pick_in_progress", return_value=True
+        ), mock.patch.object(
+            shepherd, "_refresh_context_file", return_value=(Path("/tmp/ctx"), [])
+        ), mock.patch.object(
+            shepherd.repo, "head_sha", return_value="P_NEW"
+        ), mock.patch.object(
+            shepherd.claude_mod,
+            "invoke_cherry_pick_resolver",
+            return_value=(True, "C_NEW_ORIG", []),
+        ) as resolver, mock.patch.object(
+            shepherd.repo, "ghstack_submit"
+        ) as submit, mock.patch.object(
+            shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
+        ), mock.patch.object(
+            shepherd, "_wait_for_pr_head"
+        ):
+            changed = shepherd._publish_ghstack_parent_rebase(
+                101,
+                worktree,
+                dep,
+                status,
+                trust,
+                ignore_sev=False,
+                pr_data=pr_data,
+                sessions=sessions,
+            )
+
+        self.assertTrue(changed)
+        resolver.assert_called_once()
+        submit.assert_called_once_with(
+            worktree, "Propagate parent update downstream"
+        )
+        self.assertEqual(trust.trusted_shas, ["C_NEW_HEAD"])
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].mode, "cherry-pick-resolver")
 
 
 if __name__ == "__main__":

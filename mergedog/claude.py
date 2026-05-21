@@ -476,6 +476,7 @@ def _invoke(
     mode: str,
     expect_merge_commit: bool,
     expect_rebase_resolution: bool = False,
+    expect_cherry_pick_resolution: bool = False,
     allow_multiple_commits: bool = False,
 ) -> LLMResult:
     """Run the configured LLM and validate that its output meets the contract.
@@ -484,6 +485,7 @@ def _invoke(
     ``invoke_rebase_resolver``. The modes differ in post-run checks:
     ``expect_merge_commit`` rejects leftover mid-merge state and requires
     two parents; ``expect_rebase_resolution`` rejects leftover mid-rebase
+    state; ``expect_cherry_pick_resolution`` rejects leftover mid-cherry-pick
     state.
 
     Returns an :class:`LLMResult`, which can still be unpacked as
@@ -521,6 +523,16 @@ def _invoke(
 
     if expect_rebase_resolution and repo_mod.is_rebase_in_progress(worktree):
         reason = "exited but the rebase is still in progress; refusing to push"
+        log(f"{agent} {reason}")
+        return LLMResult(False, None, transcript, reason)
+
+    if (
+        expect_cherry_pick_resolution
+        and repo_mod.is_cherry_pick_in_progress(worktree)
+    ):
+        reason = (
+            "exited but the cherry-pick is still in progress; refusing to push"
+        )
         log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
@@ -562,6 +574,8 @@ def _invoke(
             log(f"{agent} aborted the merge without committing")
         elif expect_rebase_resolution:
             log(f"{agent} aborted the rebase without committing")
+        elif expect_cherry_pick_resolution:
+            log(f"{agent} aborted the cherry-pick without committing")
         else:
             log(f"{agent} made no commit (treating as: failures are spurious / no-op)")
         return LLMResult(True, None, transcript)
@@ -590,9 +604,13 @@ def _invoke(
         return LLMResult(False, None, transcript, reason)
 
     subject = head_subject(worktree)
-    # Rebase resolution preserves the original commit message — don't
-    # require the [MERGEDOG] prefix.
-    if not expect_rebase_resolution and not subject.startswith(MERGEDOG_PREFIX):
+    # Rebase/cherry-pick resolution preserves the original commit message --
+    # don't require the [MERGEDOG] prefix.
+    if (
+        not expect_rebase_resolution
+        and not expect_cherry_pick_resolution
+        and not subject.startswith(MERGEDOG_PREFIX)
+    ):
         reason = (
             f"produced commit {after[:12]} whose subject does not start "
             f"with {MERGEDOG_PREFIX!r}: {subject!r}"
@@ -603,9 +621,13 @@ def _invoke(
     # Run lintrunner -a and fold any auto-fixes into claude's commit.
     # Catches autoformat misses (clang-format, ruff format, ...) before
     # they'd cause a wasted fix-CI cycle on a follow-up lint failure.
-    # Skipped for merge/rebase resolver: the diff view would include
-    # everything brought in from main — too broad and too slow.
-    if not expect_merge_commit and not expect_rebase_resolution:
+    # Skipped for merge/rebase/cherry-pick resolver: the diff view would
+    # include everything brought in from main/parent -- too broad and too slow.
+    if (
+        not expect_merge_commit
+        and not expect_rebase_resolution
+        and not expect_cherry_pick_resolution
+    ):
         amended = _run_lintrunner_amend(worktree)
         if amended is not None:
             after = amended
@@ -615,6 +637,8 @@ def _invoke(
         log(f"{agent} resolved the merge: {after[:12]}: {subject}")
     elif expect_rebase_resolution:
         log(f"{agent} resolved the rebase: {after[:12]}: {subject}")
+    elif expect_cherry_pick_resolution:
+        log(f"{agent} resolved the cherry-pick: {after[:12]}: {subject}")
     else:
         log(f"{agent} produced fix commit {after[:12]}: {subject}")
     return LLMResult(True, after, transcript)
@@ -643,4 +667,15 @@ def invoke_rebase_resolver(
         worktree, prompt, mode="rebase-resolver",
         expect_merge_commit=False, expect_rebase_resolution=True,
         allow_multiple_commits=allow_multiple_commits,
+    )
+
+
+def invoke_cherry_pick_resolver(worktree: Path, prompt: str) -> LLMResult:
+    """Run the configured LLM in a mid-cherry-pick worktree."""
+    return _invoke(
+        worktree,
+        prompt,
+        mode="cherry-pick-resolver",
+        expect_merge_commit=False,
+        expect_cherry_pick_resolution=True,
     )
