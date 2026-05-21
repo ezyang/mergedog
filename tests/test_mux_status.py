@@ -238,6 +238,70 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(table.rows[0][2], "🟢")
         self.assertEqual(table.rows[0][3], "waiting for CI: 4/9 checks done")
 
+    def test_refresh_reports_stale_sidecar_from_prior_shepherd(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text("[12:00:00] new shepherd log line\n")
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(None), object(), log_path)}
+            app._job_started_at = {job: 2_000_000_000.0}
+            app._pr_titles = {job: "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            sidecar = {
+                "schema_version": 1,
+                "updated_at": "2020-01-01T00:00:00+00:00",
+                "phase": "ready",
+                "category": "ready",
+                "message": "ready for human merge",
+            }
+            with (
+                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=sidecar),
+            ):
+                app._refresh()
+
+        self.assertEqual(table.rows[0][2], "🟢")
+        self.assertEqual(
+            table.rows[0][3],
+            "starting; ignoring stale status from previous shepherd",
+        )
+
+    def test_format_status_marks_stale_sidecar(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text("[12:00:00] new shepherd log line\n")
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(None), object(), log_path)}
+            app._job_started_at = {job: 2_000_000_000.0}
+            app._pr_titles = {job: "Test PR"}
+
+            sidecar = {
+                "schema_version": 1,
+                "updated_at": "2020-01-01T00:00:00+00:00",
+                "phase": "ready",
+                "category": "ready",
+                "message": "ready for human merge",
+            }
+            with mock.patch.object(mux, "read_status", return_value=sidecar):
+                rows = json.loads(app._format_status())
+
+        self.assertEqual(rows[0]["phase"], "🟢")
+        self.assertEqual(
+            rows[0]["status"],
+            "starting; ignoring stale status from previous shepherd",
+        )
+        self.assertTrue(rows[0]["shepherd_status_stale"])
+        self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
 
 class TestMuxCommands(unittest.TestCase):
     def test_restart_all_dispatches_bulk_restart_with_flags(self):

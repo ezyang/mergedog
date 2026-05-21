@@ -50,6 +50,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from mergedog.bootstrap import promote_early_env
@@ -349,12 +350,50 @@ def _last_log_line(path: Path) -> str:
     return tail.rstrip()
 
 
+def _status_updated_ts(structured: dict | None) -> float | None:
+    if structured is None:
+        return None
+    updated_at = structured.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at:
+        return None
+    try:
+        return datetime.fromisoformat(
+            updated_at.replace("Z", "+00:00")
+        ).timestamp()
+    except ValueError:
+        return None
+
+
+def _status_is_stale(
+    structured: dict | None,
+    *,
+    started_at: float | None,
+) -> bool:
+    if structured is None or started_at is None:
+        return False
+    updated_at = _status_updated_ts(structured)
+    if updated_at is None:
+        return True
+    return updated_at < started_at
+
+
+def _record_job_started(app: object, job: JobKey, started_at: float) -> None:
+    started = getattr(app, "_job_started_at", None)
+    if started is None:
+        started = {}
+        setattr(app, "_job_started_at", started)
+    started[job] = started_at
+
+
 def _status_message(
     structured: dict | None,
     *,
     rc: int | None,
     last_log: str,
+    stale: bool = False,
 ) -> str:
+    if stale:
+        return "starting; ignoring stale status from previous shepherd"
     if structured is not None:
         msg = structured.get("message")
         if isinstance(msg, str) and msg:
@@ -379,9 +418,16 @@ def _status_message(
     return "HALT: see log"
 
 
-def _phase_label(structured: dict | None, *, rc: int | None) -> str:
+def _phase_label(
+    structured: dict | None,
+    *,
+    rc: int | None,
+    stale: bool = False,
+) -> str:
     if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
         return "🔴"
+    if stale:
+        return "🟢"
     if structured is not None:
         category = structured.get("category")
         if category == "blocked":
@@ -590,6 +636,7 @@ class MuxApp(App):
     ) -> None:
         super().__init__()
         self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
+        self._job_started_at: dict[JobKey, float] = {}
         self._pr_titles: dict[JobKey, str] = {}
         self._pr_status: dict[JobKey, dict] = {}
         self._initial = [_coerce_job(job) for job in initial]
@@ -660,12 +707,14 @@ class MuxApp(App):
         label = _job_label(job)
         if job in self.procs and self.procs[job][0].poll() is None:
             return f"[{label}] already running"
+        started_at = time.time()
         try:
             self.procs[job] = _spawn(
                 job, self._shepherd_args(extra), spawn_pr=spawn_pr
             )
         except Exception as e:
             return f"[{label}] spawn failed: {e}"
+        _record_job_started(self, job, started_at)
         self._pr_titles.pop(job, None)
         self._unresumable_jobs.discard(job)
         if alias_job is not None and alias_job != job:
@@ -730,10 +779,13 @@ class MuxApp(App):
             _terminate_group(self.procs[job][0])
         shepherd_args = self._shepherd_args(extra)
         for job in jobs:
+            started_at = time.time()
             try:
                 self.procs[job] = _spawn(job, shepherd_args)
             except Exception as e:
                 self.notify(f"[{_job_label(job)}] failed: {e}", severity="error")
+            else:
+                _record_job_started(self, job, started_at)
             self._pr_titles.pop(job, None)
         self.notify(f"{action} {len(jobs)} job(s)")
 
@@ -925,12 +977,16 @@ class MuxApp(App):
             rc = p.poll()
             last = _last_log_line(log_path)
             structured = read_status(pr)
+            started_at = getattr(self, "_job_started_at", {}).get(job)
+            stale = _status_is_stale(structured, started_at=started_at)
             if structured is None:
                 self._pr_status.pop(job, None)
             else:
                 self._pr_status[job] = structured
-            phase = _phase_label(structured, rc=rc)
-            status = _status_message(structured, rc=rc, last_log=last)
+            phase = _phase_label(structured, rc=rc, stale=stale)
+            status = _status_message(
+                structured, rc=rc, last_log=last, stale=stale
+            )
             title = self._pr_titles.get(job, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -973,6 +1029,7 @@ class MuxApp(App):
             pass
         _remove_mux_job(job)
         self._pr_titles.pop(job, None)
+        getattr(self, "_job_started_at", {}).pop(job, None)
         self._unresumable_jobs.discard(job)
 
     def _prune_pr(self, pr: int) -> None:
@@ -1098,15 +1155,20 @@ class MuxApp(App):
             last = _last_log_line(log_path)
             title = self._pr_titles.get(job, "") or _read_pr_title(pr)
             structured = read_status(pr)
-            status_message = _status_message(structured, rc=rc, last_log=last)
+            started_at = getattr(self, "_job_started_at", {}).get(job)
+            stale = _status_is_stale(structured, started_at=started_at)
+            status_message = _status_message(
+                structured, rc=rc, last_log=last, stale=stale
+            )
             rows.append({
                 "kind": kind,
                 "pr": pr,
                 "title": title,
                 "state": state,
-                "phase": _phase_label(structured, rc=rc),
+                "phase": _phase_label(structured, rc=rc, stale=stale),
                 "status": status_message,
                 "last_log": last,
+                "shepherd_status_stale": stale,
                 "shepherd_status": structured,
             })
         return json.dumps(rows, indent=2)
