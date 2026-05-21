@@ -153,7 +153,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         self.assertEqual(rows[0]["pr"], 123)
         self.assertEqual(rows[0]["state"], "running")
-        self.assertEqual(rows[0]["phase"], "WAIT")
+        self.assertEqual(rows[0]["phase"], "🟢")
         self.assertEqual(rows[0]["status"], "waiting for CI: 1/2 checks done")
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
 
@@ -206,7 +206,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         prune_job.assert_not_called()
         self.assertEqual(len(table.rows), 1)
-        self.assertEqual(table.rows[0][2], "DONE")
+        self.assertEqual(table.rows[0][2], "")
 
     def test_refresh_uses_sidecar_message_instead_of_log_tail(self):
         with tempfile.TemporaryDirectory() as d:
@@ -235,7 +235,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             ):
                 app._refresh()
 
-        self.assertEqual(table.rows[0][2], "WAIT")
+        self.assertEqual(table.rows[0][2], "🟢")
         self.assertEqual(table.rows[0][3], "waiting for CI: 4/9 checks done")
 
 

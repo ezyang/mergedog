@@ -381,29 +381,29 @@ def _status_message(
 
 def _phase_label(structured: dict | None, *, rc: int | None) -> str:
     if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
-        return "HALT"
+        return "🔴"
     if structured is not None:
         category = structured.get("category")
         if category == "blocked":
-            return "HALT"
+            return "🔴"
         if category == "ready":
-            return "READY"
+            return "🟡"
         if category == "waiting":
-            return "WAIT"
+            return "🟢"
         if category == "action":
-            return "ACT"
+            return "🟢"
         if category == "done":
-            return "DONE"
+            return ""
         phase = structured.get("phase")
         if phase == "halted":
-            return "HALT"
+            return "🔴"
         if phase == "ready":
-            return "READY"
+            return "🟡"
         if phase == "complete":
-            return "DONE"
+            return ""
     if rc is None:
-        return "RUN"
-    return "DONE"
+        return "🟢"
+    return ""
 
 
 def _read_mux_prs() -> list[int]:
