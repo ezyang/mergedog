@@ -2193,6 +2193,39 @@ def _shepherd_body(
                 "PR is no longer open; shepherd complete",
                 code=EXIT_PR_NOT_ACTIONABLE,
             )
+        if result == "conflict":
+            recovery_attempts += 1
+            log("post-handoff merge conflict detected; rebasing onto main")
+            repo.fetch_origin()
+            if is_ghstack:
+                _rebase_ghstack_onto_main(
+                    pr, worktree, branch, trust, ignore_sev=ignore_sev
+                )
+            else:
+                assert fork_remote is not None
+                new_sha = _merge_main_resolving_conflicts(
+                    worktree, trust, branch, pr_data, sessions,
+                    ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                )
+                if new_sha is not None:
+                    log(
+                        f"pushing merge commit {new_sha[:12]} to "
+                        f"{fork_remote}/{branch}"
+                    )
+                    _safe_push(
+                        pr, worktree, fork_remote, branch, new_sha,
+                        reason="pushing merge-main commit after GitHub conflict",
+                        ignore_sev=ignore_sev,
+                    )
+                    _record_pushed_change(
+                        pushed_changes,
+                        worktree,
+                        new_sha,
+                        "merged main into the PR branch after GitHub reported conflicts",
+                    )
+            last_status = None
+            pr_data = github.get_pr(pr)
+            continue
         # result == "failed": pytorchmergebot rejected the merge. Persist
         # the failure timestamp so we don't re-fire on this same comment,
         # then loop back to CI inspection -- claude can judge spurious or

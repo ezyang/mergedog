@@ -48,13 +48,18 @@ def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
 
 
 def _gh(
-    args: list[str], *, check: bool = True, loud: bool = False
+    args: list[str],
+    *,
+    check: bool = True,
+    loud: bool = False,
+    log_context: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     for attempt in range(_GH_MAX_RETRIES):
         proc = run(["gh", *args], check=False, loud=(loud and attempt == 0))
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
             if attempt > 0 and proc.returncode == 0:
-                log("  gh recovered after transient failure")
+                suffix = f" while {log_context}" if log_context else ""
+                log(f"  gh recovered after transient failure{suffix}")
             if check and proc.returncode != 0:
                 # Replicate the stderr logging that run(check=True) does.
                 err = (proc.stderr or "").rstrip()
@@ -75,8 +80,8 @@ def _gh(
     return proc
 
 
-def _gh_json(args: list[str]) -> Any:
-    return json.loads(_gh(args).stdout)
+def _gh_json(args: list[str], *, log_context: str | None = None) -> Any:
+    return json.loads(_gh(args, log_context=log_context).stdout)
 
 
 def _gh_json_lenient(args: list[str], allowed_exit_codes: tuple[int, ...]) -> Any:
@@ -110,7 +115,7 @@ def _gh_pr_checks_json(args: list[str]) -> list[dict]:
     return []  # unreachable
 
 
-def get_pr(pr: int) -> dict:
+def get_pr(pr: int, *, log_context: str | None = None) -> dict:
     data = _gh_json(
         [
             "pr",
@@ -133,11 +138,13 @@ def get_pr(pr: int) -> dict:
                     "headRepositoryOwner",
                     "labels",
                     "maintainerCanModify",
+                    "mergeStateStatus",
                     "reviewDecision",
                     "url",
                 ]
             ),
-        ]
+        ],
+        log_context=log_context,
     )
     return taint_dict(data, "pr_metadata", ["title", "body", "headRefName"])
 

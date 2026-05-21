@@ -203,6 +203,57 @@ class TestMergebotIgnoredChecks(unittest.TestCase):
 
 
 class TestWatchStackPostHandoff(unittest.TestCase):
+    def test_watch_post_handoff_returns_conflict_from_github_merge_state(self):
+        with mock.patch.object(
+            handoff.github,
+            "get_pr",
+            return_value={
+                "number": 101,
+                "state": "OPEN",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "DIRTY",
+            },
+        ), mock.patch.object(handoff.github, "get_pr_comments", return_value=[]):
+            result = handoff.watch_post_handoff(
+                101, "2026-05-08T13:00:00Z"
+            )
+
+        self.assertEqual(result, ("conflict", None, None))
+
+    def test_watch_post_handoff_does_not_interrupt_active_merge_for_dirty_state(self):
+        pr_states = [
+            {
+                "number": 101,
+                "state": "OPEN",
+                "reviewDecision": "APPROVED",
+                "labels": [{"name": github.MERGING_LABEL}],
+                "mergeStateStatus": "DIRTY",
+            },
+            {
+                "number": 101,
+                "state": "CLOSED",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "DIRTY",
+            },
+        ]
+
+        with mock.patch.object(
+            handoff.github, "get_pr", side_effect=pr_states
+        ), mock.patch.object(
+            handoff.github, "get_pr_comments", return_value=[]
+        ), mock.patch.object(
+            handoff.github, "get_pr_checks_all", return_value=[]
+        ), mock.patch.object(
+            handoff.time, "sleep"
+        ):
+            result = handoff.watch_post_handoff(
+                101, "2026-05-08T13:00:00Z"
+            )
+
+        self.assertEqual(result, ("closed", None, None))
+
     def test_returns_failed_member(self):
         comments = {
             101: [],
@@ -215,7 +266,7 @@ class TestWatchStackPostHandoff(unittest.TestCase):
             ],
         }
 
-        def get_pr(pr):
+        def get_pr(pr, **kwargs):
             return {
                 "number": pr,
                 "state": "OPEN",
@@ -243,7 +294,7 @@ class TestWatchStackPostHandoff(unittest.TestCase):
         self.assertIn("Merge failed", result[3])
 
     def test_returns_closed_member(self):
-        def get_pr(pr):
+        def get_pr(pr, **kwargs):
             return {
                 "number": pr,
                 "state": "CLOSED" if pr == 101 else "OPEN",

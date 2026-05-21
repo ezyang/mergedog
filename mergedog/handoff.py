@@ -297,6 +297,11 @@ def is_merge_conflict_failure(body: str) -> bool:
     return "CONFLICT" in body and "Merge conflict" in body
 
 
+def _pr_has_merge_conflicts(pr_data: dict) -> bool:
+    """True when GitHub's merge box reports branch conflicts."""
+    return (pr_data.get("mergeStateStatus") or "").upper() == "DIRTY"
+
+
 def latest_mergebot_event(
     pr: int, since_iso: str
 ) -> tuple[str, str, str] | None:
@@ -443,11 +448,14 @@ def watch_post_handoff(
       - ``("failed", event_iso, body)`` -- pytorchmergebot reported a merge
         failure; caller should persist ``event_iso`` so a future restart
         won't re-react to the same comment.
+      - ``("conflict", None, None)``   -- GitHub reports the PR branch has
+        conflicts with the base branch before mergebot produced a failure
+        comment; caller should refresh the branch.
     """
     last_state: str | None = None
     last_merging_msg: str | None = None
     while True:
-        pr_data = github.get_pr(pr)
+        pr_data = github.get_pr(pr, log_context="watching post-handoff")
         merging = github.has_label(pr_data, github.MERGING_LABEL)
         approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
@@ -455,6 +463,9 @@ def watch_post_handoff(
         _write_handoff_status(pr, approved=approved, merging=merging)
         if pr_data.get("state") != "OPEN":
             return "closed", None, None
+        if not merging and _pr_has_merge_conflicts(pr_data):
+            log("GitHub reports branch conflicts after handoff; rebasing onto main")
+            return "conflict", None, None
         event = latest_mergebot_event(pr, since_iso)
         kind = event[0] if event else None
         if kind == "failed":
@@ -526,7 +537,7 @@ def watch_stack_post_handoff(
         started_prs: list[int] = []
         merging_prs: list[int] = []
         for pr in prs:
-            pr_data = github.get_pr(pr)
+            pr_data = github.get_pr(pr, log_context="watching post-handoff stack")
             if pr_data.get("state") != "OPEN":
                 set_merging(False)
                 set_approved(False)
@@ -540,6 +551,11 @@ def watch_stack_post_handoff(
             any_approved = any_approved or approved
             if merging:
                 merging_prs.append(pr)
+            if not merging and _pr_has_merge_conflicts(pr_data):
+                set_merging(any_merging)
+                set_approved(any_approved)
+                log(f"GitHub reports branch conflicts after handoff on PR #{pr}")
+                return "conflict", pr, None, None
 
             event = latest_mergebot_event(pr, prs_since_iso[pr])
             kind = event[0] if event else None

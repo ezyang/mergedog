@@ -30,6 +30,22 @@ class TestGhRetries(unittest.TestCase):
         )
         log.assert_any_call("  gh recovered after transient failure")
 
+    def test_logs_recovery_context_after_retry_success(self):
+        calls = [
+            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+            subprocess.CompletedProcess(["gh"], 0, "{}", ""),
+        ]
+
+        with mock.patch.object(github, "run", side_effect=calls), mock.patch.object(
+            github.time, "sleep"
+        ), mock.patch.object(github, "log") as log:
+            proc = github._gh(["pr", "view", "1"], log_context="watching post-handoff")
+
+        self.assertEqual(proc.returncode, 0)
+        log.assert_any_call(
+            "  gh recovered after transient failure while watching post-handoff"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
