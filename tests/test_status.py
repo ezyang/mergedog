@@ -17,6 +17,8 @@ class TestStructuredStatus(unittest.TestCase):
                 category="waiting",
                 waiting_on="ci",
                 message="waiting for CI: 45/52 checks done",
+                intervention_count=2,
+                human_ack_sha="a" * 40,
                 approved=True,
                 merging=False,
                 ci_done=45,
@@ -35,6 +37,8 @@ class TestStructuredStatus(unittest.TestCase):
             self.assertEqual(raw["category"], "waiting")
             self.assertEqual(raw["waiting_on"], "ci")
             self.assertEqual(raw["message"], "waiting for CI: 45/52 checks done")
+            self.assertEqual(raw["intervention_count"], 2)
+            self.assertEqual(raw["human_ack_sha"], "a" * 40)
             self.assertEqual(raw["ci_done"], 45)
             self.assertEqual(raw["ci_total"], 52)
             self.assertEqual(raw["ci_failed"], 2)

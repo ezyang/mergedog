@@ -397,19 +397,49 @@ def mergebot_ignored_check_names(
 _POLL_INTERVAL_SEC = 60
 
 
-def _write_handoff_status(pr: int, *, approved: bool, merging: bool) -> None:
+def _intervention_suffix(intervention_count: int | None) -> str:
+    if intervention_count is None:
+        return ""
+    plural = "" if intervention_count == 1 else "s"
+    return (
+        f"; {intervention_count} mergedog intervention{plural} "
+        "since last approval"
+    )
+
+
+def _write_handoff_status(
+    pr: int,
+    *,
+    approved: bool,
+    merging: bool,
+    intervention_count: int | None = None,
+    human_ack_sha: str | None = None,
+) -> None:
+    if merging:
+        category = "waiting"
+        waiting_on = "mergebot"
+        user_action = None
+        message = "mergebot picked up the merge; waiting for outcome"
+    elif approved:
+        category = "ready"
+        waiting_on = None
+        user_action = "merge when satisfied"
+        message = "ready for human merge"
+    else:
+        category = "ready"
+        waiting_on = "approval"
+        user_action = "approve the PR after reviewing mergedog interventions"
+        message = "waiting for maintainer approval"
     try:
         write_status(
             pr,
             phase="watching_merge" if merging else "ready",
-            category="waiting" if merging else "ready",
-            waiting_on="mergebot" if merging else None,
-            user_action=None if merging else "approve and merge when satisfied",
-            message=(
-                "mergebot picked up the merge; waiting for outcome"
-                if merging
-                else "ready for human merge"
-            ),
+            category=category,
+            waiting_on=waiting_on,
+            user_action=user_action,
+            message=message + _intervention_suffix(intervention_count),
+            intervention_count=intervention_count,
+            human_ack_sha=human_ack_sha,
             approved=approved,
             merging=merging,
         )
@@ -442,7 +472,11 @@ def _merging_progress_line(pr: int) -> str:
 
 
 def watch_post_handoff(
-    pr: int, since_iso: str
+    pr: int,
+    since_iso: str,
+    *,
+    intervention_count: int | None = None,
+    human_ack_sha: str | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -468,7 +502,13 @@ def watch_post_handoff(
         approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
         set_approved(approved)
-        _write_handoff_status(pr, approved=approved, merging=merging)
+        _write_handoff_status(
+            pr,
+            approved=approved,
+            merging=merging,
+            intervention_count=intervention_count,
+            human_ack_sha=human_ack_sha,
+        )
         if pr_data.get("state") != "OPEN":
             return "closed", None, None
         if not merging and _pr_has_merge_conflicts(pr_data):

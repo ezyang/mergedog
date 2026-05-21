@@ -403,6 +403,64 @@ def _fixing_ci_message(
     )
 
 
+def _intervention_suffix(intervention_count: int) -> str:
+    plural = "" if intervention_count == 1 else "s"
+    return (
+        f"{intervention_count} mergedog intervention{plural} "
+        "since last approval"
+    )
+
+
+def _status_with_interventions(message: str, intervention_count: int) -> str:
+    return f"{message}; {_intervention_suffix(intervention_count)}"
+
+
+def _latest_trusted_approval_sha(pr: int) -> str | None:
+    audit = github.get_pr_review_audit(pr)
+    trusted_approvals = [
+        r for r in audit["reviews"]
+        if r.get("state") == "APPROVED"
+        and github.is_trusted_association(r.get("association"))
+        and r.get("commit_id")
+    ]
+    if not trusted_approvals:
+        return None
+    trusted_approvals.sort(key=lambda r: r.get("submitted_at") or "")
+    return trusted_approvals[-1]["commit_id"]
+
+
+def _count_mergedog_interventions_since_ack(
+    worktree: Path,
+    human_ack_sha: str | None,
+) -> int:
+    if not human_ack_sha:
+        return 0
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "rev-list",
+                "--first-parent",
+                "--grep=^\\[MERGEDOG\\]",
+                "--count",
+                f"{human_ack_sha}..HEAD",
+            ],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    if proc.returncode != 0:
+        return 0
+    try:
+        return max(0, int(proc.stdout.strip() or "0"))
+    except ValueError:
+        return 0
+
+
 def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
@@ -1372,7 +1430,7 @@ def _shepherd_body(
     trusted_pr = self_pr or is_ghstack
     if self_pr:
         log(f"PR authored by current user ({viewer}); skipping approval gate")
-    seed_trust_from_reviews(
+    human_ack_sha = seed_trust_from_reviews(
         trust, pr, pr_data, accept_divergence, self_pr=self_pr
     )
     head_sha = pr_data["headRefOid"]
@@ -1431,12 +1489,19 @@ def _shepherd_body(
     recovery_attempts = 0
     last_approved: bool | None = None
     last_merging: bool | None = None
+    intervention_count = _count_mergedog_interventions_since_ack(
+        worktree, human_ack_sha
+    )
     _write_status_best_effort(
         pr,
         phase="starting",
         category="action",
         action="starting",
-        message="starting shepherd",
+        message=_status_with_interventions(
+            "starting shepherd", intervention_count
+        ),
+        intervention_count=intervention_count,
+        human_ack_sha=human_ack_sha,
         approved=last_approved,
         merging=last_merging,
         fix_attempts=fix_commits_pushed,
@@ -1584,6 +1649,14 @@ def _shepherd_body(
             approved, merging = _refresh_status_prefix(pr)
             if approved is not None:
                 last_approved = approved
+                if approved:
+                    try:
+                        refreshed_ack_sha = _latest_trusted_approval_sha(pr)
+                    except Exception as e:
+                        log(f"WARNING: could not refresh approval baseline: {e}")
+                    else:
+                        if refreshed_ack_sha:
+                            human_ack_sha = refreshed_ack_sha
             if merging is not None:
                 last_merging = merging
             # 1. Verify the PR head is still trusted.
@@ -1607,6 +1680,9 @@ def _shepherd_body(
                     f"PR head moved to untrusted commit {current[:12]}: "
                     f"{subject!r}. Manual intervention required."
                 )
+            intervention_count = _count_mergedog_interventions_since_ack(
+                worktree, human_ack_sha
+            )
 
             # 2. Approve any approval-pending workflow runs.
             approved = _approve_pending_runs(current, run_state_cache)
@@ -1689,9 +1765,14 @@ def _shepherd_body(
                 category="waiting" if status == "pending" else "action",
                 waiting_on="ci" if status == "pending" else None,
                 action="inspecting_ci" if status != "pending" else None,
-                message=_ci_status_message(
-                    status, done, len(checks), active_failed_count
+                message=_status_with_interventions(
+                    _ci_status_message(
+                        status, done, len(checks), active_failed_count
+                    ),
+                    intervention_count,
                 ),
+                intervention_count=intervention_count,
+                human_ack_sha=human_ack_sha,
                 approved=last_approved,
                 merging=last_merging,
                 ci_done=done,
@@ -1730,13 +1811,18 @@ def _shepherd_body(
                             phase="waiting_stack_parent",
                             category="waiting",
                             waiting_on="stack_parent",
-                            message=(
-                                f"waiting for stack parent "
-                                f"#{ghstack_parent.parent_pr}: "
-                                f"{parent_status.reason}; parent "
-                                f"{parent_status.parent_done}/"
-                                f"{parent_status.parent_total} checks done"
+                            message=_status_with_interventions(
+                                (
+                                    f"waiting for stack parent "
+                                    f"#{ghstack_parent.parent_pr}: "
+                                    f"{parent_status.reason}; parent "
+                                    f"{parent_status.parent_done}/"
+                                    f"{parent_status.parent_total} checks done"
+                                ),
+                                intervention_count,
                             ),
+                            intervention_count=intervention_count,
+                            human_ack_sha=human_ack_sha,
                             approved=last_approved,
                             merging=last_merging,
                             ci_done=done,
@@ -1924,11 +2010,16 @@ def _shepherd_body(
                     phase="fixing_ci",
                     category="action",
                     action="fixing_ci",
-                    message=_fixing_ci_message(
-                        active_failed_count,
-                        fix_commits_pushed,
-                        max_fix_attempts_status,
+                    message=_status_with_interventions(
+                        _fixing_ci_message(
+                            active_failed_count,
+                            fix_commits_pushed,
+                            max_fix_attempts_status,
+                        ),
+                        intervention_count,
                     ),
+                    intervention_count=intervention_count,
+                    human_ack_sha=human_ack_sha,
                     approved=last_approved,
                     merging=last_merging,
                     ci_done=done,
@@ -2278,9 +2369,12 @@ def _shepherd_body(
                         phase="polling_ci",
                         category="waiting",
                         waiting_on="ci_stability",
-                        message=(
-                            f"CI passed; waiting {remaining}s for stability"
+                        message=_status_with_interventions(
+                            f"CI passed; waiting {remaining}s for stability",
+                            intervention_count,
                         ),
+                        intervention_count=intervention_count,
+                        human_ack_sha=human_ack_sha,
                         approved=last_approved,
                         merging=last_merging,
                         ci_done=done,
@@ -2319,12 +2413,27 @@ def _shepherd_body(
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
             log("ALL CI GREEN.")
+            ready_for_merge = last_approved is not False
+            ready_message = (
+                "ready for human merge: CI is green"
+                if ready_for_merge
+                else "waiting for maintainer approval: CI is green"
+            )
+            ready_user_action = (
+                "review mergedog handoff and merge when satisfied"
+                if ready_for_merge
+                else "approve the PR after reviewing mergedog interventions"
+            )
             _write_status_best_effort(
                 pr,
                 phase="ready",
                 category="ready",
-                user_action="review mergedog handoff and merge when satisfied",
-                message="ready for human merge: CI is green",
+                user_action=ready_user_action,
+                message=_status_with_interventions(
+                    ready_message, intervention_count
+                ),
+                intervention_count=intervention_count,
+                human_ack_sha=human_ack_sha,
                 approved=last_approved,
                 merging=last_merging,
                 ci_done=done,
@@ -2362,25 +2471,46 @@ def _shepherd_body(
             "Hand off to a human reviewer; have them "
             f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}."
         )
+        if last_approved is False:
+            handoff_category = "ready"
+            handoff_waiting_on = "approval"
+            handoff_user_action = (
+                "approve the PR after reviewing mergedog interventions"
+            )
+            handoff_message = "waiting for maintainer approval"
+        else:
+            handoff_category = "waiting"
+            handoff_waiting_on = "human_merge"
+            handoff_user_action = (
+                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+            )
+            handoff_message = (
+                "waiting for human reviewer to "
+                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+            )
         _write_status_best_effort(
             pr,
             phase="watching_merge",
-            category="waiting",
-            waiting_on="human_merge",
-            user_action=(
-                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+            category=handoff_category,
+            waiting_on=handoff_waiting_on,
+            user_action=handoff_user_action,
+            message=_status_with_interventions(
+                handoff_message, intervention_count
             ),
-            message=(
-                "waiting for human reviewer to "
-                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
-            ),
+            intervention_count=intervention_count,
+            human_ack_sha=human_ack_sha,
             approved=last_approved,
             merging=last_merging,
             fix_attempts=fix_commits_pushed,
             max_fix_attempts=max_fix_attempts_status,
         )
 
-        result, event_iso, fail_body = watch_post_handoff(pr, since_iso)
+        result, event_iso, fail_body = watch_post_handoff(
+            pr,
+            since_iso,
+            intervention_count=intervention_count,
+            human_ack_sha=human_ack_sha,
+        )
         if result == "closed":
             complete(
                 "PR is no longer open; shepherd complete",

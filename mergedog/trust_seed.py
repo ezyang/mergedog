@@ -18,7 +18,7 @@ def seed_trust_from_reviews(
     pr_data: dict,
     accept_divergence: bool,
     self_pr: bool = False,
-) -> None:
+) -> str | None:
     """Establish the initial trusted SHA from GitHub PR reviews.
 
     Queries the PR's reviews via GraphQL and finds the most recent
@@ -38,12 +38,15 @@ def seed_trust_from_reviews(
     maintainer-approval gate entirely (you're allowed to iterate on your
     own CI before review) and trust the current head directly; the main
     loop continues to roll the trust forward as the author pushes.
+
+    Returns the SHA that represents the latest human acknowledgement
+    baseline for status reporting.
     """
     if self_pr:
         head_sha = pr_data["headRefOid"]
         log(f"self-authored PR; trusting current head {head_sha[:12]} directly")
         trust.trust(head_sha)
-        return
+        return head_sha
 
     audit = github.get_pr_review_audit(pr)
     decision = audit.get("decision")
@@ -107,6 +110,7 @@ def seed_trust_from_reviews(
             f"--accept-divergence given; trusting head as well."
         )
         trust.trust(head_sha)
+        approval_sha = head_sha
     else:
         die(
             f"current PR head {head_sha[:12]} differs from the latest "
@@ -115,3 +119,4 @@ def seed_trust_from_reviews(
             f"commits after approval. Rerun with --accept-divergence "
             f"after re-reviewing, or get a fresh approval."
         )
+    return approval_sha

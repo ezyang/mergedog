@@ -132,6 +132,32 @@ class TestHandoffComments(unittest.TestCase):
             "2026-05-08T15:00:00Z",
         )
 
+    def test_handoff_status_waits_for_approval_when_not_approved(self):
+        with mock.patch.object(handoff, "write_status") as write_status:
+            handoff._write_handoff_status(
+                101,
+                approved=False,
+                merging=False,
+                intervention_count=2,
+                human_ack_sha="a" * 40,
+            )
+
+        write_status.assert_called_once_with(
+            101,
+            phase="ready",
+            category="ready",
+            waiting_on="approval",
+            user_action="approve the PR after reviewing mergedog interventions",
+            message=(
+                "waiting for maintainer approval; "
+                "2 mergedog interventions since last approval"
+            ),
+            intervention_count=2,
+            human_ack_sha="a" * 40,
+            approved=False,
+            merging=False,
+        )
+
 
 class TestMergebotIgnoredChecks(unittest.TestCase):
     def test_extracts_current_failed_checks_from_trusted_mergebot_comment(self):

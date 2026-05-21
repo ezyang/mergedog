@@ -1,3 +1,5 @@
+import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +17,7 @@ from mergedog.shepherd import (
     _llm_requested_rebase,
     _llm_signalled_inconclusive,
     _latest_completed_at,
+    _count_mergedog_interventions_since_ack,
     _spurious_check_names_from_checks,
     describe_log_state,
 )
@@ -225,6 +228,51 @@ class TestGhstackMergeabilityFailure(unittest.TestCase):
             )
         )
         self.assertFalse(_is_ghstack_mergeability_failure(["pull / linux"]))
+
+
+class TestInterventionCount(unittest.TestCase):
+    def _git(self, worktree: Path, *args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return proc.stdout.strip()
+
+    def _commit(self, worktree: Path, subject: str) -> str:
+        path = worktree / "file.txt"
+        path.write_text(path.read_text() + subject + "\n")
+        self._git(worktree, "add", "file.txt")
+        self._git(worktree, "commit", "-m", subject)
+        return self._git(worktree, "rev-parse", "HEAD")
+
+    def test_counts_mergedog_commits_since_human_ack(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+            self._git(worktree, "init")
+            self._git(worktree, "config", "user.name", "Test User")
+            self._git(worktree, "config", "user.email", "test@example.com")
+            (worktree / "file.txt").write_text("")
+            self._git(worktree, "add", "file.txt")
+            self._git(worktree, "commit", "-m", "Contributor change")
+            ack_sha = self._git(worktree, "rev-parse", "HEAD")
+
+            self._commit(worktree, "[MERGEDOG] Fix CI")
+            self._commit(worktree, "Contributor follow-up")
+            self._commit(worktree, "[MERGEDOG] Merge main into PR branch")
+
+            self.assertEqual(
+                _count_mergedog_interventions_since_ack(worktree, ack_sha),
+                2,
+            )
+            self.assertEqual(
+                _count_mergedog_interventions_since_ack(
+                    worktree, self._git(worktree, "rev-parse", "HEAD")
+                ),
+                0,
+            )
 
 
 class TestDescribeLogState(unittest.TestCase):
