@@ -25,6 +25,14 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("touch .mergedog-inconclusive", prompt)
         self.assertIn("Choose this only if you genuinely", prompt)
 
+    def test_fix_prompt_warns_against_xpass_marker_removal(self):
+        prompt = render_fix_prompt(**_BASE_KWARGS)
+
+        self.assertIn("Caution on XPASS / unexpected-success failures", prompt)
+        self.assertIn("test-policy change", prompt)
+        self.assertIn("Do NOT do it just because CI says", prompt)
+        self.assertIn("prefer INCONCLUSIVE", prompt)
+
     def test_section_omitted_when_no_earlier_members(self):
         prompt = render_fix_prompt(**_BASE_KWARGS)
         self.assertNotIn("earlier-stack status", prompt)

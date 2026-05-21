@@ -75,6 +75,20 @@ Caution on dr. ci FLAKY classifications:
   (e.g. three different Python versions) is evidence of a real, \
   reproducible failure -- not a coincidental flake.
 
+Caution on XPASS / unexpected-success failures:
+
+  An XPASS means a test marked as an expected failure unexpectedly passed. \
+  Removing or weakening an existing ``xfail``, ``expectedFailure``, skip, \
+  or OpInfo failure decorator is a test-policy change, not a normal code \
+  fix. Do NOT do it just because CI says "Unexpected success" and the edit \
+  looks small. Only remove or narrow such a marker when the sidecar or \
+  trusted operator context makes clear that this PR intentionally fixes the \
+  underlying expected failure, or when the marker itself is plainly part of \
+  the approved PR change you are shepherding. If the PR's code change makes \
+  a pre-existing expected-failure test pass as a side effect, prefer \
+  INCONCLUSIVE (or TOO_HARD if the relation is clear but the right policy \
+  call needs human review) instead of committing a marker removal.
+
 Commit message contract (when you do commit):
 
   - Subject line: starts with ``[MERGEDOG] `` followed by a one-line \
