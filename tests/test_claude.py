@@ -88,6 +88,54 @@ class TestInvoke(unittest.TestCase):
         )
         self.assertFalse(marker.exists())
 
+    def test_rebase_resolution_allows_multiple_replayed_commits(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(
+                    claude,
+                    "head_sha",
+                    side_effect=["a" * 40, "b" * 40],
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("claude"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "is_rebase_in_progress",
+                    return_value=False,
+                ),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+                mock.patch.object(claude, "_commits_between", return_value=4),
+                mock.patch.object(
+                    claude,
+                    "head_subject",
+                    return_value="[MERGEDOG] Propagate parent update downstream",
+                ),
+            ):
+                result = claude.invoke_rebase_resolver(
+                    worktree,
+                    "prompt",
+                    allow_multiple_commits=True,
+                )
+
+        self.assertTrue(result.ran_cleanly)
+        self.assertEqual(result.new_sha, "b" * 40)
+
 
 if __name__ == "__main__":
     unittest.main()

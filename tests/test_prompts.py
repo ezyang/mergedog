@@ -1,6 +1,10 @@
 import unittest
 
-from mergedog.prompts import render_fix_prompt, render_operator_fix_prompt
+from mergedog.prompts import (
+    render_fix_prompt,
+    render_operator_fix_prompt,
+    render_rebase_conflict_prompt,
+)
 
 
 _BASE_KWARGS = dict(
@@ -127,6 +131,18 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("Return type should be a TypeGuard.", prompt)
         self.assertIn("Do NOT push", prompt)
         self.assertNotIn("Failed CI jobs", prompt)
+
+    def test_rebase_prompt_allows_replaying_existing_commits_only(self):
+        prompt = render_rebase_conflict_prompt(
+            url="https://github.com/pytorch/pytorch/pull/1",
+            branch="gh/u/1/head",
+            context_path="/tmp/ctx.txt",
+        )
+
+        self.assertIn("Do not make standalone commits", prompt)
+        self.assertIn("may replay multiple existing PR", prompt)
+        self.assertIn("mergedog commits; that is expected", prompt)
+        self.assertIn("let git continue the in-progress rebase", prompt)
 
 
 if __name__ == "__main__":

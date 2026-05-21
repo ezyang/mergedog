@@ -891,7 +891,11 @@ def _rebase_ghstack_onto_main(
         )
         sha_before = repo.head_sha(worktree)
         started_at = utc_now_iso()
-        result = claude_mod.invoke_rebase_resolver(worktree, prompt)
+        result = claude_mod.invoke_rebase_resolver(
+            worktree,
+            prompt,
+            allow_multiple_commits=True,
+        )
         ran_cleanly, new_orig_sha, transcript = result
         _record_claude_session(
             sessions,

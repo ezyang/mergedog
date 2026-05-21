@@ -502,6 +502,12 @@ cleanly.
      ``git add`` the resolved files, and run ``git rebase --continue``. \
      Do NOT push.
 
+     Do not make standalone commits, split commits, squash commits, amend \
+     commit messages, or otherwise rewrite the rebase plan yourself. A \
+     successful ``git rebase --continue`` may replay multiple existing PR or \
+     mergedog commits; that is expected. Your job is only to resolve the \
+     current conflict(s) and let git continue the in-progress rebase.
+
   2. To give up: run ``git rebase --abort`` and exit without making a commit. \
      The harness will halt for human intervention.
 
