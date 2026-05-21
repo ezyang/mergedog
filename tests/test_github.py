@@ -47,5 +47,23 @@ class TestGhRetries(unittest.TestCase):
         )
 
 
+class TestPrMergeCommit(unittest.TestCase):
+    def test_returns_merge_commit_for_merged_pr(self):
+        with mock.patch.object(
+            github,
+            "_gh_json",
+            return_value={"state": "MERGED", "mergeCommit": {"oid": "abc123"}},
+        ):
+            self.assertEqual(github.get_pr_merge_commit_sha(1), "abc123")
+
+    def test_returns_none_for_open_pr(self):
+        with mock.patch.object(
+            github,
+            "_gh_json",
+            return_value={"state": "OPEN", "mergeCommit": None},
+        ):
+            self.assertIsNone(github.get_pr_merge_commit_sha(1))
+
+
 if __name__ == "__main__":
     unittest.main()

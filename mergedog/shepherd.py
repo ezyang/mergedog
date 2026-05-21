@@ -159,6 +159,7 @@ class _GhstackParentStatus:
     child_orig_sha: str
     child_parent_sha: str
     reason: str
+    replay_base_sha: str | None = None
 
 
 def _llm_label() -> str:
@@ -529,6 +530,40 @@ def _refresh_ghstack_parent_status(
     )
 
 
+def _maybe_use_landed_ghstack_parent_base(
+    dep: _GhstackParentDependency, status: _GhstackParentStatus
+) -> bool:
+    """If the parent PR landed, replay the child onto the landed commit."""
+    merge_sha = github.get_pr_merge_commit_sha(dep.parent_pr)
+    if merge_sha is None:
+        return False
+
+    repo.fetch_origin()
+    if not repo.is_ancestor(merge_sha, "origin/main"):
+        status.parent_ready = False
+        status.stale = True
+        status.reason = (
+            f"parent PR merged as {merge_sha[:12]}, but origin/main does not "
+            "contain it yet"
+        )
+        return False
+
+    landed_tree = repo.tree_sha(merge_sha)
+    child_parent_tree = repo.tree_sha(status.child_parent_sha)
+    status.stale = child_parent_tree != landed_tree
+    status.parent_ready = True
+    status.replay_base_sha = merge_sha
+    if status.stale:
+        status.reason = (
+            f"parent PR merged as {merge_sha[:12]}; replaying child onto landed tree"
+        )
+    else:
+        status.reason = (
+            f"parent PR merged as {merge_sha[:12]}; child already has landed tree"
+        )
+    return True
+
+
 def _publish_ghstack_parent_rebase(
     pr: int,
     worktree: Path,
@@ -563,11 +598,12 @@ def _publish_ghstack_parent_rebase(
         )
         return False
 
+    base_sha = status.replay_base_sha or status.parent_orig_sha
     log(
         f"rebasing PR #{pr} onto updated stack parent PR #{dep.parent_pr} "
-        f"({status.child_parent_sha[:12]} -> {status.parent_orig_sha[:12]})"
+        f"({status.child_parent_sha[:12]} -> {base_sha[:12]})"
     )
-    repo.set_worktree_to_sha(worktree, status.parent_orig_sha)
+    repo.set_worktree_to_sha(worktree, base_sha)
     try:
         repo.ghstack_cherry_pick(worktree, pr)
     except subprocess.CalledProcessError:
@@ -1621,6 +1657,9 @@ def _shepherd_body(
 
             if ghstack_parent is not None:
                 parent_status = _refresh_ghstack_parent_status(ghstack_parent)
+                _maybe_use_landed_ghstack_parent_base(
+                    ghstack_parent, parent_status
+                )
                 if parent_status.stale:
                     log_state_key = (
                         f"{parent_status.reason}; "

@@ -584,6 +584,10 @@ def _is_ancestor(ancestor: str, descendant: str) -> bool:
     return proc.returncode == 0
 
 
+def is_ancestor(ancestor: str, descendant: str) -> bool:
+    return _is_ancestor(ancestor, descendant)
+
+
 def _find_latest_revert(since: str, until: str) -> str | None:
     """Find the most recent revert commit on ``until`` after ``since``.
 

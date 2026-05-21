@@ -194,6 +194,111 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
 
 
 class TestPublishGhstackParentRebase(unittest.TestCase):
+    def test_landed_parent_base_marks_parent_ready(self):
+        dep = _dep()
+        status = shepherd._GhstackParentStatus(
+            stale=True,
+            parent_ready=False,
+            parent_status="pending",
+            parent_done=0,
+            parent_total=1,
+            parent_orig_sha="P_NEW",
+            child_orig_sha="C_OLD",
+            child_parent_sha="P_OLD",
+            reason="parent CI is pending",
+        )
+
+        with mock.patch.object(
+            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+        ), mock.patch.object(
+            shepherd.repo, "fetch_origin"
+        ) as fetch_origin, mock.patch.object(
+            shepherd.repo, "is_ancestor", return_value=True
+        ) as is_ancestor, mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_LANDED": "P_LANDED_TREE", "P_OLD": "P_OLD_TREE"}
+            ),
+        ):
+            changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
+
+        self.assertTrue(changed)
+        self.assertTrue(status.stale)
+        self.assertTrue(status.parent_ready)
+        self.assertEqual(status.replay_base_sha, "P_LANDED")
+        self.assertEqual(
+            status.reason,
+            "parent PR merged as P_LANDED; replaying child onto landed tree",
+        )
+        fetch_origin.assert_called_once()
+        is_ancestor.assert_called_once_with("P_LANDED", "origin/main")
+
+    def test_landed_parent_base_clears_stale_when_child_already_matches_landed_tree(self):
+        dep = _dep()
+        status = shepherd._GhstackParentStatus(
+            stale=True,
+            parent_ready=False,
+            parent_status="pending",
+            parent_done=0,
+            parent_total=1,
+            parent_orig_sha="P_NEW",
+            child_orig_sha="C_OLD",
+            child_parent_sha="P_OLD",
+            reason="parent CI is pending",
+        )
+
+        with mock.patch.object(
+            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+        ), mock.patch.object(
+            shepherd.repo, "fetch_origin"
+        ), mock.patch.object(
+            shepherd.repo, "is_ancestor", return_value=True
+        ), mock.patch.object(
+            shepherd.repo,
+            "tree_sha",
+            side_effect=_tree_sha(
+                {"P_LANDED": "SAME_TREE", "P_OLD": "SAME_TREE"}
+            ),
+        ):
+            changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
+
+        self.assertTrue(changed)
+        self.assertFalse(status.stale)
+        self.assertTrue(status.parent_ready)
+        self.assertEqual(status.replay_base_sha, "P_LANDED")
+
+    def test_landed_parent_base_waits_until_origin_main_contains_merge(self):
+        dep = _dep()
+        status = shepherd._GhstackParentStatus(
+            stale=True,
+            parent_ready=True,
+            parent_status="passed",
+            parent_done=1,
+            parent_total=1,
+            parent_orig_sha="P_NEW",
+            child_orig_sha="C_OLD",
+            child_parent_sha="P_OLD",
+            reason="parent is green-stable",
+        )
+
+        with mock.patch.object(
+            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+        ), mock.patch.object(
+            shepherd.repo, "fetch_origin"
+        ), mock.patch.object(
+            shepherd.repo, "is_ancestor", return_value=False
+        ):
+            changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
+
+        self.assertFalse(changed)
+        self.assertFalse(status.parent_ready)
+        self.assertIsNone(status.replay_base_sha)
+        self.assertEqual(
+            status.reason,
+            "parent PR merged as P_LANDED, but origin/main does not contain it yet",
+        )
+
     def test_rebases_child_onto_parent_and_submits_only_child(self):
         dep = _dep()
         status = shepherd._GhstackParentStatus(
@@ -248,6 +353,55 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         self.assertEqual(trust.trusted_shas, ["C_NEW_HEAD"])
         self.assertEqual(trust.spurious_check_names, [])
         wait_head.assert_called_once_with(101, "C_NEW_HEAD")
+
+    def test_landed_parent_replay_uses_merge_commit_base(self):
+        dep = _dep()
+        status = shepherd._GhstackParentStatus(
+            stale=True,
+            parent_ready=True,
+            parent_status="passed",
+            parent_done=1,
+            parent_total=1,
+            parent_orig_sha="P_NEW",
+            child_orig_sha="C_OLD",
+            child_parent_sha="P_OLD",
+            reason="parent PR merged as P_LANDED; replaying child onto landed tree",
+            replay_base_sha="P_LANDED",
+        )
+        refs = {
+            "gh/u/100/head": "P_HEAD",
+            "gh/u/100/orig": "P_NEW",
+            "gh/u/101/head": "C_HEAD",
+            "gh/u/101/orig": "C_OLD",
+        }
+        trust = _Trust()
+        worktree = Path("/tmp/worktree")
+        with mock.patch.object(
+            shepherd, "_wait_for_no_active_sev", return_value=False
+        ), mock.patch.object(
+            shepherd.repo, "fetch_stack_refs", return_value=refs
+        ), mock.patch.object(
+            shepherd.repo, "set_worktree_to_sha"
+        ) as set_worktree, mock.patch.object(
+            shepherd.repo, "ghstack_cherry_pick"
+        ), mock.patch.object(
+            shepherd.repo, "ghstack_submit"
+        ), mock.patch.object(
+            shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
+        ), mock.patch.object(
+            shepherd, "_wait_for_pr_head"
+        ):
+            changed = shepherd._publish_ghstack_parent_rebase(
+                101,
+                worktree,
+                dep,
+                status,
+                trust,
+                ignore_sev=False,
+            )
+
+        self.assertTrue(changed)
+        set_worktree.assert_called_once_with(worktree, "P_LANDED")
 
     def test_ref_change_aborts_before_submit(self):
         dep = _dep()

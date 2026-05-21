@@ -149,6 +149,25 @@ def get_pr(pr: int, *, log_context: str | None = None) -> dict:
     return taint_dict(data, "pr_metadata", ["title", "body", "headRefName"])
 
 
+def get_pr_merge_commit_sha(pr: int) -> str | None:
+    data = _gh_json(
+        [
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            REPO,
+            "--json",
+            "state,mergeCommit",
+        ],
+    )
+    if data.get("state") != "MERGED":
+        return None
+    merge_commit = data.get("mergeCommit") or {}
+    oid = merge_commit.get("oid")
+    return oid if isinstance(oid, str) and oid else None
+
+
 def viewer_login() -> str:
     """The GitHub login of the user the local ``gh`` CLI is authenticated as."""
     return _gh(["api", "user", "--jq", ".login"]).stdout.strip()
