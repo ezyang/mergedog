@@ -195,7 +195,7 @@ def ensure_clone() -> None:
 
 
 @contextlib.contextmanager
-def _fetch_lock() -> Iterator[None]:
+def _fetch_lock(activity: str | None = None) -> Iterator[None]:
     """Serialize fetches across concurrent shepherds.
 
     The mux launches shepherds in parallel and they all hit ``fetch_origin``
@@ -208,7 +208,12 @@ def _fetch_lock() -> Iterator[None]:
     REPO_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = REPO_DIR / ".mergedog-fetch.lock"
     with open(lock_path, "w") as fp:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if activity:
+                log(f"waiting for shared fetch lock: {activity}")
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
@@ -479,13 +484,15 @@ def fetch_stack_refs(
         for ref in (head_ref, orig_ref):
             refspecs.append(f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
             refs.append(ref)
-    log(f"$ git fetch origin <{len(refs)} stack refs>")
-    with _fetch_lock():
+    activity = f"fetch {len(refs)} stack refs from origin"
+    with _fetch_lock(activity):
+        log(f"fetching {len(refs)} stack refs from origin")
         run(
             ["git", "fetch", "origin", *refspecs],
             cwd=REPO_DIR,
             capture=False,
         )
+    log(f"fetched {len(refs)} stack refs from origin")
     out: dict[str, str] = {}
     for ref in refs:
         out[ref] = run(

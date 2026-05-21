@@ -1,6 +1,7 @@
 import unittest
 import subprocess
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -143,6 +144,44 @@ class TestGhstackRetry(unittest.TestCase):
 
         self.assertEqual(run.call_count, 1)
         sleep.assert_not_called()
+
+
+class TestFetchStackRefs(unittest.TestCase):
+    def test_logs_fetch_as_status_not_command(self):
+        with (
+            mock.patch.object(repo, "_fetch_lock", return_value=nullcontext()) as lock,
+            mock.patch.object(
+                repo,
+                "run",
+                side_effect=[
+                    _completed(0),
+                    _Proc("HEAD_SHA\n"),
+                    _Proc("ORIG_SHA\n"),
+                ],
+            ) as run,
+            mock.patch.object(repo, "log") as log,
+        ):
+            out = repo.fetch_stack_refs([("gh/user/1/head", "gh/user/1/orig")])
+
+        self.assertEqual(
+            out,
+            {
+                "gh/user/1/head": "HEAD_SHA",
+                "gh/user/1/orig": "ORIG_SHA",
+            },
+        )
+        lock.assert_called_once_with("fetch 2 stack refs from origin")
+        log.assert_has_calls(
+            [
+                mock.call("fetching 2 stack refs from origin"),
+                mock.call("fetched 2 stack refs from origin"),
+            ]
+        )
+        self.assertEqual(run.call_args_list[0].kwargs["capture"], False)
+        self.assertNotIn(
+            mock.call("$ git fetch origin <2 stack refs>"),
+            log.call_args_list,
+        )
 
 
 class TestRebaseTargetAdvances(unittest.TestCase):
