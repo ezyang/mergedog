@@ -27,7 +27,7 @@ from mergedog.handoff import (
     watch_post_handoff,
 )
 from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
-from mergedog.log import die, log, set_approved, set_merging
+from mergedog.log import complete, die, log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.project import get_project_policy
 from mergedog.prompts import (
@@ -595,9 +595,10 @@ def _validate_pr(pr_data: dict) -> None:
         # Closed or merged: nothing to do here ever again. Use the
         # completed exit code so the mux can show the final row until
         # the operator explicitly cleans it up.
-        die(
+        complete(
             f"PR is not open (state={state}); shepherd complete",
             code=EXIT_PR_NOT_ACTIONABLE,
+            outcome="MERGED" if state == "MERGED" else "CLOSED",
         )
     if pr_data.get("isDraft"):
         die("PR is a draft")
@@ -2189,9 +2190,10 @@ def _shepherd_body(
 
         result, event_iso, fail_body = watch_post_handoff(pr, since_iso)
         if result == "closed":
-            die(
+            complete(
                 "PR is no longer open; shepherd complete",
                 code=EXIT_PR_NOT_ACTIONABLE,
+                outcome="MERGED",
             )
         # result == "failed": pytorchmergebot rejected the merge. Persist
         # the failure timestamp so we don't re-fire on this same comment,

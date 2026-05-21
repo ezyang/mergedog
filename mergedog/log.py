@@ -13,6 +13,7 @@ from pathlib import Path
 # over ``[APPROVED]`` (a PR being merged is also approved).
 _merging = False
 _approved = False
+_outcome: str | None = None
 _log_file: Path | None = None
 
 
@@ -36,9 +37,16 @@ def set_approved(value: bool) -> None:
     _approved = value
 
 
+def set_outcome(value: str | None) -> None:
+    global _outcome
+    _outcome = value
+
+
 def log(msg: str) -> None:
     ts = time.strftime("%H:%M:%S")
-    if _merging:
+    if _outcome:
+        prefix = f"[{_outcome}] "
+    elif _merging:
         prefix = "[MERGING] "
     elif _approved:
         prefix = "[APPROVED] "
@@ -59,4 +67,10 @@ def die(msg: str, code: int = 1) -> None:
 
     notify.notify_halt(msg)
     log(f"HALT: {msg}")
+    sys.exit(code)
+
+
+def complete(msg: str, *, code: int = 0, outcome: str = "COMPLETE") -> None:
+    set_outcome(outcome)
+    log(msg)
     sys.exit(code)
