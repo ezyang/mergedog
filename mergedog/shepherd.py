@@ -175,9 +175,22 @@ def _llm_signalled_inconclusive(result: object) -> bool:
     return isinstance(reason, str) and reason.startswith("signalled INCONCLUSIVE")
 
 
+def _llm_requested_rebase(result: object) -> bool:
+    reason = getattr(result, "halt_reason", None)
+    return isinstance(reason, str) and reason.startswith("requested REBASE")
+
+
 def _inconclusive_refresh_target(worktree: Path) -> tuple[bool, str]:
     target, reason = repo.select_rebase_target(worktree)
     return repo.rebase_target_advances(worktree, target), reason
+
+
+def _is_ghstack_mergeability_failure(check_names: list[str]) -> bool:
+    return any(
+        name == "ghstack-mergeability-check"
+        or ("ghstack" in name.lower() and "mergeability" in name.lower())
+        for name in check_names
+    )
 
 
 def _failed_logs_are_content_free(
@@ -834,6 +847,8 @@ def _rebase_ghstack_onto_main(
     ignore_sev: bool,
     pr_data: dict | None = None,
     sessions: list[ClaudeSession] | None = None,
+    target_ref: str | None = None,
+    target_reason: str | None = None,
 ) -> None:
     """Rebase /orig onto a known-good point on main and re-publish via ghstack.
 
@@ -845,7 +860,10 @@ def _rebase_ghstack_onto_main(
     ):
         repo.fetch_origin()
 
-    target, reason = repo.select_rebase_target(worktree)
+    if target_ref is None:
+        target, reason = repo.select_rebase_target(worktree)
+    else:
+        target, reason = target_ref, target_reason or target_ref
     log(f"rebase target: {reason}")
 
     try:
@@ -1042,6 +1060,8 @@ def _merge_main_resolving_conflicts(
     *,
     ignore_sev: bool,
     trusted_pr: bool = True,
+    target_ref: str | None = None,
+    target_reason: str | None = None,
 ) -> str | None:
     """Merge a known-good point on main into HEAD, resolving conflicts via claude.
 
@@ -1056,7 +1076,10 @@ def _merge_main_resolving_conflicts(
     if _wait_for_no_active_sev("merging main", ignore_sev=ignore_sev):
         repo.fetch_origin()
 
-    target, reason = repo.select_rebase_target(worktree)
+    if target_ref is None:
+        target, reason = repo.select_rebase_target(worktree)
+    else:
+        target, reason = target_ref, target_reason or target_ref
     log(f"rebase target: {reason}")
 
     try:
@@ -1610,12 +1633,30 @@ def _shepherd_body(
                     )
                     last_status = None
                     continue
-                if fix_commits_pushed >= MAX_FIX_COMMITS:
-                    die(
-                        f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
-                        f"commits and CI is still failing; halting for human "
-                        f"intervention"
+                if is_ghstack and _is_ghstack_mergeability_failure(
+                    active_failed_check_names
+                ):
+                    log(
+                        "ghstack mergeability check failed; rebasing /orig "
+                        "onto origin/main before asking fix-CI"
                     )
+                    _rebase_ghstack_onto_main(
+                        pr,
+                        worktree,
+                        branch,
+                        trust,
+                        ignore_sev=ignore_sev,
+                        pr_data=pr_data,
+                        sessions=sessions,
+                        target_ref="origin/main",
+                        target_reason="origin/main (mergeability check)",
+                    )
+                    spurious_check_names.clear()
+                    trust.spurious_check_names = []
+                    trust.save()
+                    last_status = None
+                    stable_observation = None
+                    continue
                 failed = github.get_failed_job_logs(pr)
                 if not failed and workflow_failed_run_ids:
                     failed = github.get_failed_job_logs_for_runs(
@@ -1624,6 +1665,36 @@ def _shepherd_body(
                 failed = _filter_spurious_failed_jobs(
                     failed, spurious_check_names
                 )
+                if is_ghstack and _is_ghstack_mergeability_failure(
+                    [name for name, _ in failed]
+                ):
+                    log(
+                        "ghstack mergeability job failed; rebasing /orig "
+                        "onto origin/main before asking fix-CI"
+                    )
+                    _rebase_ghstack_onto_main(
+                        pr,
+                        worktree,
+                        branch,
+                        trust,
+                        ignore_sev=ignore_sev,
+                        pr_data=pr_data,
+                        sessions=sessions,
+                        target_ref="origin/main",
+                        target_reason="origin/main (mergeability job)",
+                    )
+                    spurious_check_names.clear()
+                    trust.spurious_check_names = []
+                    trust.save()
+                    last_status = None
+                    stable_observation = None
+                    continue
+                if fix_commits_pushed >= MAX_FIX_COMMITS:
+                    die(
+                        f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
+                        f"commits and CI is still failing; halting for human "
+                        f"intervention"
+                    )
                 failing_check_count = active_failed_count
                 if not failing_check_count and workflow_failed_run_ids:
                     failing_check_count = len(failed)
@@ -1730,6 +1801,72 @@ def _shepherd_body(
                     ),
                 )
                 if not ran_cleanly:
+                    if _llm_requested_rebase(result):
+                        can_refresh, reason = _inconclusive_refresh_target(worktree)
+                        if can_refresh:
+                            log(
+                                f"{_llm_label()} requested REBASE; "
+                                f"refreshing stale base via {reason}"
+                            )
+                            if is_ghstack:
+                                _rebase_ghstack_onto_main(
+                                    pr,
+                                    worktree,
+                                    branch,
+                                    trust,
+                                    ignore_sev=ignore_sev,
+                                    pr_data=pr_data,
+                                    sessions=sessions,
+                                )
+                                spurious_check_names.clear()
+                                trust.spurious_check_names = []
+                                trust.save()
+                            else:
+                                assert fork_remote is not None
+                                merge_sha = _merge_main_resolving_conflicts(
+                                    worktree,
+                                    trust,
+                                    branch,
+                                    pr_data,
+                                    sessions,
+                                    ignore_sev=ignore_sev,
+                                    trusted_pr=trusted_pr,
+                                )
+                                if merge_sha is None:
+                                    die(
+                                        f"{_llm_label()} requested REBASE, "
+                                        "but the selected rebase target no longer "
+                                        "advanced the PR; halting for human review"
+                                    )
+                                log(
+                                    f"pushing refreshed base {merge_sha[:12]} "
+                                    f"to {fork_remote}/{branch}"
+                                )
+                                _safe_push(
+                                    pr,
+                                    worktree,
+                                    fork_remote,
+                                    branch,
+                                    merge_sha,
+                                    reason="pushing requested base refresh",
+                                    ignore_sev=ignore_sev,
+                                )
+                                spurious_check_names.clear()
+                                trust.spurious_check_names = []
+                                trust.save()
+                                _record_pushed_change(
+                                    pushed_changes,
+                                    worktree,
+                                    merge_sha,
+                                    "merged main into the PR branch after LLM requested rebase",
+                                )
+                            last_status = None
+                            continue
+                        die(
+                            f"{_llm_label()} requested REBASE, but the selected "
+                            "rebase target no longer advanced the PR; halting "
+                            "for human review"
+                        )
                     if _llm_signalled_inconclusive(result):
                         can_refresh, reason = _inconclusive_refresh_target(worktree)
                         if can_refresh:
@@ -1824,6 +1961,29 @@ def _shepherd_body(
                     last_status = None  # force re-log on next pass
                     continue
                 elif is_ghstack:
+                    if repo.would_merge_conflict(worktree, "origin/main"):
+                        log(
+                            f"{_llm_label()} fix {new_sha[:12]} conflicts "
+                            "with origin/main; discarding it and rebasing /orig"
+                        )
+                        repo.set_worktree_to_sha(worktree, sha_before)
+                        spurious_check_names.clear()
+                        trust.spurious_check_names = []
+                        trust.save()
+                        _rebase_ghstack_onto_main(
+                            pr,
+                            worktree,
+                            branch,
+                            trust,
+                            ignore_sev=ignore_sev,
+                            pr_data=pr_data,
+                            sessions=sessions,
+                            target_ref="origin/main",
+                            target_reason="origin/main (discarded conflicting fix)",
+                        )
+                        last_status = None
+                        stable_observation = None
+                        continue
                     spurious_check_names.clear()
                     trust.spurious_check_names = []
                     trust.save()
@@ -1836,6 +1996,54 @@ def _shepherd_body(
                     continue
                 else:
                     assert fork_remote is not None
+                    if repo.would_merge_conflict(worktree, "origin/main"):
+                        log(
+                            f"{_llm_label()} fix {new_sha[:12]} conflicts "
+                            "with origin/main; discarding it and refreshing base"
+                        )
+                        repo.set_worktree_to_sha(worktree, sha_before)
+                        merge_sha = _merge_main_resolving_conflicts(
+                            worktree,
+                            trust,
+                            branch,
+                            pr_data,
+                            sessions,
+                            ignore_sev=ignore_sev,
+                            trusted_pr=trusted_pr,
+                            target_ref="origin/main",
+                            target_reason="origin/main (discarded conflicting fix)",
+                        )
+                        if merge_sha is None:
+                            die(
+                                f"{_llm_label()} fix conflicted with origin/main, "
+                                "but refreshing the original PR produced no new "
+                                "commit; halting for human review"
+                            )
+                        log(
+                            f"pushing refreshed base {merge_sha[:12]} "
+                            f"to {fork_remote}/{branch}"
+                        )
+                        _safe_push(
+                            pr,
+                            worktree,
+                            fork_remote,
+                            branch,
+                            merge_sha,
+                            reason="pushing base refresh after discarding conflicting fix",
+                            ignore_sev=ignore_sev,
+                        )
+                        spurious_check_names.clear()
+                        trust.spurious_check_names = []
+                        trust.save()
+                        _record_pushed_change(
+                            pushed_changes,
+                            worktree,
+                            merge_sha,
+                            "merged main into the PR branch after discarding a conflicting LLM fix",
+                        )
+                        last_status = None
+                        stable_observation = None
+                        continue
                     spurious_check_names.clear()
                     trust.spurious_check_names = []
                     trust.trust(new_sha)

@@ -517,6 +517,11 @@ def _invoke(
     if inconclusive:
         inconclusive_path.unlink()
 
+    rebase_path = worktree / ".mergedog-rebase"
+    rebase = rebase_path.exists()
+    if rebase:
+        rebase_path.unlink()
+
     if not _is_clean(worktree):
         reason = "left an uncommitted working tree; refusing to push"
         log(f"{agent} {reason}")
@@ -530,6 +535,10 @@ def _invoke(
             return LLMResult(False, None, transcript, reason)
         if inconclusive:
             reason = "signalled INCONCLUSIVE; halting for human review"
+            log(f"{agent} {reason}")
+            return LLMResult(False, None, transcript, reason)
+        if rebase:
+            reason = "requested REBASE; refreshing stale base"
             log(f"{agent} {reason}")
             return LLMResult(False, None, transcript, reason)
         if expect_merge_commit:

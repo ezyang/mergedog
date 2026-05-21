@@ -10,7 +10,9 @@ from mergedog.shepherd import (
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
     _inconclusive_refresh_target,
+    _is_ghstack_mergeability_failure,
     _llm_halt_message,
+    _llm_requested_rebase,
     _llm_signalled_inconclusive,
     _latest_completed_at,
     _spurious_check_names_from_checks,
@@ -164,6 +166,43 @@ class TestInconclusiveRefresh(unittest.TestCase):
         self.assertTrue(can_refresh)
         self.assertEqual(reason, "viable/strict")
         advances.assert_called_once_with(Path("/tmp/wt"), "origin/viable/strict")
+
+
+class TestRebaseRequest(unittest.TestCase):
+    def test_detects_rebase_request_halt_reason(self):
+        self.assertTrue(
+            _llm_requested_rebase(
+                LLMResult(
+                    ran_cleanly=False,
+                    new_sha=None,
+                    transcript=[],
+                    halt_reason="requested REBASE; refreshing stale base",
+                )
+            )
+        )
+        self.assertFalse(
+            _llm_requested_rebase(
+                LLMResult(
+                    ran_cleanly=False,
+                    new_sha=None,
+                    transcript=[],
+                    halt_reason="signalled INCONCLUSIVE; halting for human review",
+                )
+            )
+        )
+
+
+class TestGhstackMergeabilityFailure(unittest.TestCase):
+    def test_detects_mergeability_check_name(self):
+        self.assertTrue(
+            _is_ghstack_mergeability_failure(["ghstack-mergeability-check"])
+        )
+        self.assertTrue(
+            _is_ghstack_mergeability_failure(
+                ["Check mergeability of ghstack PR"]
+            )
+        )
+        self.assertFalse(_is_ghstack_mergeability_failure(["pull / linux"]))
 
 
 class TestDescribeLogState(unittest.TestCase):

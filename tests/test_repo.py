@@ -121,5 +121,49 @@ class TestRebaseTargetAdvances(unittest.TestCase):
             )
 
 
+class TestWouldMergeConflict(unittest.TestCase):
+    def test_detects_clean_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "base.txt").write_text("base\n")
+            _git(root, "add", "base.txt")
+            _git(root, "commit", "-q", "-m", "base")
+
+            _git(root, "checkout", "-q", "-b", "upstream")
+            (root / "main.txt").write_text("main\n")
+            _git(root, "add", "main.txt")
+            _git(root, "commit", "-q", "-m", "main")
+
+            _git(root, "checkout", "-q", "-b", "pr", "HEAD~1")
+            (root / "pr.txt").write_text("pr\n")
+            _git(root, "add", "pr.txt")
+            _git(root, "commit", "-q", "-m", "pr")
+
+            self.assertFalse(repo.would_merge_conflict(root, "upstream"))
+
+    def test_detects_conflicting_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "file.txt").write_text("base\n")
+            _git(root, "add", "file.txt")
+            _git(root, "commit", "-q", "-m", "base")
+
+            _git(root, "checkout", "-q", "-b", "upstream")
+            (root / "file.txt").write_text("main\n")
+            _git(root, "commit", "-am", "main", "-q")
+
+            _git(root, "checkout", "-q", "-b", "pr", "HEAD~1")
+            (root / "file.txt").write_text("pr\n")
+            _git(root, "commit", "-am", "pr", "-q")
+
+            self.assertTrue(repo.would_merge_conflict(root, "upstream"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -699,6 +699,29 @@ def abort_merge(worktree: Path) -> None:
     run(["git", "merge", "--abort"], cwd=worktree, check=False, loud=True)
 
 
+def would_merge_conflict(worktree: Path, ref: str = "origin/main") -> bool:
+    """Return whether merging ``ref`` into HEAD would conflict.
+
+    This is a non-mutating probe used before publishing an LLM-authored fix:
+    GitHub mergeability is against the base branch, so a fix that cannot
+    merge with ``origin/main`` should be discarded in favor of rebasing the
+    original PR.
+    """
+    proc = run(
+        ["git", "merge-tree", "--write-tree", "HEAD", ref],
+        cwd=worktree,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return False
+    if proc.returncode == 1:
+        return True
+    raise RuntimeError(
+        f"git merge-tree HEAD {ref} failed unexpectedly:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
 def is_merge_in_progress(worktree: Path) -> bool:
     proc = run(
         ["git", "rev-parse", "--verify", "MERGE_HEAD"],
