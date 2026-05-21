@@ -51,11 +51,7 @@ def _escape_embedded_nuls(text: str) -> str:
 
 
 def _build_llm_invocation(
-    prompt: str,
-    cwd: Path,
-    config: LLMConfig,
-    *,
-    reasoning_effort: str | None = None,
+    prompt: str, cwd: Path, config: LLMConfig
 ) -> _LLMInvocation:
     prompt = _escape_embedded_nuls(prompt)
     model = config.effective_model
@@ -85,8 +81,6 @@ def _build_llm_invocation(
         ]
         if model:
             cmd.extend(["--model", model])
-        if reasoning_effort:
-            cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
         cmd.append(prompt)
         return _LLMInvocation(config.provider, cmd, "codex")
     if config.provider == "metacode":
@@ -250,12 +244,7 @@ def _summarize_event(
 
 
 def _run_llm_streaming(
-    prompt: str,
-    cwd: Path,
-    env_extra: Mapping[str, str],
-    config: LLMConfig,
-    *,
-    reasoning_effort: str | None = None,
+    prompt: str, cwd: Path, env_extra: Mapping[str, str], config: LLMConfig
 ) -> tuple[int, list[str]]:
     """Run the configured LLM and pretty-print events as they arrive.
 
@@ -266,9 +255,7 @@ def _run_llm_streaming(
     nul_count = prompt.count("\x00")
     if nul_count:
         log(f"WARNING: replacing {nul_count} embedded NUL byte(s) in LLM prompt")
-    invocation = _build_llm_invocation(
-        prompt, cwd, config, reasoning_effort=reasoning_effort
-    )
+    invocation = _build_llm_invocation(prompt, cwd, config)
     # Quote everything except the prompt itself, which is huge and would
     # bury the rest of the line.
     redacted = [
@@ -520,12 +507,9 @@ def _invoke(
     llm_config = get_llm_config()
     agent = llm_config.provider
     log(f"invoking {agent} ({mode} mode)...")
-    reasoning_effort = (
-        "xhigh" if agent == "codex" and mode == "fix-CI" else None
-    )
     rc, transcript = _run_llm_streaming(
         prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email),
-        config=llm_config, reasoning_effort=reasoning_effort,
+        config=llm_config,
     )
     if rc != 0:
         reason = f"exited with code {rc}"

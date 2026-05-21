@@ -60,21 +60,6 @@ class TestLLMInvocation(unittest.TestCase):
         self.assertEqual(inv.cmd[inv.cmd.index("-C") + 1], "/tmp/wt")
         self.assertEqual(inv.cmd[-1], "fix it")
 
-    def test_builds_codex_command_with_reasoning_effort(self):
-        inv = _build_llm_invocation(
-            "fix it",
-            Path("/tmp/wt"),
-            LLMConfig("codex"),
-            reasoning_effort="xhigh",
-        )
-
-        self.assertIn("-c", inv.cmd)
-        self.assertEqual(
-            inv.cmd[inv.cmd.index("-c") + 1],
-            'model_reasoning_effort="xhigh"',
-        )
-        self.assertEqual(inv.cmd[-1], "fix it")
-
     def test_escapes_embedded_nuls_in_codex_prompt_arg(self):
         inv = _build_llm_invocation("fix\x00it", Path("/tmp/wt"), LLMConfig("codex"))
 
