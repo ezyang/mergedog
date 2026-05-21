@@ -25,6 +25,7 @@ user when the PR is ready for `@pytorchbot merge`.
   - `ignore-sev on|off` — toggle whether shepherds ignore CI SEVs
   - `mergedog-label on|off` — toggle whether future shepherds manage the
     `mergedog` coordination label
+  - `fix-cap N|off|default` — set the fix-commit cap for future spawns
 - **mergedog_log** — read a PR's shepherd log.  Use `lines=` to control
   how much you read (default 100).
   The log is the primary diagnostic tool when something goes wrong.

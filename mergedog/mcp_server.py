@@ -63,6 +63,7 @@ mcp = FastMCP(
         "as spurious and restart\n"
         "  ignore-sev [on|off] — toggle mux-wide --ignore-sev\n"
         "  mergedog-label [on|off] — toggle mux-wide --manage-mergedog-label\n"
+        "  fix-cap [N|off|default] — set mux-wide --max-fix-commits\n"
         "  log <pr>           — show log file path\n"
         "  status             — JSON status of all PRs\n"
     ),

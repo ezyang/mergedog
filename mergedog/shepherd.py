@@ -1146,10 +1146,16 @@ def shepherd(
     accept_divergence: bool = False,
     ignore_sev: bool = False,
     reassess: bool = False,
+    max_fix_commits: int | None = None,
     extra_context: str | None = None,
     operator_fix_context: str | None = None,
     manage_mergedog_label: bool = False,
 ) -> None:
+    if max_fix_commits is None:
+        max_fix_commits = MAX_FIX_COMMITS
+    if max_fix_commits < 0:
+        raise ValueError("--max-fix-commits must be >= 0")
+
     repo.ensure_clone()
     repo.fetch_origin()
 
@@ -1176,6 +1182,7 @@ def shepherd(
             accept_divergence,
             ignore_sev,
             reassess,
+            max_fix_commits,
             extra_context,
             operator_fix_context,
         )
@@ -1194,6 +1201,7 @@ def _shepherd_body(
     accept_divergence: bool,
     ignore_sev: bool,
     reassess: bool = False,
+    max_fix_commits: int = MAX_FIX_COMMITS,
     extra_context: str | None = None,
     operator_fix_context: str | None = None,
 ) -> None:
@@ -1274,6 +1282,11 @@ def _shepherd_body(
     labels.autolabel_if_needed(pr, pr_data)
 
     fix_commits_pushed = 0
+    max_fix_attempts_status = max_fix_commits if max_fix_commits > 0 else 0
+    if max_fix_commits == 0:
+        log("  fix cap:    disabled")
+    else:
+        log(f"  fix cap:    {max_fix_commits} [MERGEDOG] commits")
     sessions: list[ClaudeSession] = []
     pushed_changes: list[PushedChange] = []
     recovery_attempts = 0
@@ -1285,7 +1298,7 @@ def _shepherd_body(
         approved=last_approved,
         merging=last_merging,
         fix_attempts=fix_commits_pushed,
-        max_fix_attempts=MAX_FIX_COMMITS,
+        max_fix_attempts=max_fix_attempts_status,
     )
     # Auto-retries for infra-flake merge failures (e.g. 504). Capped at
     # MAX_MERGE_AUTO_RETRIES to prevent runaway commenting during outages.
@@ -1537,7 +1550,7 @@ def _shepherd_body(
                 ci_total=len(checks),
                 ci_failed=active_failed_count,
                 fix_attempts=fix_commits_pushed,
-                max_fix_attempts=MAX_FIX_COMMITS,
+                max_fix_attempts=max_fix_attempts_status,
             )
             summary = f"{status} ({done}/{len(checks)} done)"
             if summary != last_status:
@@ -1570,7 +1583,7 @@ def _shepherd_body(
                             ci_total=len(checks),
                             ci_failed=active_failed_count,
                             fix_attempts=fix_commits_pushed,
-                            max_fix_attempts=MAX_FIX_COMMITS,
+                            max_fix_attempts=max_fix_attempts_status,
                         )
                         time.sleep(POLL_INTERVAL_SEC)
                         continue
@@ -1689,7 +1702,7 @@ def _shepherd_body(
                     last_status = None
                     stable_observation = None
                     continue
-                if fix_commits_pushed >= MAX_FIX_COMMITS:
+                if max_fix_commits > 0 and fix_commits_pushed >= max_fix_commits:
                     die(
                         f"already pushed {fix_commits_pushed} [MERGEDOG] fix "
                         f"commits and CI is still failing; halting for human "
@@ -1753,7 +1766,7 @@ def _shepherd_body(
                     ci_total=len(checks),
                     ci_failed=active_failed_count,
                     fix_attempts=fix_commits_pushed,
-                    max_fix_attempts=MAX_FIX_COMMITS,
+                    max_fix_attempts=max_fix_attempts_status,
                 )
                 ctx_path, comments = _refresh_context_file(
                     pr_data, trusted=trusted_pr
@@ -2130,7 +2143,7 @@ def _shepherd_body(
                 ci_total=len(checks),
                 ci_failed=failed_count,
                 fix_attempts=fix_commits_pushed,
-                max_fix_attempts=MAX_FIX_COMMITS,
+                max_fix_attempts=max_fix_attempts_status,
             )
             break
 
@@ -2167,7 +2180,7 @@ def _shepherd_body(
             approved=last_approved,
             merging=last_merging,
             fix_attempts=fix_commits_pushed,
-            max_fix_attempts=MAX_FIX_COMMITS,
+            max_fix_attempts=max_fix_attempts_status,
         )
 
         result, event_iso, fail_body = watch_post_handoff(pr, since_iso)

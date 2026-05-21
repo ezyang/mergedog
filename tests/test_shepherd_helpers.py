@@ -57,6 +57,28 @@ class TestMergedogLabelManagement(unittest.TestCase):
         add_label.assert_called_once_with(123, shepherd.MERGEDOG_LABEL)
         remove_label.assert_called_once_with(123, shepherd.MERGEDOG_LABEL)
 
+    def test_max_fix_commits_passes_through_to_body(self):
+        pr_data = {"number": 123, "labels": [], "isDraft": False, "state": "OPEN"}
+        with mock.patch.object(shepherd.repo, "ensure_clone"), mock.patch.object(
+            shepherd.repo, "fetch_origin"
+        ), mock.patch.object(
+            shepherd.github, "get_pr", return_value=pr_data
+        ), mock.patch.object(
+            shepherd, "_validate_pr"
+        ), mock.patch.object(
+            shepherd, "_shepherd_body"
+        ) as body, mock.patch.object(
+            shepherd.signal, "signal"
+        ), mock.patch.object(
+            shepherd.faulthandler, "enable"
+        ), mock.patch.object(
+            shepherd.faulthandler, "register"
+        ):
+            shepherd.shepherd(123, max_fix_commits=0)
+
+        body.assert_called_once()
+        self.assertEqual(body.call_args.args[6], 0)
+
 
 class TestFailedLogsAreContentFree(unittest.TestCase):
     def test_empty_list_is_content_free(self):

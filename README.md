@@ -54,7 +54,7 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--manage-mergedog-label] [--root DIR]
+python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--manage-mergedog-label] [--max-fix-commits N] [--root DIR]
 ```
 
 - With no PR arguments, the mux restarts every job in the resume list
@@ -66,6 +66,8 @@ python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume
 - `--manage-mergedog-label` tells all spawned shepherds to add the `mergedog`
   label at startup and remove it on exit. By default, shepherds do not mutate
   this label.
+- `--max-fix-commits N` changes the fix-commit safety cap for all spawned
+  shepherds. The default is 5; use 0 to disable the cap.
 - `--root DIR` redirects all on-disk state to a different directory (also
   settable via `MERGEDOG_ROOT` env var).
 - `--repo OWNER/NAME` targets a GitHub repo other than the default
@@ -97,6 +99,7 @@ TUI commands (type in the input bar at the bottom):
 | `log <pr>` | Print the log file path |
 | `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
 | `mergedog-label [on\|off]` | Toggle `mergedog` label management for future spawns |
+| `fix-cap [N\|off\|default]` | Set the fix-commit cap for future spawns (`off` disables it) |
 | `migrate` | Print resume instructions for moving to another host |
 | `quit` | Terminate everything |
 
@@ -153,6 +156,7 @@ These work on the PR shepherd entry point:
 | `--ignore-sev` | Don't park on open `ci: sev` issues |
 | `--reassess` | Re-invoke Claude for failures previously judged spurious |
 | `--manage-mergedog-label` | Add the `mergedog` label at startup and remove it on exit |
+| `--max-fix-commits N` | Halt after N `[MERGEDOG]` fix commits; 0 disables the cap |
 | `--extra-context TEXT` | Operator hint injected into Claude's fix prompt (trusted) |
 | `--extra-context-file PATH` | Same, but reads from a file (mutually exclusive with above) |
 | `--root DIR` | Override on-disk root (`~/.mergedog`) |

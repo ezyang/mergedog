@@ -29,6 +29,9 @@ Commands typed at the bottom (enter to submit):
     mergedog-label [on|off]           toggle (or show) the mux-wide
                                       ``--manage-mergedog-label`` default
                                       applied to every shepherd spawn
+    fix-cap [N|off|default]           set/show the mux-wide
+                                      ``--max-fix-commits`` default. ``off``
+                                      disables the cap for future spawns
     migrate                            print commands to resume on another
                                       server, then quit
     quit                              terminate everything and exit
@@ -66,6 +69,7 @@ COMMAND_SUGGESTIONS = [
     "cleanup",
     "cleanup all",
     "fix ",
+    "fix-cap ",
     "ignore-sev ",
     "log ",
     "mark-spurious ",
@@ -137,7 +141,7 @@ from mergedog.paths import (  # noqa: E402
     status_file,
     worktree_dir,
 )
-from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE  # noqa: E402
+from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE, MAX_FIX_COMMITS  # noqa: E402
 from mergedog.status import read_status  # noqa: E402
 from mergedog.state import TrustDB  # noqa: E402
 
@@ -520,6 +524,7 @@ class MuxApp(App):
         *,
         ignore_sev: bool = False,
         manage_mergedog_label: bool = False,
+        max_fix_commits: int = MAX_FIX_COMMITS,
         gchat_to: str | None = None,
         repo_slug: str = REPO_SLUG,
         lock_fd: int = -1,
@@ -531,6 +536,7 @@ class MuxApp(App):
         self._initial = [_coerce_job(job) for job in initial]
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
+        self.max_fix_commits = max_fix_commits
         self.gchat_to = gchat_to
         self.repo_slug = repo_slug
         self._lock_fd = lock_fd
@@ -542,7 +548,8 @@ class MuxApp(App):
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
                 "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | "
-                "remove <pr> | log <pr> | mergedog-label | migrate | quit"
+                "remove <pr> | log <pr> | fix-cap | mergedog-label | "
+                "migrate | quit"
             ),
             suggester=SuggestFromList(COMMAND_SUGGESTIONS),
         )
@@ -567,6 +574,12 @@ class MuxApp(App):
             and "--manage-mergedog-label" not in out
         ):
             out = ["--manage-mergedog-label", *out]
+        max_fix_commits = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
+        if max_fix_commits != MAX_FIX_COMMITS and not any(
+            a == "--max-fix-commits" or a.startswith("--max-fix-commits=")
+            for a in out
+        ):
+            out = [f"--max-fix-commits={max_fix_commits}", *out]
         if self.gchat_to and not any(a.startswith("--gchat-to") for a in out):
             out = [f"--gchat-to={self.gchat_to}", *out]
         if self.repo_slug and not any(
@@ -732,6 +745,32 @@ class MuxApp(App):
         return (
             f"mergedog-label {state} (applies to future spawns; "
             f"use `rebase all` to apply to running PRs)"
+        )
+
+    def _do_fix_cap(self, rest: list[str]) -> str:
+        current = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
+        if not rest:
+            state = "off" if current == 0 else str(current)
+            return f"fix-cap is {state}"
+        arg = rest[0].lower()
+        if arg in ("off", "none", "unlimited", "disable", "disabled"):
+            new = 0
+        elif arg in ("default", "on"):
+            new = MAX_FIX_COMMITS
+        elif arg == "toggle":
+            new = MAX_FIX_COMMITS if current == 0 else 0
+        else:
+            try:
+                new = int(arg)
+            except ValueError:
+                return "usage: fix-cap [N|off|default|toggle]"
+            if new < 0:
+                return "usage: fix-cap [N|off|default|toggle]"
+        self.max_fix_commits = new
+        state = "off" if new == 0 else str(new)
+        return (
+            f"fix-cap {state} (applies to future spawns; "
+            f"use `restart <pr>` or `restart all` to apply to running PRs)"
         )
 
     def _do_cancel_job(
@@ -971,6 +1010,8 @@ class MuxApp(App):
                 return self._do_ignore_sev(rest)
             elif cmd in ("mergedog-label", "mergedog_label"):
                 return self._do_mergedog_label(rest)
+            elif cmd in ("fix-cap", "fix_cap"):
+                return self._do_fix_cap(rest)
             elif cmd == "status":
                 return self._format_status()
             elif cmd in ("quit", "q", "exit"):
@@ -1175,6 +1216,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--max-fix-commits",
+        type=int,
+        default=MAX_FIX_COMMITS,
+        help=(
+            "Mux-wide default: pass --max-fix-commits to every spawned "
+            "shepherd. Defaults to 5; use 0 to disable the cap. Toggle at "
+            "runtime with the ``fix-cap N|off|default`` command."
+        ),
+    )
+    parser.add_argument(
         "--root",
         metavar="DIR",
         help=(
@@ -1208,6 +1259,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if args.max_fix_commits < 0:
+        parser.error("--max-fix-commits must be >= 0")
 
     ensure_dirs()
 
@@ -1231,6 +1284,7 @@ def main() -> int:
         initial,
         ignore_sev=args.ignore_sev,
         manage_mergedog_label=args.manage_mergedog_label,
+        max_fix_commits=args.max_fix_commits,
         gchat_to=args.gchat_to,
         repo_slug=args.repo,
         lock_fd=lock_fd,

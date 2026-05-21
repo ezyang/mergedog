@@ -226,6 +226,50 @@ class TestMuxCommands(unittest.TestCase):
         self.assertEqual(result, "no PRs to restart")
         restart_all.assert_not_called()
 
+    def test_shepherd_args_applies_disabled_fix_cap_default(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = False
+        app.manage_mergedog_label = False
+        app.max_fix_commits = 0
+        app.gchat_to = None
+        app.repo_slug = None
+
+        self.assertEqual(
+            app._shepherd_args([]),
+            ["--max-fix-commits=0"],
+        )
+
+    def test_shepherd_args_preserves_explicit_fix_cap(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = False
+        app.manage_mergedog_label = False
+        app.max_fix_commits = 0
+        app.gchat_to = None
+        app.repo_slug = None
+
+        self.assertEqual(
+            app._shepherd_args(["--max-fix-commits=2"]),
+            ["--max-fix-commits=2"],
+        )
+
+    def test_fix_cap_command_toggles_mux_default(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.max_fix_commits = mux.MAX_FIX_COMMITS
+
+        self.assertEqual(
+            app._dispatch_command("fix-cap off"),
+            "fix-cap off (applies to future spawns; "
+            "use `restart <pr>` or `restart all` to apply to running PRs)",
+        )
+        self.assertEqual(app.max_fix_commits, 0)
+        self.assertEqual(app._dispatch_command("fix-cap"), "fix-cap is off")
+        self.assertEqual(
+            app._dispatch_command("fix-cap default"),
+            "fix-cap 5 (applies to future spawns; "
+            "use `restart <pr>` or `restart all` to apply to running PRs)",
+        )
+        self.assertEqual(app.max_fix_commits, mux.MAX_FIX_COMMITS)
+
     def test_restart_dead_dispatches_only_when_dead_jobs_exist(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {
