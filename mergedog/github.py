@@ -16,6 +16,7 @@ from mergedog.log import log
 from mergedog.paths import CI_LOGS_DIR, REPO_SLUG
 from mergedog.process import run
 from mergedog.project import get_project_policy
+from mergedog.sanitize import sanitize_untrusted_text
 from mergedog.taint import taint, taint_dict
 
 REPO = REPO_SLUG
@@ -227,11 +228,17 @@ def latest_drci_summary(
         return None
     body = matches[-1].get("body") or None
     if body is None or head_sha is None:
-        return untaint(body) if body is not None else None
+        if body is None:
+            return None
+        return sanitize_untrusted_text(untaint(body))
     m = _DRCI_COMMIT_RE.search(body)
     if m is None:
         return None
-    return untaint(body) if head_sha.startswith(m.group(1)) else None
+    return (
+        sanitize_untrusted_text(untaint(body))
+        if head_sha.startswith(m.group(1))
+        else None
+    )
 
 
 def get_pr_head_sha(pr: int) -> str:
@@ -376,6 +383,7 @@ def remove_label(pr: int, label: str) -> None:
 
 def post_pr_comment(pr: int, body: str) -> None:
     """Post a comment on the PR. Body is passed via stdin to dodge argv limits."""
+    body = sanitize_untrusted_text(body)
     subprocess.run(
         ["gh", "pr", "comment", str(pr), "--repo", REPO, "--body-file", "-"],
         input=body,
@@ -733,6 +741,7 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     Walking back from the anchor reaches the entire diagnostic; walking
     forward mostly reaches "ninja: build stopped" and shutdown noise.
     """
+    text = sanitize_untrusted_text(text)
     lines = [_strip_gh_log_prefix(l) for l in text.splitlines()]
     cleaned = "\n".join(lines)
     if len(cleaned) <= max_chars:
@@ -813,7 +822,8 @@ def _fetch_raw_job_log(
     spec: tuple[str, int, int | None], pr: int | None = None
 ) -> tuple[str, str]:
     name, run_id, job_id = spec
-    text = _fetch_job_log(run_id, job_id)
+    name = sanitize_untrusted_text(name)
+    text = sanitize_untrusted_text(_fetch_job_log(run_id, job_id))
     if pr is not None and text != "<no log available>":
         _cache_failed_job_log(pr, name, run_id, job_id, text)
     return (name, text)

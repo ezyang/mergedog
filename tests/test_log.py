@@ -34,6 +34,15 @@ class TestLog(unittest.TestCase):
         self.assertNotIn("HALT", stderr.getvalue())
         notify_halt.assert_not_called()
 
+    def test_log_escapes_control_characters(self):
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            log_mod.log("bad\x00\x1b[31m")
+
+        self.assertIn("bad\\x00\\x1b[31m", stderr.getvalue())
+        self.assertNotIn("\x00", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

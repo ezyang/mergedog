@@ -43,6 +43,9 @@ def set_outcome(value: str | None) -> None:
 
 
 def log(msg: str) -> None:
+    from mergedog.sanitize import sanitize_untrusted_text
+
+    msg = sanitize_untrusted_text(str(msg))
     ts = time.strftime("%H:%M:%S")
     if _outcome:
         prefix = f"[{_outcome}] "

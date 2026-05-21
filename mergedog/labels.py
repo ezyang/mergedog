@@ -18,6 +18,7 @@ from mergedog import github
 from mergedog.log import log
 from mergedog.paths import REPO_SLUG, ROOT
 from mergedog.project import get_project_policy
+from mergedog.sanitize import sanitize_untrusted_markdown, sanitize_untrusted_text
 from mergedog.taint import taint, untaint
 
 _LABEL_CACHE_TTL_SEC = 24 * 60 * 60
@@ -124,11 +125,12 @@ def _format_labels_section(
     ]:
         lines = [f"  {heading}:"]
         for l in sorted(group, key=lambda x: x["name"]):
-            desc = l.get("description") or ""
+            name = sanitize_untrusted_text(l["name"])
+            desc = sanitize_untrusted_text(l.get("description") or "")
             if desc:
-                lines.append(f"    - {l['name']}: {desc}")
+                lines.append(f"    - {name}: {desc}")
             else:
-                lines.append(f"    - {l['name']}")
+                lines.append(f"    - {name}")
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
 
@@ -147,6 +149,7 @@ def _get_changed_files(pr: int) -> list[str]:
 
 
 def _invoke_claude_for_labels(prompt: str) -> list[str]:
+    prompt = sanitize_untrusted_text(prompt)
     cmd = [
         "claude",
         "-p", prompt,
@@ -182,6 +185,10 @@ def _invoke_claude_for_labels(prompt: str) -> list[str]:
     if not isinstance(labels, list):
         return []
     return [l for l in labels if isinstance(l, str)]
+
+
+def _prompt_text(value: str) -> str:
+    return sanitize_untrusted_text(untaint(value))
 
 
 def _validate_labels(
@@ -223,11 +230,11 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
     # blast radius of any injection in title/body/filenames.
     prompt = _LABEL_PROMPT.format(
         labels_section=_format_labels_section(ciflow, release_notes, topic),
-        title=untaint(pr_data.get("title", "")),
+        title=sanitize_untrusted_markdown(pr_data.get("title", "")),
         url=pr_data.get("url", ""),
-        existing_labels=untaint(", ".join(sorted(existing)) or "(none)"),
-        body=untaint(body),
-        changed_files=untaint(files_str) if files_str else "    (unavailable)",
+        existing_labels=_prompt_text(", ".join(sorted(existing)) or "(none)"),
+        body=sanitize_untrusted_markdown(body),
+        changed_files=_prompt_text(files_str) if files_str else "    (unavailable)",
     )
 
     suggested = _invoke_claude_for_labels(prompt)

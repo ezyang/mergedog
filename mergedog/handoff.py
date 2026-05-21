@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
 from mergedog.project import get_project_policy
+from mergedog.sanitize import sanitize_untrusted_text
 from mergedog.status import write_status
 
 PROJECT = get_project_policy()
@@ -166,7 +167,7 @@ def _format_handoff_comment(
         section.append("<details><summary>LLM transcript</summary>")
         section.append("")
         section.append("```")
-        section.extend(s.transcript)
+        section.extend(sanitize_untrusted_text(line) for line in s.transcript)
         section.append("```")
         section.append("")
         section.append("</details>")
@@ -197,7 +198,9 @@ def _format_ci_notes(
                 "",
             ]
         )
-        lines.extend(f"- `{name}`" for name in suppressed_failures)
+        lines.extend(
+            f"- `{sanitize_untrusted_text(name)}`" for name in suppressed_failures
+        )
         lines.append("")
     if drci_summary:
         lines.extend(
@@ -217,9 +220,9 @@ def _format_ci_notes(
 
 def _truncate_drci_summary(summary: str, limit: int = 8000) -> str:
     if len(summary) <= limit:
-        return summary
+        return sanitize_untrusted_text(summary)
     return (
-        summary[:limit]
+        sanitize_untrusted_text(summary[:limit])
         + "\n\n_[truncated; see the PR's Dr. CI comment for the full summary]_"
     )
 
@@ -228,11 +231,11 @@ def _format_pushed_change_lines(changes: list[PushedChange]) -> list[str]:
     lines: list[str] = []
     for change in changes:
         sha = change.sha[:12]
-        line = f"- `{sha}` — {change.summary}"
+        line = f"- `{sha}` — {sanitize_untrusted_text(change.summary)}"
         if change.subject:
-            line += f": {change.subject}"
+            line += f": {sanitize_untrusted_text(change.subject)}"
         if change.source:
-            line += f" ({change.source})"
+            line += f" ({sanitize_untrusted_text(change.source)})"
         lines.append(line)
     return lines
 

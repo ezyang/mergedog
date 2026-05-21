@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from mergedog.sanitize import sanitize_untrusted_markdown
+from mergedog.sanitize import sanitize_untrusted_markdown, sanitize_untrusted_text
 from mergedog.taint import untaint
 
 
@@ -56,11 +56,12 @@ def render_context(
         author = c.get("author", "?")
         if not trusted and author not in _TRUSTED_COMMENT_AUTHORS:
             continue
-        created = c.get("created_at", "")
+        created = sanitize_untrusted_text(c.get("created_at", ""))
         parts.extend(
             [
                 "",
-                f"[COMMENT by {untaint(author)} at {created}]",
+                "[COMMENT by "
+                f"{sanitize_untrusted_text(untaint(author))} at {created}]",
                 untaint(sanitize_untrusted_markdown(c.get("body", ""))),
             ]
         )

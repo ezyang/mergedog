@@ -9,6 +9,7 @@ We strip the rendered-but-hidden surfaces before feeding text to the agent.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 
 # Codepoint ranges that render to nothing (or to misleading visual order)
@@ -42,6 +43,45 @@ _DETAILS_TAGS_RE = re.compile(
 )
 
 
+def _escape_control(ch: str) -> str:
+    code = ord(ch)
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    if code <= 0xFFFF:
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
+
+
+def sanitize_untrusted_text(text: str) -> str:
+    """Canonicalize untrusted text before it reaches prompts or logs.
+
+    Keep ordinary Unicode content, but remove characters whose display is
+    invisible or layout-dependent, normalize whitespace to ASCII forms, and
+    render process-control bytes visibly.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    out: list[str] = []
+    for ch in text:
+        if ch == "\n":
+            out.append(ch)
+            continue
+        if ch == "\t":
+            out.append(ch)
+            continue
+        category = unicodedata.category(ch)
+        if category == "Zl" or category == "Zp":
+            out.append("\n")
+        elif category == "Zs":
+            out.append(" ")
+        elif category == "Cf":
+            continue
+        elif category in {"Cc", "Cs"}:
+            out.append(_escape_control(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def strip_html_comments(text: str) -> str:
     return _HTML_COMMENT_RE.sub("", text)
 
@@ -55,6 +95,7 @@ def unwrap_details(text: str) -> str:
 
 
 def sanitize_untrusted_markdown(text: str) -> str:
+    text = sanitize_untrusted_text(text)
     text = strip_html_comments(text)
     text = unwrap_details(text)
     text = strip_invisible_unicode(text)

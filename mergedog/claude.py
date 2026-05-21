@@ -18,6 +18,7 @@ from mergedog.paths import LINTRUNNER_VENV, REPO_DIR
 from mergedog.process import run
 from mergedog import repo as repo_mod
 from mergedog.repo import head_sha, head_subject
+from mergedog.sanitize import sanitize_untrusted_text
 
 MERGEDOG_PREFIX = "[MERGEDOG]"
 
@@ -46,7 +47,7 @@ class LLMResult:
 
 
 def _escape_embedded_nuls(text: str) -> str:
-    return text.replace("\x00", "\\0")
+    return sanitize_untrusted_text(text)
 
 
 def _build_llm_invocation(

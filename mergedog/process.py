@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from mergedog.log import log
+from mergedog.sanitize import sanitize_untrusted_text
 
 
 def _build_env(extra: Mapping[str, str] | None) -> dict[str, str] | None:
     if not extra:
         return None
     env = os.environ.copy()
-    env.update(extra)
+    env.update({k: sanitize_untrusted_text(v) for k, v in extra.items()})
     return env
 
 
@@ -50,7 +51,7 @@ def run(
         check=False,  # we do our own check below to print stderr first
         capture_output=capture,
         text=True,
-        input=input_text,
+        input=sanitize_untrusted_text(input_text) if input_text is not None else None,
         env=_build_env(env_extra),
     )
     if check and proc.returncode != 0:

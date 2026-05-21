@@ -63,13 +63,13 @@ class TestLLMInvocation(unittest.TestCase):
     def test_escapes_embedded_nuls_in_codex_prompt_arg(self):
         inv = _build_llm_invocation("fix\x00it", Path("/tmp/wt"), LLMConfig("codex"))
 
-        self.assertEqual(inv.cmd[-1], "fix\\0it")
+        self.assertEqual(inv.cmd[-1], "fix\\x00it")
         self.assertNotIn("\x00", inv.cmd[-1])
 
     def test_escapes_embedded_nuls_in_stdin_prompt(self):
         inv = _build_llm_invocation("fix\x00it", Path("/tmp/wt"), LLMConfig("claude"))
 
-        self.assertEqual(inv.stdin_input, "fix\\0it")
+        self.assertEqual(inv.stdin_input, "fix\\x00it")
         self.assertNotIn("\x00", inv.stdin_input)
 
     def test_builds_metacode_command(self):

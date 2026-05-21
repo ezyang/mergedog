@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from mergedog.project import get_project_policy
+from mergedog.sanitize import sanitize_untrusted_text
 from mergedog.taint import assert_untainted, untaint
 
 
@@ -283,6 +284,10 @@ def _format_earlier_members(earlier_members: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _prompt_text(value: str) -> str:
+    return sanitize_untrusted_text(untaint(value))
+
+
 def render_fix_prompt(
     *,
     url: str,
@@ -297,20 +302,25 @@ def render_fix_prompt(
     extra_context: str | None = None,
 ) -> str:
     assert_untainted(url, context_path)
-    branch = untaint(branch)  # short identifier, used for context not instructions
+    # Short identifier, used for context not instructions.
+    branch = _prompt_text(branch)
     # CI logs are interpolated directly into the prompt, framed as log
     # excerpts (not instructions).  Declassify here.
     sections = []
     for name, log_text in failed_jobs:
-        sections.append(f"=== {untaint(name)} ===\n{untaint(log_text)}\n")
+        sections.append(f"=== {_prompt_text(name)} ===\n{_prompt_text(log_text)}\n")
     drci_section = (
-        _DRCI_SECTION_TEMPLATE.format(drci_body=drci_summary.strip())
+        _DRCI_SECTION_TEMPLATE.format(
+            drci_body=sanitize_untrusted_text(drci_summary).strip()
+        )
         if drci_summary
         else ""
     )
     failing_checks_section = ""
     if failing_check_names:
-        body = "\n".join(f"- {n}" for n in failing_check_names)
+        body = "\n".join(
+            f"- {sanitize_untrusted_text(n)}" for n in failing_check_names
+        )
         failing_checks_section = _FAILING_CHECKS_SECTION_TEMPLATE.format(
             failing_checks_body=body
         )
@@ -320,7 +330,9 @@ def render_fix_prompt(
             earlier_stack_body=_format_earlier_members(earlier_members)
         )
     extra_context_section = (
-        _EXTRA_CONTEXT_SECTION_TEMPLATE.format(extra_context_body=extra_context.strip())
+        _EXTRA_CONTEXT_SECTION_TEMPLATE.format(
+            extra_context_body=sanitize_untrusted_text(extra_context).strip()
+        )
         if extra_context and extra_context.strip()
         else ""
     )
@@ -409,7 +421,7 @@ def render_operator_fix_prompt(
     earlier_in_stack: int = 0,
 ) -> str:
     assert_untainted(url, context_path)
-    branch = untaint(branch)
+    branch = _prompt_text(branch)
     ghstack_hint = _GHSTACK_HINT if is_ghstack else ""
     if earlier_in_stack > 0:
         ghstack_hint += _OPERATOR_STACK_MEMBER_HINT.format(
@@ -422,7 +434,7 @@ def render_operator_fix_prompt(
         local_execution_constraint=_local_execution_constraint(),
         untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
         operator_context_section=_EXTRA_CONTEXT_SECTION_TEMPLATE.format(
-            extra_context_body=operator_context.strip()
+            extra_context_body=sanitize_untrusted_text(operator_context).strip()
         ),
         ghstack_hint=ghstack_hint,
     )
@@ -540,7 +552,7 @@ def render_rebase_conflict_prompt(
     context_path: str,
 ) -> str:
     assert_untainted(url, context_path)
-    branch = untaint(branch)
+    branch = _prompt_text(branch)
     return REBASE_CONFLICT_PROMPT.format(
         repo_slug=get_project_policy().repo_slug,
         url=url,
@@ -558,7 +570,7 @@ def render_merge_conflict_prompt(
     merge_subject: str,
 ) -> str:
     assert_untainted(url, context_path, merge_subject)
-    branch = untaint(branch)
+    branch = _prompt_text(branch)
     return MERGE_CONFLICT_PROMPT.format(
         repo_slug=get_project_policy().repo_slug,
         url=url,
