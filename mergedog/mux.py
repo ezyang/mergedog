@@ -349,6 +349,63 @@ def _last_log_line(path: Path) -> str:
     return tail.rstrip()
 
 
+def _status_message(
+    structured: dict | None,
+    *,
+    rc: int | None,
+    last_log: str,
+) -> str:
+    if structured is not None:
+        msg = structured.get("message")
+        if isinstance(msg, str) and msg:
+            return msg
+        phase = structured.get("phase")
+        if phase == "polling_ci":
+            done = structured.get("ci_done", "?")
+            total = structured.get("ci_total", "?")
+            failed = structured.get("ci_failed")
+            if failed:
+                return (
+                    f"CI failed: {failed} active failures "
+                    f"({done}/{total} checks done)"
+                )
+            return f"waiting for CI: {done}/{total} checks done"
+        if isinstance(phase, str) and phase:
+            return phase.replace("_", " ")
+    if rc is None:
+        return "starting; waiting for status"
+    if rc in (0, EXIT_PR_NOT_ACTIONABLE):
+        return last_log or "complete"
+    return "HALT: see log"
+
+
+def _phase_label(structured: dict | None, *, rc: int | None) -> str:
+    if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
+        return "HALT"
+    if structured is not None:
+        category = structured.get("category")
+        if category == "blocked":
+            return "HALT"
+        if category == "ready":
+            return "READY"
+        if category == "waiting":
+            return "WAIT"
+        if category == "action":
+            return "ACT"
+        if category == "done":
+            return "DONE"
+        phase = structured.get("phase")
+        if phase == "halted":
+            return "HALT"
+        if phase == "ready":
+            return "READY"
+        if phase == "complete":
+            return "DONE"
+    if rc is None:
+        return "RUN"
+    return "DONE"
+
+
 def _read_mux_prs() -> list[int]:
     """Curated list of PRs the mux is tracking.
 
@@ -559,7 +616,7 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "Title", "", "Last")
+        table.add_columns("PR", "Title", "Phase", "Status")
         for job in self._initial:
             self._do_add_job(job, [])
         self._refresh()
@@ -866,18 +923,14 @@ class MuxApp(App):
             _, pr = job
             p, _, log_path = self.procs[job]
             rc = p.poll()
-            if rc is None:
-                state = "🟢"
-            elif rc in (0, EXIT_PR_NOT_ACTIONABLE):
-                state = ""
-            else:
-                state = "🔴"
             last = _last_log_line(log_path)
             structured = read_status(pr)
             if structured is None:
                 self._pr_status.pop(job, None)
             else:
                 self._pr_status[job] = structured
+            phase = _phase_label(structured, rc=rc)
+            status = _status_message(structured, rc=rc, last_log=last)
             title = self._pr_titles.get(job, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -892,7 +945,7 @@ class MuxApp(App):
                 indent + _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
-            table.add_row(pr_cell, Text(_truncate_title(title)), state, last)
+            table.add_row(pr_cell, Text(_truncate_title(title)), phase, status)
 
     def _prune_job(self, job: JobKey | int) -> None:
         """Forget a shepherd and clean up its on-disk state.
@@ -1045,11 +1098,14 @@ class MuxApp(App):
             last = _last_log_line(log_path)
             title = self._pr_titles.get(job, "") or _read_pr_title(pr)
             structured = read_status(pr)
+            status_message = _status_message(structured, rc=rc, last_log=last)
             rows.append({
                 "kind": kind,
                 "pr": pr,
                 "title": title,
                 "state": state,
+                "phase": _phase_label(structured, rc=rc),
+                "status": status_message,
                 "last_log": last,
                 "shepherd_status": structured,
             })

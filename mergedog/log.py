@@ -15,6 +15,7 @@ _merging = False
 _approved = False
 _outcome: str | None = None
 _log_file: Path | None = None
+_status_pr: int | None = None
 
 
 def configure_log_file(path: Path) -> None:
@@ -25,6 +26,12 @@ def configure_log_file(path: Path) -> None:
     with open(path, "a", encoding="utf-8") as f:
         started = time.strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"\n=== mergedog start at {started} ===\n")
+
+
+def configure_status_pr(pr: int | None) -> None:
+    """Also write terminal status updates for ``die``/``complete``."""
+    global _status_pr
+    _status_pr = pr
 
 
 def set_merging(value: bool) -> None:
@@ -69,11 +76,36 @@ def die(msg: str, code: int = 1) -> None:
     from mergedog import notify
 
     notify.notify_halt(msg)
+    if _status_pr is not None:
+        try:
+            from mergedog.status import write_status
+
+            write_status(
+                _status_pr,
+                phase="halted",
+                category="blocked",
+                message=f"HALT: {msg}",
+                user_action=msg,
+            )
+        except Exception:
+            pass
     log(f"HALT: {msg}")
     sys.exit(code)
 
 
 def complete(msg: str, *, code: int = 0, outcome: str = "DONE") -> None:
     set_outcome(outcome)
+    if _status_pr is not None:
+        try:
+            from mergedog.status import write_status
+
+            write_status(
+                _status_pr,
+                phase="complete",
+                category="done",
+                message=msg,
+            )
+        except Exception:
+            pass
     log(msg)
     sys.exit(code)

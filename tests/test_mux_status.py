@@ -142,12 +142,19 @@ class TestMuxStructuredStatus(unittest.TestCase):
             app.procs = {mux._pr_job(123): (_FakeProc(None), object(), log_path)}
             app._pr_titles = {mux._pr_job(123): "Test PR"}
 
-            sidecar = {"schema_version": 1, "phase": "polling_ci"}
+            sidecar = {
+                "schema_version": 1,
+                "phase": "polling_ci",
+                "category": "waiting",
+                "message": "waiting for CI: 1/2 checks done",
+            }
             with mock.patch.object(mux, "read_status", return_value=sidecar):
                 rows = json.loads(app._format_status())
 
         self.assertEqual(rows[0]["pr"], 123)
         self.assertEqual(rows[0]["state"], "running")
+        self.assertEqual(rows[0]["phase"], "WAIT")
+        self.assertEqual(rows[0]["status"], "waiting for CI: 1/2 checks done")
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
 
     def test_completed_not_actionable_status_is_retained(self):
@@ -199,7 +206,37 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         prune_job.assert_not_called()
         self.assertEqual(len(table.rows), 1)
-        self.assertEqual(table.rows[0][2], "")
+        self.assertEqual(table.rows[0][2], "DONE")
+
+    def test_refresh_uses_sidecar_message_instead_of_log_tail(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text("[12:00:00] stale log line\n")
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {mux._pr_job(123): (_FakeProc(None), object(), log_path)}
+            app._pr_titles = {mux._pr_job(123): "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            sidecar = {
+                "schema_version": 1,
+                "phase": "polling_ci",
+                "category": "waiting",
+                "message": "waiting for CI: 4/9 checks done",
+            }
+            with (
+                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([mux._pr_job(123)], {mux._pr_job(123): 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=sidecar),
+            ):
+                app._refresh()
+
+        self.assertEqual(table.rows[0][2], "WAIT")
+        self.assertEqual(table.rows[0][3], "waiting for CI: 4/9 checks done")
 
 
 class TestMuxCommands(unittest.TestCase):

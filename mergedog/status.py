@@ -24,6 +24,11 @@ def write_status(
     pr: int,
     *,
     phase: str,
+    message: str | None = None,
+    category: str | None = None,
+    waiting_on: str | None = None,
+    action: str | None = None,
+    user_action: str | None = None,
     approved: bool | None = None,
     merging: bool | None = None,
     ci_done: int | None = None,
@@ -44,6 +49,11 @@ def write_status(
         "phase": phase,
     }
     optional = {
+        "message": message,
+        "category": category,
+        "waiting_on": waiting_on,
+        "action": action,
+        "user_action": user_action,
         "approved": approved,
         "merging": merging,
         "ci_done": ci_done,

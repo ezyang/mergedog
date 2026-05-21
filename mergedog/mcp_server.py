@@ -80,7 +80,8 @@ async def mergedog_command(command: str) -> str:
     description=(
         "Get the current status of all PR jobs tracked by the mux. "
         "Returns JSON with kind, pr, title, state "
-        "(running/exited_ok/exited_error), and last_log for each job."
+        "(running/exited_ok/exited_error), phase, status, last_log, "
+        "and shepherd_status for each job."
     ),
 )
 async def mergedog_status() -> str:

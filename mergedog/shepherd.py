@@ -28,7 +28,14 @@ from mergedog.handoff import (
     watch_post_handoff,
 )
 from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
-from mergedog.log import complete, die, log, set_approved, set_merging
+from mergedog.log import (
+    complete,
+    configure_status_pr,
+    die,
+    log,
+    set_approved,
+    set_merging,
+)
 from mergedog.paths import REPO_SLUG, REPO_SSH_URL, context_file
 from mergedog.project import get_project_policy
 from mergedog.prompts import (
@@ -361,6 +368,39 @@ def _write_status_best_effort(pr: int, **fields) -> None:
         write_status(pr, **fields)
     except Exception:
         pass
+
+
+def _ci_status_message(status: str, done: int, total: int, failed: int) -> str:
+    if status == "pending":
+        return f"waiting for CI: {done}/{total} checks done"
+    if status == "failed":
+        failures = (
+            f"{failed} active failure"
+            if failed == 1
+            else f"{failed} active failures"
+        )
+        return f"CI failed: {failures} ({done}/{total} checks done)"
+    if status == "passed":
+        return f"CI passed: {done}/{total} checks done"
+    return f"CI {status}: {done}/{total} checks done"
+
+
+def _fix_attempt_message(fix_attempts: int, max_fix_attempts: int) -> str:
+    if max_fix_attempts == 0:
+        return f"{fix_attempts} fixes pushed; fix cap disabled"
+    return f"{fix_attempts}/{max_fix_attempts} fixes pushed"
+
+
+def _fixing_ci_message(
+    active_failed_count: int,
+    fix_attempts: int,
+    max_fix_attempts: int,
+) -> str:
+    failure_plural = "" if active_failed_count == 1 else "s"
+    return (
+        f"fixing CI: {active_failed_count} active failure{failure_plural}; "
+        f"{_fix_attempt_message(fix_attempts, max_fix_attempts)}"
+    )
 
 
 def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None]:
@@ -1249,6 +1289,7 @@ def shepherd(
     operator_fix_context: str | None = None,
     manage_mergedog_label: bool = False,
 ) -> None:
+    configure_status_pr(pr)
     if max_fix_commits is None:
         max_fix_commits = MAX_FIX_COMMITS
     if max_fix_commits < 0:
@@ -1393,6 +1434,9 @@ def _shepherd_body(
     _write_status_best_effort(
         pr,
         phase="starting",
+        category="action",
+        action="starting",
+        message="starting shepherd",
         approved=last_approved,
         merging=last_merging,
         fix_attempts=fix_commits_pushed,
@@ -1642,6 +1686,12 @@ def _shepherd_body(
             _write_status_best_effort(
                 pr,
                 phase="polling_ci",
+                category="waiting" if status == "pending" else "action",
+                waiting_on="ci" if status == "pending" else None,
+                action="inspecting_ci" if status != "pending" else None,
+                message=_ci_status_message(
+                    status, done, len(checks), active_failed_count
+                ),
                 approved=last_approved,
                 merging=last_merging,
                 ci_done=done,
@@ -1678,6 +1728,15 @@ def _shepherd_body(
                         _write_status_best_effort(
                             pr,
                             phase="waiting_stack_parent",
+                            category="waiting",
+                            waiting_on="stack_parent",
+                            message=(
+                                f"waiting for stack parent "
+                                f"#{ghstack_parent.parent_pr}: "
+                                f"{parent_status.reason}; parent "
+                                f"{parent_status.parent_done}/"
+                                f"{parent_status.parent_total} checks done"
+                            ),
                             approved=last_approved,
                             merging=last_merging,
                             ci_done=done,
@@ -1863,6 +1922,13 @@ def _shepherd_body(
                 _write_status_best_effort(
                     pr,
                     phase="fixing_ci",
+                    category="action",
+                    action="fixing_ci",
+                    message=_fixing_ci_message(
+                        active_failed_count,
+                        fix_commits_pushed,
+                        max_fix_attempts_status,
+                    ),
                     approved=last_approved,
                     merging=last_merging,
                     ci_done=done,
@@ -2207,6 +2273,22 @@ def _shepherd_body(
                 elapsed = time.time() - stable_since
                 if elapsed < CI_STABILITY_WINDOW_SEC:
                     remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
+                    _write_status_best_effort(
+                        pr,
+                        phase="polling_ci",
+                        category="waiting",
+                        waiting_on="ci_stability",
+                        message=(
+                            f"CI passed; waiting {remaining}s for stability"
+                        ),
+                        approved=last_approved,
+                        merging=last_merging,
+                        ci_done=done,
+                        ci_total=len(checks),
+                        ci_failed=0,
+                        fix_attempts=fix_commits_pushed,
+                        max_fix_attempts=max_fix_attempts_status,
+                    )
                     log(
                         f"CI passed; waiting {remaining}s for stability "
                         f"(no new checks should appear)"
@@ -2240,6 +2322,9 @@ def _shepherd_body(
             _write_status_best_effort(
                 pr,
                 phase="ready",
+                category="ready",
+                user_action="review mergedog handoff and merge when satisfied",
+                message="ready for human merge: CI is green",
                 approved=last_approved,
                 merging=last_merging,
                 ci_done=done,
@@ -2280,6 +2365,15 @@ def _shepherd_body(
         _write_status_best_effort(
             pr,
             phase="watching_merge",
+            category="waiting",
+            waiting_on="human_merge",
+            user_action=(
+                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+            ),
+            message=(
+                "waiting for human reviewer to "
+                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+            ),
             approved=last_approved,
             merging=last_merging,
             fix_attempts=fix_commits_pushed,

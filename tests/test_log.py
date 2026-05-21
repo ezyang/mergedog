@@ -11,6 +11,7 @@ class TestLog(unittest.TestCase):
         log_mod.set_outcome(None)
         log_mod.set_merging(False)
         log_mod.set_approved(False)
+        log_mod.configure_status_pr(None)
 
     def test_complete_uses_done_prefix_without_halt(self):
         log_mod.set_approved(True)
@@ -33,6 +34,26 @@ class TestLog(unittest.TestCase):
         )
         self.assertNotIn("HALT", stderr.getvalue())
         notify_halt.assert_not_called()
+
+    def test_die_writes_halted_status(self):
+        log_mod.configure_status_pr(123)
+        stderr = io.StringIO()
+
+        with (
+            contextlib.redirect_stderr(stderr),
+            mock.patch("mergedog.notify.notify_halt"),
+            mock.patch("mergedog.status.write_status") as write_status,
+            self.assertRaises(SystemExit),
+        ):
+            log_mod.die("manual intervention required")
+
+        write_status.assert_called_once_with(
+            123,
+            phase="halted",
+            category="blocked",
+            message="HALT: manual intervention required",
+            user_action="manual intervention required",
+        )
 
     def test_log_escapes_control_characters(self):
         stderr = io.StringIO()

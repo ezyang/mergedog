@@ -402,6 +402,14 @@ def _write_handoff_status(pr: int, *, approved: bool, merging: bool) -> None:
         write_status(
             pr,
             phase="watching_merge" if merging else "ready",
+            category="waiting" if merging else "ready",
+            waiting_on="mergebot" if merging else None,
+            user_action=None if merging else "approve and merge when satisfied",
+            message=(
+                "mergebot picked up the merge; waiting for outcome"
+                if merging
+                else "ready for human merge"
+            ),
             approved=approved,
             merging=merging,
         )
