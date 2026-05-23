@@ -31,6 +31,7 @@ _GH_TRANSIENT_MESSAGES = (
     "i/o timeout",
     "tls handshake timeout",
     "temporary failure",
+    "unexpected eof",
 )
 _GH_MAX_RETRIES = 3
 _GH_RETRY_DELAY = 5  # seconds

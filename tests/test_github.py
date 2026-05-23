@@ -13,6 +13,16 @@ class TestGhRetries(unittest.TestCase):
 
         self.assertTrue(github._is_transient_gh_failure(proc))
 
+    def test_unexpected_eof_is_transient(self):
+        proc = subprocess.CompletedProcess(
+            ["gh"],
+            1,
+            "",
+            'Post "https://api.github.com/graphql": unexpected EOF\n',
+        )
+
+        self.assertTrue(github._is_transient_gh_failure(proc))
+
     def test_logs_recovery_after_retry_success(self):
         calls = [
             subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
