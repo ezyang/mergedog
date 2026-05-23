@@ -407,6 +407,65 @@ def _intervention_suffix(intervention_count: int | None) -> str:
     )
 
 
+def _post_handoff_ci_status(pr: int) -> tuple[str, int, int, int] | None:
+    try:
+        checks = github.get_pr_checks_all(pr)
+    except Exception:
+        return None
+    total = len(checks)
+    done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
+    failed = sum(
+        1 for c in checks if c.get("bucket") in {"fail", "cancel"}
+    )
+    return github.evaluate_checks(checks), done, total, failed
+
+
+def _write_post_handoff_ci_status(
+    pr: int,
+    *,
+    status: str,
+    done: int,
+    total: int,
+    failed: int,
+    approved: bool,
+    merging: bool,
+    intervention_count: int | None,
+    human_ack_sha: str | None,
+) -> None:
+    if status == "failed":
+        failure_plural = "" if failed == 1 else "s"
+        message = (
+            f"CI regressed after handoff: {failed} active "
+            f"failure{failure_plural} ({done}/{total} checks done)"
+        )
+        category = "action"
+        waiting_on = None
+        action = "inspecting_ci"
+    else:
+        message = f"waiting for CI after handoff: {done}/{total} checks done"
+        category = "waiting"
+        waiting_on = "ci"
+        action = None
+    try:
+        write_status(
+            pr,
+            phase="polling_ci",
+            category=category,
+            waiting_on=waiting_on,
+            action=action,
+            message=message + _intervention_suffix(intervention_count),
+            intervention_count=intervention_count,
+            human_ack_sha=human_ack_sha,
+            approved=approved,
+            merging=merging,
+            ci_done=done,
+            ci_total=total,
+            ci_failed=failed,
+        )
+    except Exception:
+        pass
+
+
 def _write_handoff_status(
     pr: int,
     *,
@@ -493,6 +552,8 @@ def watch_post_handoff(
       - ``("conflict", None, None)``   -- GitHub reports the PR branch has
         conflicts with the base branch before mergebot produced a failure
         comment; caller should refresh the branch.
+      - ``("ci_failed", None, None)``  -- CI regressed after handoff; caller
+        should re-enter the normal CI inspection loop.
     """
     last_state: str | None = None
     last_merging_msg: str | None = None
@@ -502,13 +563,6 @@ def watch_post_handoff(
         approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
         set_approved(approved)
-        _write_handoff_status(
-            pr,
-            approved=approved,
-            merging=merging,
-            intervention_count=intervention_count,
-            human_ack_sha=human_ack_sha,
-        )
         if pr_data.get("state") != "OPEN":
             return "closed", None, None
         if not merging and _pr_has_merge_conflicts(pr_data):
@@ -520,6 +574,13 @@ def watch_post_handoff(
             log(f"{PROJECT.mergebot_login} reported merge failure; halting")
             return "failed", event[1], event[2]
         if merging:
+            _write_handoff_status(
+                pr,
+                approved=approved,
+                merging=merging,
+                intervention_count=intervention_count,
+                human_ack_sha=human_ack_sha,
+            )
             msg = _merging_progress_line(pr)
             if msg != last_merging_msg:
                 log(msg)
@@ -528,6 +589,36 @@ def watch_post_handoff(
             # later (shouldn't happen in normal flow, but cheap to handle).
             last_state = "merging"
         else:
+            ci = _post_handoff_ci_status(pr)
+            if ci is not None:
+                ci_status, done, total, failed = ci
+                if ci_status in {"failed", "pending"}:
+                    _write_post_handoff_ci_status(
+                        pr,
+                        status=ci_status,
+                        done=done,
+                        total=total,
+                        failed=failed,
+                        approved=approved,
+                        merging=merging,
+                        intervention_count=intervention_count,
+                        human_ack_sha=human_ack_sha,
+                    )
+                    if ci_status == "failed":
+                        log(
+                            "CI regressed after handoff; returning to CI "
+                            "inspection"
+                        )
+                        return "ci_failed", None, None
+                    time.sleep(_POLL_INTERVAL_SEC)
+                    continue
+            _write_handoff_status(
+                pr,
+                approved=approved,
+                merging=merging,
+                intervention_count=intervention_count,
+                human_ack_sha=human_ack_sha,
+            )
             last_merging_msg = None
             if kind == "started":
                 new_state = "started"

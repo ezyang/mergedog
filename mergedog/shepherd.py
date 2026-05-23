@@ -2549,6 +2549,12 @@ def _shepherd_body(
             last_status = None
             pr_data = github.get_pr(pr)
             continue
+        if result == "ci_failed":
+            recovery_attempts += 1
+            log("post-handoff CI regression detected; re-entering CI inspection")
+            last_status = None
+            pr_data = github.get_pr(pr)
+            continue
         # result == "failed": pytorchmergebot rejected the merge. Persist
         # the failure timestamp so we don't re-fire on this same comment,
         # then loop back to CI inspection -- claude can judge spurious or

@@ -280,6 +280,85 @@ class TestWatchStackPostHandoff(unittest.TestCase):
 
         self.assertEqual(result, ("closed", None, None))
 
+    def test_watch_post_handoff_returns_ci_failed_when_checks_regress(self):
+        with (
+            mock.patch.object(
+                handoff.github,
+                "get_pr",
+                return_value={
+                    "number": 101,
+                    "state": "OPEN",
+                    "reviewDecision": "APPROVED",
+                    "labels": [],
+                    "mergeStateStatus": "CLEAN",
+                },
+            ),
+            mock.patch.object(handoff.github, "get_pr_comments", return_value=[]),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                return_value=[
+                    {"name": "lint", "bucket": "fail"},
+                    {"name": "test", "bucket": "pass"},
+                ],
+            ),
+            mock.patch.object(handoff, "write_status") as write_status,
+        ):
+            result = handoff.watch_post_handoff(
+                101,
+                "2026-05-08T13:00:00Z",
+                intervention_count=2,
+                human_ack_sha="a" * 40,
+            )
+
+        self.assertEqual(result, ("ci_failed", None, None))
+        write_status.assert_called_once()
+        self.assertEqual(write_status.call_args.kwargs["phase"], "polling_ci")
+        self.assertEqual(write_status.call_args.kwargs["category"], "action")
+        self.assertEqual(write_status.call_args.kwargs["action"], "inspecting_ci")
+        self.assertEqual(write_status.call_args.kwargs["ci_failed"], 1)
+        self.assertIn("CI regressed after handoff", write_status.call_args.kwargs["message"])
+
+    def test_watch_post_handoff_reports_pending_ci_instead_of_ready(self):
+        pr_states = [
+            {
+                "number": 101,
+                "state": "OPEN",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "CLEAN",
+            },
+            {
+                "number": 101,
+                "state": "CLOSED",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "CLEAN",
+            },
+        ]
+
+        with (
+            mock.patch.object(handoff.github, "get_pr", side_effect=pr_states),
+            mock.patch.object(handoff.github, "get_pr_comments", return_value=[]),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                return_value=[{"name": "lint", "bucket": "pending"}],
+            ),
+            mock.patch.object(handoff, "write_status") as write_status,
+            mock.patch.object(handoff.time, "sleep"),
+        ):
+            result = handoff.watch_post_handoff(
+                101, "2026-05-08T13:00:00Z"
+            )
+
+        self.assertEqual(result, ("closed", None, None))
+        first = write_status.call_args_list[0].kwargs
+        self.assertEqual(first["phase"], "polling_ci")
+        self.assertEqual(first["category"], "waiting")
+        self.assertEqual(first["waiting_on"], "ci")
+        self.assertIn("waiting for CI after handoff", first["message"])
+
     def test_returns_failed_member(self):
         comments = {
             101: [],
