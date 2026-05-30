@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import re
+import shutil
 import subprocess
 import time
 from typing import Any
@@ -33,19 +35,86 @@ _GH_TRANSIENT_MESSAGES = (
     "temporary failure",
     "unexpected eof",
 )
+_GH_STARTUP_CRASH_MESSAGES = (
+    "fatal error: lfstack.push",
+    "runtime: lfstack.push invalid packing",
+)
+_GH_FALLBACK_PATHS = ("/usr/local/bin/gh",)
 _GH_MAX_RETRIES = 3
 _GH_RETRY_DELAY = 5  # seconds
+_GH_COMMAND = ["gh"]
+
+
+def _is_gh_startup_crash(proc: subprocess.CompletedProcess[str]) -> bool:
+    if proc.returncode == 0:
+        return False
+    stderr_lower = (proc.stderr or "").lower()
+    return any(msg in stderr_lower for msg in _GH_STARTUP_CRASH_MESSAGES)
 
 
 def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
     """True if the gh CLI failed due to a transient HTTP error."""
     if proc.returncode == 0:
         return False
+    if _is_gh_startup_crash(proc):
+        return True
     stderr = proc.stderr or ""
     stderr_lower = stderr.lower()
     return any(code in stderr for code in _GH_TRANSIENT_CODES) or any(
         msg in stderr_lower for msg in _GH_TRANSIENT_MESSAGES
     )
+
+
+def _candidate_gh_paths(current: str) -> list[str]:
+    current_path = shutil.which(current) or current
+    current_real = os.path.realpath(current_path)
+    seen: set[str] = set()
+    paths: list[str] = []
+
+    def add(path: str) -> None:
+        real = os.path.realpath(path)
+        if real == current_real or path in seen or real in seen:
+            return
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            return
+        seen.add(path)
+        seen.add(real)
+        paths.append(path)
+
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory:
+            add(os.path.join(directory, "gh"))
+    for path in _GH_FALLBACK_PATHS:
+        add(path)
+    return paths
+
+
+def _find_working_gh_executable(current: str) -> str | None:
+    for candidate in _candidate_gh_paths(current):
+        try:
+            proc = subprocess.run(
+                [candidate, "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0:
+            return candidate
+    return None
+
+
+def _raise_gh_failure(
+    proc: subprocess.CompletedProcess[str], args: list[str]
+) -> None:
+    err = (proc.stderr or "").rstrip()
+    if err:
+        log(f"  ! gh {' '.join(args[:3])}")
+        for line in err.splitlines():
+            log(f"    stderr: {line}")
+    proc.check_returncode()
 
 
 def _gh(
@@ -55,30 +124,37 @@ def _gh(
     loud: bool = False,
     log_context: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    global _GH_COMMAND
     for attempt in range(_GH_MAX_RETRIES):
-        proc = run(["gh", *args], check=False, loud=(loud and attempt == 0))
+        proc = run([*_GH_COMMAND, *args], check=False, loud=(loud and attempt == 0))
+        if _is_gh_startup_crash(proc):
+            replacement = _find_working_gh_executable(_GH_COMMAND[0])
+            if replacement is not None:
+                current = shutil.which(_GH_COMMAND[0]) or _GH_COMMAND[0]
+                log(
+                    f"  ! gh startup crash from {current}; "
+                    f"retrying with {replacement}"
+                )
+                _GH_COMMAND = [replacement]
+                proc = run([*_GH_COMMAND, *args], check=False, loud=False)
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
             if attempt > 0 and proc.returncode == 0:
                 suffix = f" while {log_context}" if log_context else ""
                 log(f"  gh recovered after transient failure{suffix}")
             if check and proc.returncode != 0:
-                # Replicate the stderr logging that run(check=True) does.
-                err = (proc.stderr or "").rstrip()
-                if err:
-                    log(f"  ! gh {' '.join(args[:3])}")
-                    for line in err.splitlines():
-                        log(f"    stderr: {line}")
-                proc.check_returncode()
+                _raise_gh_failure(proc, args)
+            return proc
+        if attempt + 1 == _GH_MAX_RETRIES:
+            log(f"  ! gh transient failure after {_GH_MAX_RETRIES} attempts")
+            if check:
+                _raise_gh_failure(proc, args)
             return proc
         log(
             f"  ! gh transient failure (attempt {attempt + 1}/{_GH_MAX_RETRIES}), "
             f"retrying in {_GH_RETRY_DELAY}s"
         )
         time.sleep(_GH_RETRY_DELAY)
-    # All retries exhausted; let it through (raise if check=True).
-    if check:
-        proc.check_returncode()
-    return proc
+    raise AssertionError("unreachable")
 
 
 def _gh_json(args: list[str], *, log_context: str | None = None) -> Any:
