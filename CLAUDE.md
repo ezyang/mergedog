@@ -14,6 +14,12 @@ Before doing repo-specific operations, check for matching project memories under
 
 Put temporary scripts and scratch files under `agent_space/`.
 
+# Network access
+
+Codex shell commands may not have working external internet access, even when the local machine does. Do not assume GitHub/API failures from Codex-run commands reproduce in the production instance.
+
+A separately running `python -m mergedog.mux` process may have internet access and can successfully run shepherd operations that Codex cannot run directly.
+
 # Commit cadence
 
 Commit proactively at natural breakpoints — don't wait to be asked.
