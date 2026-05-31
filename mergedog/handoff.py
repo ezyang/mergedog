@@ -407,6 +407,13 @@ def _intervention_suffix(intervention_count: int | None) -> str:
     )
 
 
+def _suppressed_failure_suffix(suppressed_failure_count: int) -> str:
+    if suppressed_failure_count <= 0:
+        return ""
+    plural = "" if suppressed_failure_count == 1 else "s"
+    return f"; {suppressed_failure_count} suppressed failure{plural}"
+
+
 def _apply_suppressed_overrides(
     checks: list[dict], suppressed_check_names: set[str] | None
 ) -> list[dict]:
@@ -426,7 +433,7 @@ def _apply_suppressed_overrides(
 
 def _post_handoff_ci_status(
     pr: int, *, suppressed_check_names: set[str] | None = None
-) -> tuple[str, int, int, int] | None:
+) -> tuple[str, int, int, int, int] | None:
     try:
         checks = github.get_pr_checks_all(pr)
     except Exception:
@@ -439,7 +446,13 @@ def _post_handoff_ci_status(
     failed = sum(
         1 for c in effective_checks if c.get("bucket") in {"fail", "cancel"}
     )
-    return github.evaluate_checks(effective_checks), done, total, failed
+    suppressed = sum(
+        1
+        for c in checks
+        if c.get("name") in (suppressed_check_names or set())
+        and c.get("bucket") in {"fail", "cancel"}
+    )
+    return github.evaluate_checks(effective_checks), done, total, failed, suppressed
 
 
 def _write_post_handoff_ci_status(
@@ -453,6 +466,7 @@ def _write_post_handoff_ci_status(
     merging: bool,
     intervention_count: int | None,
     human_ack_sha: str | None,
+    suppressed_failure_count: int = 0,
 ) -> None:
     if status == "failed":
         failure_plural = "" if failed == 1 else "s"
@@ -468,6 +482,7 @@ def _write_post_handoff_ci_status(
         category = "waiting"
         waiting_on = "ci"
         action = None
+    message += _suppressed_failure_suffix(suppressed_failure_count)
     try:
         write_status(
             pr,
@@ -495,6 +510,7 @@ def _write_handoff_status(
     merging: bool,
     intervention_count: int | None = None,
     human_ack_sha: str | None = None,
+    suppressed_failure_count: int = 0,
 ) -> None:
     if merging:
         category = "waiting"
@@ -518,7 +534,11 @@ def _write_handoff_status(
             category=category,
             waiting_on=waiting_on,
             user_action=user_action,
-            message=message + _intervention_suffix(intervention_count),
+            message=(
+                message
+                + _suppressed_failure_suffix(suppressed_failure_count)
+                + _intervention_suffix(intervention_count)
+            ),
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             approved=approved,
@@ -616,7 +636,7 @@ def watch_post_handoff(
                 pr, suppressed_check_names=suppressed_check_names
             )
             if ci is not None:
-                ci_status, done, total, failed = ci
+                ci_status, done, total, failed, suppressed = ci
                 if ci_status in {"failed", "pending"}:
                     _write_post_handoff_ci_status(
                         pr,
@@ -628,6 +648,7 @@ def watch_post_handoff(
                         merging=merging,
                         intervention_count=intervention_count,
                         human_ack_sha=human_ack_sha,
+                        suppressed_failure_count=suppressed,
                     )
                     if ci_status == "failed":
                         log(
@@ -643,6 +664,7 @@ def watch_post_handoff(
                 merging=merging,
                 intervention_count=intervention_count,
                 human_ack_sha=human_ack_sha,
+                suppressed_failure_count=suppressed if ci is not None else 0,
             )
             last_merging_msg = None
             if kind == "started":

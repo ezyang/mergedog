@@ -242,7 +242,7 @@ class TestWatchStackPostHandoff(unittest.TestCase):
                 handoff._post_handoff_ci_status(
                     101, suppressed_check_names={"lint"}
                 ),
-                ("passed", 2, 2, 0),
+                ("passed", 2, 2, 0, 1),
             )
 
     def test_watch_post_handoff_returns_conflict_from_github_merge_state(self):
@@ -334,6 +334,22 @@ class TestWatchStackPostHandoff(unittest.TestCase):
         self.assertEqual(write_status.call_args.kwargs["action"], "inspecting_ci")
         self.assertEqual(write_status.call_args.kwargs["ci_failed"], 1)
         self.assertIn("CI regressed after handoff", write_status.call_args.kwargs["message"])
+
+    def test_handoff_status_surfaces_suppressed_failures(self):
+        with mock.patch.object(handoff, "write_status") as write_status:
+            handoff._write_handoff_status(
+                101,
+                approved=True,
+                merging=False,
+                intervention_count=0,
+                suppressed_failure_count=2,
+            )
+
+        self.assertEqual(write_status.call_args.kwargs["phase"], "ready")
+        self.assertIn(
+            "ready for human merge; 2 suppressed failures",
+            write_status.call_args.kwargs["message"],
+        )
 
     def test_watch_post_handoff_reports_pending_ci_instead_of_ready(self):
         pr_states = [
