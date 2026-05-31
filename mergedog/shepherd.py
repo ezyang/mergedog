@@ -5,6 +5,7 @@ One process per PR. Synchronous. Halts on any sign of an untrusted change.
 from __future__ import annotations
 
 import faulthandler
+import re
 import signal
 import subprocess
 import sys
@@ -361,6 +362,26 @@ def _filter_spurious_failed_jobs(
     if not spurious_names:
         return failed
     return [(name, text) for name, text in failed if name not in spurious_names]
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _actionable_lint_failure_names(failed: list[tuple[str, str]]) -> list[str]:
+    """Return lint jobs whose logs contain concrete lintrunner diagnostics.
+
+    These are not flaky/status-only signals: lintrunner identified a path and
+    a rule violation. If an agent cannot fix one, it should signal TOO_HARD or
+    INCONCLUSIVE rather than marking the check spurious.
+    """
+    names: list[str] = []
+    for name, text in failed:
+        if "lint" not in name.lower():
+            continue
+        clean = _ANSI_ESCAPE_RE.sub("", text or "")
+        if "Lint failed!" in clean and ">>> Lint for " in clean:
+            names.append(name)
+    return names
 
 
 def _write_status_best_effort(pr: int, **fields) -> None:
@@ -2250,6 +2271,14 @@ def _shepherd_body(
                     # still wait out any other pending checks before
                     # handing off -- a green-on-the-non-spurious-set
                     # verdict isn't a green-on-everything verdict.
+                    actionable_lints = _actionable_lint_failure_names(failed)
+                    if actionable_lints:
+                        die(
+                            f"{_llm_label()} signalled spurious for actionable "
+                            "lint failure(s): "
+                            f"{', '.join(actionable_lints)}; halting for "
+                            "human review"
+                        )
                     newly_spurious = _spurious_check_names_from_checks(
                         effective_checks
                     )

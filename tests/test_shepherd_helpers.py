@@ -9,6 +9,7 @@ from mergedog.claude import LLMResult
 from mergedog import shepherd
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
+    _actionable_lint_failure_names,
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
     _inconclusive_refresh_target,
@@ -376,6 +377,32 @@ class TestFilterSpuriousFailedJobs(unittest.TestCase):
         failed = [("pull / linux", "real")]
 
         self.assertIs(_filter_spurious_failed_jobs(failed, set()), failed)
+
+
+class TestActionableLintFailureNames(unittest.TestCase):
+    def test_detects_lintrunner_diagnostic(self):
+        log = (
+            "\x1b[1m>>>\x1b[0m Lint for \x1b[4mc10/core/TensorOptions.h\x1b[0m:\n"
+            "  Error (CLANGTIDY) [modernize-use-constraints]\n"
+            "Lint failed!\n"
+        )
+
+        self.assertEqual(
+            _actionable_lint_failure_names(
+                [("lintrunner-clang-partial / lint", log)]
+            ),
+            ["lintrunner-clang-partial / lint"],
+        )
+
+    def test_ignores_infra_lint_failure_without_diagnostic(self):
+        log = "failed to download linter\nLint failed!\n"
+
+        self.assertEqual(
+            _actionable_lint_failure_names(
+                [("lintrunner-clang-partial / lint", log)]
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

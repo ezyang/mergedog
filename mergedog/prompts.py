@@ -38,6 +38,10 @@ Your job, right now, is to decide which of five things to do and do exactly it:
      failures caused by the approved PR. For unrelated trunk breakage, \
      signal SPURIOUS.
 
+     Do not signal SPURIOUS for lint jobs that contain concrete lintrunner \
+     diagnostics such as ``>>> Lint for path`` and a rule error. Fix the \
+     lint, or signal TOO_HARD/INCONCLUSIVE if you cannot safely fix it.
+
   3. Signal TOO_HARD by running ``touch .mergedog-too-hard`` and \
      then exiting without committing. Choose this if at least one failure \
      is real and PR-related, but you cannot safely fix it in one commit \

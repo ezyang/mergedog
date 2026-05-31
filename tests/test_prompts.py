@@ -24,6 +24,7 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("real and PR-related", prompt)
         self.assertIn("cannot safely fix it in one commit", prompt)
         self.assertIn("touch .mergedog-spurious", prompt)
+        self.assertIn("Do not signal SPURIOUS for lint jobs", prompt)
         self.assertIn("touch .mergedog-inconclusive", prompt)
         self.assertIn("Choose this only if you genuinely", prompt)
 
