@@ -370,19 +370,48 @@ def _write_status_best_effort(pr: int, **fields) -> None:
         pass
 
 
-def _ci_status_message(status: str, done: int, total: int, failed: int) -> str:
+def _suppressed_failure_suffix(suppressed: int) -> str:
+    if suppressed <= 0:
+        return ""
+    plural = "" if suppressed == 1 else "s"
+    return f"; {suppressed} suppressed failure{plural}"
+
+
+def _ci_status_message(
+    status: str,
+    done: int,
+    total: int,
+    failed: int,
+    *,
+    suppressed: int = 0,
+) -> str:
     if status == "pending":
-        return f"waiting for CI: {done}/{total} checks done"
+        return (
+            f"waiting for CI: {done}/{total} checks done"
+            f"{_suppressed_failure_suffix(suppressed)}"
+        )
     if status == "failed":
         failures = (
             f"{failed} active failure"
             if failed == 1
             else f"{failed} active failures"
         )
-        return f"CI failed: {failures} ({done}/{total} checks done)"
+        return (
+            f"CI failed: {failures} ({done}/{total} checks done)"
+            f"{_suppressed_failure_suffix(suppressed)}"
+        )
     if status == "passed":
+        if suppressed:
+            plural = "" if suppressed == 1 else "s"
+            return (
+                f"CI passed with {suppressed} suppressed failure{plural}: "
+                f"{done}/{total} checks done"
+            )
         return f"CI passed: {done}/{total} checks done"
-    return f"CI {status}: {done}/{total} checks done"
+    return (
+        f"CI {status}: {done}/{total} checks done"
+        f"{_suppressed_failure_suffix(suppressed)}"
+    )
 
 
 def _fix_attempt_message(fix_attempts: int, max_fix_attempts: int) -> str:
@@ -1724,6 +1753,9 @@ def _shepherd_body(
                 bool(raw_failure_names)
                 and raw_failure_names <= spurious_check_names
             )
+            suppressed_failed_count = len(
+                raw_failure_names & spurious_check_names
+            )
             workflow_failed_run_ids: list[int] = []
             if status == "passed" and not all_failures_spurious:
                 workflow_failed_run_ids = [
@@ -1767,7 +1799,11 @@ def _shepherd_body(
                 action="inspecting_ci" if status != "pending" else None,
                 message=_status_with_interventions(
                     _ci_status_message(
-                        status, done, len(checks), active_failed_count
+                        status,
+                        done,
+                        len(checks),
+                        active_failed_count,
+                        suppressed=suppressed_failed_count,
                     ),
                     intervention_count,
                 ),
@@ -2364,13 +2400,20 @@ def _shepherd_body(
                 elapsed = time.time() - stable_since
                 if elapsed < CI_STABILITY_WINDOW_SEC:
                     remaining = int(CI_STABILITY_WINDOW_SEC - elapsed)
+                    passed_message = "CI passed"
+                    if suppressed_failed_count:
+                        plural = "" if suppressed_failed_count == 1 else "s"
+                        passed_message = (
+                            f"CI passed with {suppressed_failed_count} "
+                            f"suppressed failure{plural}"
+                        )
                     _write_status_best_effort(
                         pr,
                         phase="polling_ci",
                         category="waiting",
                         waiting_on="ci_stability",
                         message=_status_with_interventions(
-                            f"CI passed; waiting {remaining}s for stability",
+                            f"{passed_message}; waiting {remaining}s for stability",
                             intervention_count,
                         ),
                         intervention_count=intervention_count,
@@ -2384,7 +2427,7 @@ def _shepherd_body(
                         max_fix_attempts=max_fix_attempts_status,
                     )
                     log(
-                        f"CI passed; waiting {remaining}s for stability "
+                        f"{passed_message}; waiting {remaining}s for stability "
                         f"(no new checks should appear)"
                     )
                     time.sleep(min(POLL_INTERVAL_SEC, remaining))
@@ -2414,10 +2457,18 @@ def _shepherd_body(
                 continue
             log("ALL CI GREEN.")
             ready_for_merge = last_approved is not False
+            if suppressed_failed_count:
+                plural = "" if suppressed_failed_count == 1 else "s"
+                ci_green_phrase = (
+                    f"CI is green except {suppressed_failed_count} "
+                    f"suppressed failure{plural}"
+                )
+            else:
+                ci_green_phrase = "CI is green"
             ready_message = (
-                "ready for human merge: CI is green"
+                f"ready for human merge: {ci_green_phrase}"
                 if ready_for_merge
-                else "waiting for maintainer approval: CI is green"
+                else f"waiting for maintainer approval: {ci_green_phrase}"
             )
             ready_user_action = (
                 "review mergedog handoff and merge when satisfied"
@@ -2444,6 +2495,7 @@ def _shepherd_body(
             )
             break
 
+        handoff_started_iso = utc_now_iso()
         post_handoff_comment(
             pr,
             pr_data,
@@ -2460,7 +2512,7 @@ def _shepherd_body(
         # already happened between the last handoff and our restart. But
         # also floor on any failure we've already halted on, so the next
         # restart doesn't re-react to the same stale comment.
-        handoff_iso = github.latest_mergedog_handoff_iso(pr) or utc_now_iso()
+        handoff_iso = github.latest_mergedog_handoff_iso(pr) or handoff_started_iso
         since_iso = max(handoff_iso, trust.last_observed_failure_iso)
         merge_instruction = (
             f"comment `{PROJECT.merge_command}` on "
@@ -2510,6 +2562,7 @@ def _shepherd_body(
             since_iso,
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
+            suppressed_check_names=spurious_check_names,
         )
         if result == "closed":
             complete(

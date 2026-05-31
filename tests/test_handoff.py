@@ -229,6 +229,22 @@ class TestMergebotIgnoredChecks(unittest.TestCase):
 
 
 class TestWatchStackPostHandoff(unittest.TestCase):
+    def test_post_handoff_ci_status_ignores_suppressed_failures(self):
+        with mock.patch.object(
+            handoff.github,
+            "get_pr_checks_all",
+            return_value=[
+                {"name": "lint", "bucket": "fail"},
+                {"name": "test", "bucket": "pass"},
+            ],
+        ):
+            self.assertEqual(
+                handoff._post_handoff_ci_status(
+                    101, suppressed_check_names={"lint"}
+                ),
+                ("passed", 2, 2, 0),
+            )
+
     def test_watch_post_handoff_returns_conflict_from_github_merge_state(self):
         with mock.patch.object(
             handoff.github,

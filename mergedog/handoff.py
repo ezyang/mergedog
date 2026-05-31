@@ -407,17 +407,39 @@ def _intervention_suffix(intervention_count: int | None) -> str:
     )
 
 
-def _post_handoff_ci_status(pr: int) -> tuple[str, int, int, int] | None:
+def _apply_suppressed_overrides(
+    checks: list[dict], suppressed_check_names: set[str] | None
+) -> list[dict]:
+    """Treat known-suppressed failed checks as skipped during handoff watch."""
+    if not suppressed_check_names:
+        return checks
+    out: list[dict] = []
+    for c in checks:
+        if (
+            c.get("name") in suppressed_check_names
+            and c.get("bucket") in {"fail", "cancel"}
+        ):
+            c = {**c, "bucket": "skipping"}
+        out.append(c)
+    return out
+
+
+def _post_handoff_ci_status(
+    pr: int, *, suppressed_check_names: set[str] | None = None
+) -> tuple[str, int, int, int] | None:
     try:
         checks = github.get_pr_checks_all(pr)
     except Exception:
         return None
+    effective_checks = _apply_suppressed_overrides(
+        checks, suppressed_check_names
+    )
     total = len(checks)
     done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
     failed = sum(
-        1 for c in checks if c.get("bucket") in {"fail", "cancel"}
+        1 for c in effective_checks if c.get("bucket") in {"fail", "cancel"}
     )
-    return github.evaluate_checks(checks), done, total, failed
+    return github.evaluate_checks(effective_checks), done, total, failed
 
 
 def _write_post_handoff_ci_status(
@@ -536,6 +558,7 @@ def watch_post_handoff(
     *,
     intervention_count: int | None = None,
     human_ack_sha: str | None = None,
+    suppressed_check_names: set[str] | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -589,7 +612,9 @@ def watch_post_handoff(
             # later (shouldn't happen in normal flow, but cheap to handle).
             last_state = "merging"
         else:
-            ci = _post_handoff_ci_status(pr)
+            ci = _post_handoff_ci_status(
+                pr, suppressed_check_names=suppressed_check_names
+            )
             if ci is not None:
                 ci_status, done, total, failed = ci
                 if ci_status in {"failed", "pending"}:

@@ -27,15 +27,16 @@ Your job, right now, is to decide which of five things to do and do exactly it:
   1. Make exactly one new commit on the current branch that fixes the real \
      CI failures. Do NOT push; the harness will push for you.
 
-  2. Make no commit at all. Choose this if the failures look spurious -- \
-     flaky tests, infra hiccups, unrelated breakage on trunk, etc. The \
+  2. Signal SPURIOUS by running ``touch .mergedog-spurious`` and then \
+     exiting without committing. Choose this if the failures look spurious \
+     -- flaky tests, infra hiccups, unrelated breakage on trunk, etc. The \
      harness will then advance the PR. A human reviews everything at the \
      end, so a wrong call here is recoverable.
 
      Do not fix failures you judge unrelated to this PR, even if the fix \
      looks obvious, safe, or small. mergedog commits must only address \
      failures caused by the approved PR. For unrelated trunk breakage, \
-     make no commit.
+     signal SPURIOUS.
 
   3. Signal TOO_HARD by running ``touch .mergedog-too-hard`` and \
      then exiting without committing. Choose this if at least one failure \
@@ -149,9 +150,9 @@ literal log tail):
 {failed_jobs}
 
 Investigate, then either commit a ``[MERGEDOG] ...`` fix (with the body \
-described above), signal TOO_HARD, signal INCONCLUSIVE, signal REBASE, or \
-exit without committing for spurious failures. Do not narrate -- the harness \
-only looks at ``git log`` and the marker files described above.
+described above), signal SPURIOUS, signal TOO_HARD, signal INCONCLUSIVE, or \
+signal REBASE. Do not narrate -- the harness only looks at ``git log`` and \
+the marker files described above.
 """
 
 
@@ -178,7 +179,7 @@ _STACK_MEMBER_HINT = """
     outside the trust boundary established by approving this stack.
   - If a CI failure on this PR appears to have been caused by code \
     introduced in one of those earlier stack commits rather than by this \
-    PR's own diff, take option 2 (no commit). mergedog will fix the \
+    PR's own diff, take option 2 (signal SPURIOUS). mergedog will fix the \
     earlier PR first and re-trigger CI on this PR after rebasing onto the \
     fixed parent.
   - The "earlier-stack status" section above lists the current CI verdict \
@@ -236,8 +237,9 @@ commit. This list comes directly from the GitHub checks API and is the \
 authoritative source of truth -- if any other section below (dr. ci summary, \
 log excerpts, sidecar) appears to disagree with this list, trust this list. \
 A check named here may have empty or unavailable logs if it just transitioned \
-to failed seconds ago; in that case prefer to make no commit and let the \
-harness re-invoke you on the next CI cycle once the logs are visible.
+to failed seconds ago; if the logs and trusted bot summaries do not contain \
+enough evidence to classify the failure, signal INCONCLUSIVE rather than \
+guessing.
 
 --- begin failing checks ---
 {failing_checks_body}

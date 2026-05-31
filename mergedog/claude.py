@@ -21,6 +21,7 @@ from mergedog.repo import head_sha, head_subject
 from mergedog.sanitize import sanitize_untrusted_text
 
 MERGEDOG_PREFIX = "[MERGEDOG]"
+SPURIOUS_MARKER = ".mergedog-spurious"
 
 
 @dataclass(frozen=True)
@@ -496,7 +497,8 @@ def _invoke(
       should halt in any of those cases.
     - ``new_sha`` is the SHA of the new ``[MERGEDOG]`` commit if the LLM
       made one, else None. ``(True, None, ...)`` means "the LLM judged
-      it a no-op" (spurious failures, or merge aborted).
+      it a no-op" (explicitly marked spurious failures, an already-satisfied
+      operator request, or merge/rebase/cherry-pick aborted).
     - ``transcript`` is the streamed event lines (same as the log) so
       the shepherd can include the LLM's reasoning in a handoff comment.
     - ``halt_reason`` is a specific operator-facing reason when
@@ -506,6 +508,11 @@ def _invoke(
     name, email = repo_mod.get_mergedog_identity()
     llm_config = get_llm_config()
     agent = llm_config.provider
+    # A stale spurious marker from a killed prior invocation must not let a
+    # silent no-op suppress fresh CI failures.
+    spurious_path = worktree / SPURIOUS_MARKER
+    if spurious_path.exists():
+        spurious_path.unlink()
     log(f"invoking {agent} ({mode} mode)...")
     rc, transcript = _run_llm_streaming(
         prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email),
@@ -551,6 +558,10 @@ def _invoke(
     if rebase:
         rebase_path.unlink()
 
+    spurious = spurious_path.exists()
+    if spurious:
+        spurious_path.unlink()
+
     if not _is_clean(worktree):
         reason = "left an uncommitted working tree; refusing to push"
         log(f"{agent} {reason}")
@@ -576,8 +587,17 @@ def _invoke(
             log(f"{agent} aborted the rebase without committing")
         elif expect_cherry_pick_resolution:
             log(f"{agent} aborted the cherry-pick without committing")
+        elif mode == "fix-CI":
+            if not spurious:
+                reason = (
+                    f"made no commit without signalling {SPURIOUS_MARKER}; "
+                    "refusing to mark CI failures spurious"
+                )
+                log(f"{agent} {reason}")
+                return LLMResult(False, None, transcript, reason)
+            log(f"{agent} signalled spurious failures (no commit)")
         else:
-            log(f"{agent} made no commit (treating as: failures are spurious / no-op)")
+            log(f"{agent} made no commit (treating as no-op)")
         return LLMResult(True, None, transcript)
 
     n = _commits_between(worktree, before, after)

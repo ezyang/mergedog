@@ -8,6 +8,154 @@ from mergedog.config import LLMConfig
 
 
 class TestInvoke(unittest.TestCase):
+    def test_fix_ci_no_commit_without_spurious_marker_is_contract_violation(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("codex"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+            ):
+                result = claude._invoke(
+                    worktree,
+                    "prompt",
+                    mode="fix-CI",
+                    expect_merge_commit=False,
+                )
+
+        self.assertFalse(result.ran_cleanly)
+        self.assertEqual(
+            result.halt_reason,
+            "made no commit without signalling .mergedog-spurious; "
+            "refusing to mark CI failures spurious",
+        )
+
+    def test_stale_spurious_marker_does_not_allow_silent_noop(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+            marker = worktree / claude.SPURIOUS_MARKER
+            marker.touch()
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("codex"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+            ):
+                result = claude._invoke(
+                    worktree,
+                    "prompt",
+                    mode="fix-CI",
+                    expect_merge_commit=False,
+                )
+
+        self.assertFalse(result.ran_cleanly)
+        self.assertFalse(marker.exists())
+
+    def test_fix_ci_spurious_marker_allows_no_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+            marker = worktree / claude.SPURIOUS_MARKER
+
+            def run_llm(*args, **kwargs):
+                marker.touch()
+                return 0, []
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("codex"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", side_effect=run_llm),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+            ):
+                result = claude._invoke(
+                    worktree,
+                    "prompt",
+                    mode="fix-CI",
+                    expect_merge_commit=False,
+                )
+
+        self.assertTrue(result.ran_cleanly)
+        self.assertIsNone(result.new_sha)
+        self.assertFalse(marker.exists())
+
+    def test_operator_fix_still_allows_already_satisfied_noop(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "author_env",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    claude,
+                    "get_llm_config",
+                    return_value=LLMConfig("codex"),
+                ),
+                mock.patch.object(claude, "_run_llm_streaming", return_value=(0, [])),
+                mock.patch.object(claude, "_is_clean", return_value=True),
+            ):
+                result = claude._invoke(
+                    worktree,
+                    "prompt",
+                    mode="operator-fix",
+                    expect_merge_commit=False,
+                )
+
+        self.assertTrue(result.ran_cleanly)
+        self.assertIsNone(result.new_sha)
+
     def test_too_hard_marker_returns_specific_halt_reason(self):
         with tempfile.TemporaryDirectory() as d:
             worktree = Path(d)

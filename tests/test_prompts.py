@@ -23,6 +23,7 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("touch .mergedog-too-hard", prompt)
         self.assertIn("real and PR-related", prompt)
         self.assertIn("cannot safely fix it in one commit", prompt)
+        self.assertIn("touch .mergedog-spurious", prompt)
         self.assertIn("touch .mergedog-inconclusive", prompt)
         self.assertIn("Choose this only if you genuinely", prompt)
 
