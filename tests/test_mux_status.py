@@ -302,6 +302,66 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertTrue(rows[0]["shepherd_status_stale"])
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
 
+    def test_format_status_ignores_nonterminal_sidecar_after_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "subprocess.CalledProcessError: gh pr view failed\n"
+            )
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(1), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+
+            sidecar = {
+                "schema_version": 1,
+                "updated_at": "2026-05-31T00:51:20+00:00",
+                "phase": "ready",
+                "category": "ready",
+                "message": "ready for human merge",
+            }
+            with mock.patch.object(mux, "read_status", return_value=sidecar):
+                rows = json.loads(app._format_status())
+
+        self.assertEqual(rows[0]["state"], "exited_error")
+        self.assertEqual(rows[0]["phase"], "🔴")
+        self.assertEqual(
+            rows[0]["status"],
+            "HALT: shepherd exited; ignoring stale status",
+        )
+        self.assertTrue(rows[0]["shepherd_status_stale"])
+        self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
+    def test_format_status_keeps_halted_sidecar_after_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] HALT: PR head moved to untrusted commit\n"
+            )
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(1), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+
+            sidecar = {
+                "schema_version": 1,
+                "updated_at": "2026-05-31T00:51:20+00:00",
+                "phase": "halted",
+                "category": "blocked",
+                "message": "HALT: PR head moved to untrusted commit",
+            }
+            with mock.patch.object(mux, "read_status", return_value=sidecar):
+                rows = json.loads(app._format_status())
+
+        self.assertEqual(rows[0]["state"], "exited_error")
+        self.assertEqual(rows[0]["phase"], "🔴")
+        self.assertEqual(
+            rows[0]["status"],
+            "HALT: PR head moved to untrusted commit",
+        )
+        self.assertFalse(rows[0]["shepherd_status_stale"])
+        self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
 
 class TestMuxCommands(unittest.TestCase):
     def test_restart_all_dispatches_bulk_restart_with_flags(self):

@@ -368,13 +368,19 @@ def _status_is_stale(
     structured: dict | None,
     *,
     started_at: float | None,
+    rc: int | None = None,
 ) -> bool:
-    if structured is None or started_at is None:
+    if structured is None:
         return False
-    updated_at = _status_updated_ts(structured)
-    if updated_at is None:
-        return True
-    return updated_at < started_at
+    if started_at is not None:
+        updated_at = _status_updated_ts(structured)
+        if updated_at is None:
+            return True
+        if updated_at < started_at:
+            return True
+    if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
+        return structured.get("phase") != "halted"
+    return False
 
 
 def _record_job_started(app: object, job: JobKey, started_at: float) -> None:
@@ -393,6 +399,8 @@ def _status_message(
     stale: bool = False,
 ) -> str:
     if stale:
+        if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
+            return "HALT: shepherd exited; ignoring stale status"
         return "starting; ignoring stale status from previous shepherd"
     if structured is not None:
         msg = structured.get("message")
@@ -978,7 +986,7 @@ class MuxApp(App):
             last = _last_log_line(log_path)
             structured = read_status(pr)
             started_at = getattr(self, "_job_started_at", {}).get(job)
-            stale = _status_is_stale(structured, started_at=started_at)
+            stale = _status_is_stale(structured, started_at=started_at, rc=rc)
             if structured is None:
                 self._pr_status.pop(job, None)
             else:
@@ -1156,7 +1164,7 @@ class MuxApp(App):
             title = self._pr_titles.get(job, "") or _read_pr_title(pr)
             structured = read_status(pr)
             started_at = getattr(self, "_job_started_at", {}).get(job)
-            stale = _status_is_stale(structured, started_at=started_at)
+            stale = _status_is_stale(structured, started_at=started_at, rc=rc)
             status_message = _status_message(
                 structured, rc=rc, last_log=last, stale=stale
             )
