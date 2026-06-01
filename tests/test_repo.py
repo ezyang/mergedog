@@ -146,6 +146,30 @@ class TestGhstackRetry(unittest.TestCase):
         sleep.assert_not_called()
 
 
+class TestEnsureClone(unittest.TestCase):
+    def test_rechecks_git_dir_after_waiting_for_clone_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+
+            class CreateGitOnEnter:
+                def __enter__(self):
+                    (root / ".git").mkdir(parents=True)
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            with (
+                mock.patch.object(repo, "REPO_DIR", root),
+                mock.patch.object(repo, "ensure_dirs"),
+                mock.patch.object(repo, "_clone_lock", return_value=CreateGitOnEnter()),
+                mock.patch.object(repo, "run_streamed") as clone,
+                mock.patch.object(repo, "run", return_value=_Proc("upstream\n")),
+            ):
+                repo.ensure_clone()
+
+        clone.assert_not_called()
+
+
 class TestFetchStackRefs(unittest.TestCase):
     def test_logs_fetch_as_status_not_command(self):
         with (

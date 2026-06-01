@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from mergedog.log import die, log
+from mergedog.net import github_api_env_extra
 from mergedog.paths import (
     REPO_DIR,
     REPO_SSH_URL,
@@ -76,6 +77,7 @@ def _run_ghstack(args: Sequence[str], *, cwd: Path) -> None:
             cwd=cwd,
             check=False,
             capture=True,
+            env_extra=github_api_env_extra(),
             loud=(attempt == 0),
         )
         _log_completed_process_output(proc)
@@ -172,15 +174,19 @@ def author_env(name: str, email: str) -> dict[str, str]:
 def ensure_clone() -> None:
     """Clone pytorch/pytorch over SSH if we don't already have it."""
     ensure_dirs()
-    git_dir = REPO_DIR / ".git"
-    if not git_dir.exists():
-        if REPO_DIR.exists() and any(REPO_DIR.iterdir()):
-            die(f"{REPO_DIR} exists and is not a git checkout; refusing to clobber it")
-        log(f"cloning {REPO_SSH_URL} -> {REPO_DIR} (this takes a while)")
-        REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
-        rc = run_streamed(["git", "clone", REPO_SSH_URL, str(REPO_DIR)])
-        if rc != 0:
-            die(f"git clone failed (exit {rc})")
+    with _clone_lock():
+        git_dir = REPO_DIR / ".git"
+        if not git_dir.exists():
+            if REPO_DIR.exists() and any(REPO_DIR.iterdir()):
+                die(
+                    f"{REPO_DIR} exists and is not a git checkout; "
+                    "refusing to clobber it"
+                )
+            log(f"cloning {REPO_SSH_URL} -> {REPO_DIR} (this takes a while)")
+            REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
+            rc = run_streamed(["git", "clone", REPO_SSH_URL, str(REPO_DIR)])
+            if rc != 0:
+                die(f"git clone failed (exit {rc})")
     # Make ``git push`` (no args) follow each branch's configured upstream.
     # That's how we make per-worktree manual pushes Just Work without the
     # operator having to remember a fork remote name. Read first to skip
@@ -192,6 +198,23 @@ def ensure_clone() -> None:
         _git_write_with_retry(
             ["git", "config", "push.default", "upstream"], cwd=REPO_DIR
         )
+
+
+@contextlib.contextmanager
+def _clone_lock() -> Iterator[None]:
+    """Serialize initial creation of the shared base checkout."""
+    REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = REPO_DIR.parent / ".mergedog-clone.lock"
+    with open(lock_path, "w") as fp:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("waiting for shared clone lock")
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
 @contextlib.contextmanager

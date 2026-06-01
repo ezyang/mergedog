@@ -6,6 +6,13 @@ from mergedog import github
 
 
 class TestGhRetries(unittest.TestCase):
+    def setUp(self):
+        self.proxy_patcher = mock.patch.object(
+            github, "github_api_env_extra", return_value=None
+        )
+        self.proxy_patcher.start()
+        self.addCleanup(self.proxy_patcher.stop)
+
     def test_connection_error_is_transient(self):
         proc = subprocess.CompletedProcess(
             ["gh"], 1, "", "error connecting to api.github.com\n"
@@ -132,6 +139,27 @@ class TestGhRetries(unittest.TestCase):
         log.assert_any_call(
             "  ! gh startup crash from /broken/gh; "
             "retrying with /usr/local/bin/gh"
+        )
+
+    def test_passes_proxy_env_to_gh_when_configured(self):
+        env_extra = {
+            "HTTPS_PROXY": "http://proxy.example",
+            "HTTP_PROXY": "http://proxy.example",
+        }
+        with mock.patch.object(
+            github, "github_api_env_extra", return_value=env_extra
+        ), mock.patch.object(
+            github,
+            "run",
+            return_value=subprocess.CompletedProcess(["gh"], 0, "{}", ""),
+        ) as run:
+            github._gh(["pr", "view", "1"])
+
+        run.assert_called_once_with(
+            ["gh", "pr", "view", "1"],
+            check=False,
+            env_extra=env_extra,
+            loud=False,
         )
 
     def test_post_pr_comment_uses_retrying_gh_wrapper_with_stdin(self):

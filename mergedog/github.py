@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from mergedog.log import log
+from mergedog.net import github_api_env_extra
 from mergedog.paths import CI_LOGS_DIR, REPO_SLUG
 from mergedog.process import run
 from mergedog.project import get_project_policy
@@ -126,8 +127,14 @@ def _gh(
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     global _GH_COMMAND
+    env_extra = github_api_env_extra()
     for attempt in range(_GH_MAX_RETRIES):
-        run_kwargs = {"check": False, "loud": loud and attempt == 0}
+        run_kwargs = {
+            "check": False,
+            "loud": loud and attempt == 0,
+        }
+        if env_extra is not None:
+            run_kwargs["env_extra"] = env_extra
         if input_text is not None:
             run_kwargs["input_text"] = input_text
         proc = run([*_GH_COMMAND, *args], **run_kwargs)
@@ -140,7 +147,12 @@ def _gh(
                     f"retrying with {replacement}"
                 )
                 _GH_COMMAND = [replacement]
-                run_kwargs = {"check": False, "loud": False}
+                run_kwargs = {
+                    "check": False,
+                    "loud": False,
+                }
+                if env_extra is not None:
+                    run_kwargs["env_extra"] = env_extra
                 if input_text is not None:
                     run_kwargs["input_text"] = input_text
                 proc = run([*_GH_COMMAND, *args], **run_kwargs)
