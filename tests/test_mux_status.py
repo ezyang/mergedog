@@ -208,6 +208,47 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(len(table.rows), 1)
         self.assertEqual(table.rows[0][2], "")
 
+    def test_refresh_shows_cleanup_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] PR is no longer open; shepherd complete\n"
+            )
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                job: (
+                    _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                    object(),
+                    log_path,
+                )
+            }
+            app._cleanup_jobs = {job}
+            app._cleanup_status = {
+                job: "cleanup: removing worktree for [123] (1/1)"
+            }
+            app._pr_titles = {job: "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status") as read_status,
+            ):
+                app._refresh()
+
+        read_status.assert_not_called()
+        self.assertEqual(table.rows[0][2], "🟢")
+        self.assertEqual(
+            table.rows[0][3],
+            "cleanup: removing worktree for [123] (1/1)",
+        )
+
     def test_refresh_uses_sidecar_message_instead_of_log_tail(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
@@ -301,6 +342,38 @@ class TestMuxStructuredStatus(unittest.TestCase):
         )
         self.assertTrue(rows[0]["shepherd_status_stale"])
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
+    def test_format_status_reports_cleanup_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] PR is no longer open; shepherd complete\n"
+            )
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                job: (
+                    _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                    object(),
+                    log_path,
+                )
+            }
+            app._cleanup_jobs = {job}
+            app._cleanup_status = {
+                job: "cleanup: removing worktree for [123] (1/1)"
+            }
+            app._pr_titles = {job: "Test PR"}
+
+            with mock.patch.object(mux, "read_status") as read_status:
+                rows = json.loads(app._format_status())
+
+        read_status.assert_not_called()
+        self.assertEqual(rows[0]["state"], "cleaning")
+        self.assertEqual(rows[0]["phase"], "🟢")
+        self.assertEqual(
+            rows[0]["status"],
+            "cleanup: removing worktree for [123] (1/1)",
+        )
 
     def test_format_status_ignores_nonterminal_sidecar_after_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -494,11 +567,16 @@ class TestMuxCommands(unittest.TestCase):
             running: (_FakeProc(None), object(), Path("789.log")),
         }
 
-        with mock.patch.object(app, "_prune_job") as prune_job:
+        with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
             result = app._dispatch_command("cleanup")
 
-        self.assertEqual(result, "cleaned up 1 completed job(s)")
-        prune_job.assert_called_once_with(completed)
+        self.assertEqual(result, "cleaning up 1 completed job(s)")
+        cleanup_jobs.assert_called_once_with([completed])
+        self.assertEqual(app._cleanup_jobs, {completed})
+        self.assertEqual(
+            app._cleanup_status[completed],
+            "cleanup: queued (1/1)",
+        )
 
     def test_clean_alias_prunes_successful_completed_jobs(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -511,11 +589,11 @@ class TestMuxCommands(unittest.TestCase):
             ),
         }
 
-        with mock.patch.object(app, "_prune_job") as prune_job:
+        with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
             result = app._dispatch_command("clean")
 
-        self.assertEqual(result, "cleaned up 1 completed job(s)")
-        prune_job.assert_called_once_with(completed)
+        self.assertEqual(result, "cleaning up 1 completed job(s)")
+        cleanup_jobs.assert_called_once_with([completed])
 
     def test_cleanup_without_completed_jobs_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -524,11 +602,29 @@ class TestMuxCommands(unittest.TestCase):
             mux._pr_job(456): (_FakeProc(1), object(), Path("456.log")),
         }
 
-        with mock.patch.object(app, "_prune_job") as prune_job:
+        with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
             result = app._dispatch_command("cleanup")
 
         self.assertEqual(result, "no completed jobs to cleanup")
-        prune_job.assert_not_called()
+        cleanup_jobs.assert_not_called()
+
+    def test_cleanup_while_cleanup_is_running_is_noop(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        completed = mux._pr_job(123)
+        app.procs = {
+            completed: (
+                _FakeProc(mux.EXIT_PR_NOT_ACTIONABLE),
+                object(),
+                Path("123.log"),
+            ),
+        }
+        app._cleanup_jobs = {completed}
+
+        with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
+            result = app._dispatch_command("cleanup")
+
+        self.assertEqual(result, "cleanup already in progress")
+        cleanup_jobs.assert_not_called()
 
     def test_cancel_removes_job_from_resume_list_but_keeps_row(self):
         with tempfile.TemporaryDirectory() as d:

@@ -391,6 +391,22 @@ def _record_job_started(app: object, job: JobKey, started_at: float) -> None:
     started[job] = started_at
 
 
+def _cleanup_job_files(job: JobKey | int) -> None:
+    """Remove per-PR on-disk state for a forgotten mux job."""
+    _, pr = _coerce_job(job)
+    for path in (state_file(pr), context_file(pr), status_file(pr)):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    try:
+        from mergedog import repo as repo_mod
+
+        repo_mod.wipe_worktree(pr)
+    except Exception:
+        pass
+
+
 def _status_message(
     structured: dict | None,
     *,
@@ -647,6 +663,8 @@ class MuxApp(App):
         self._job_started_at: dict[JobKey, float] = {}
         self._pr_titles: dict[JobKey, str] = {}
         self._pr_status: dict[JobKey, dict] = {}
+        self._cleanup_jobs: set[JobKey] = set()
+        self._cleanup_status: dict[JobKey, str] = {}
         self._initial = [_coerce_job(job) for job in initial]
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
@@ -713,6 +731,8 @@ class MuxApp(App):
     ) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{label}] cleanup in progress"
         if job in self.procs and self.procs[job][0].poll() is None:
             return f"[{label}] already running"
         started_at = time.time()
@@ -749,10 +769,11 @@ class MuxApp(App):
         )
 
     def _completed_jobs(self) -> list[JobKey]:
+        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
         return sorted(
             job
             for job, (p, _, _) in self.procs.items()
-            if p.poll() in (0, EXIT_PR_NOT_ACTIONABLE)
+            if job not in cleanup_jobs and p.poll() in (0, EXIT_PR_NOT_ACTIONABLE)
         )
 
     def _restart_jobs(
@@ -765,7 +786,13 @@ class MuxApp(App):
         # Runs in a worker thread so the input bar / table stay responsive
         # while shepherds tear down. ``self.notify`` is thread-safe in
         # Textual (it posts a message to the app loop).
-        jobs = [_coerce_job(job) for job in jobs if _coerce_job(job) in self.procs]
+        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
+        jobs = [_coerce_job(job) for job in jobs]
+        jobs = [
+            job
+            for job in jobs
+            if job in self.procs and job not in cleanup_jobs
+        ]
         if not jobs:
             self.notify(empty, severity="warning")
             return
@@ -902,6 +929,8 @@ class MuxApp(App):
     ) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{label}] cleanup in progress"
         entry = self.procs.get(job)
         if entry is None:
             return f"[{label}] unknown"
@@ -917,6 +946,8 @@ class MuxApp(App):
     def _do_remove_job(self, job: JobKey | int) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{label}] cleanup in progress"
         entry = self.procs.get(job)
         if entry is None:
             return f"[{label}] unknown"
@@ -933,10 +964,53 @@ class MuxApp(App):
             return "usage: cleanup [all]"
         jobs = self._completed_jobs()
         if not jobs:
+            if getattr(self, "_cleanup_jobs", set()):
+                return "cleanup already in progress"
             return "no completed jobs to cleanup"
-        for job in jobs:
-            self._prune_job(job)
-        return f"cleaned up {len(jobs)} completed job(s)"
+        self._begin_cleanup_jobs(jobs)
+        self._cleanup_completed_jobs(jobs)
+        return f"cleaning up {len(jobs)} completed job(s)"
+
+    def _begin_cleanup_jobs(self, jobs: list[JobKey]) -> None:
+        cleanup_jobs = getattr(self, "_cleanup_jobs", None)
+        if cleanup_jobs is None:
+            cleanup_jobs = set()
+            self._cleanup_jobs = cleanup_jobs
+        cleanup_status = getattr(self, "_cleanup_status", None)
+        if cleanup_status is None:
+            cleanup_status = {}
+            self._cleanup_status = cleanup_status
+        total = len(jobs)
+        for index, job in enumerate(jobs, start=1):
+            cleanup_jobs.add(job)
+            cleanup_status[job] = f"cleanup: queued ({index}/{total})"
+
+    @work(thread=True, group="cleanup")
+    def _cleanup_completed_jobs(self, jobs: list[JobKey]) -> None:
+        total = len(jobs)
+        for index, job in enumerate(jobs, start=1):
+            label = _job_label(job)
+            self.call_from_thread(
+                self._set_cleanup_status,
+                job,
+                f"cleanup: removing worktree for [{label}] ({index}/{total})",
+            )
+            _cleanup_job_files(job)
+            self.call_from_thread(self._finish_cleanup_job, job)
+
+    def _set_cleanup_status(self, job: JobKey, status: str) -> None:
+        cleanup_status = getattr(self, "_cleanup_status", None)
+        if cleanup_status is None:
+            cleanup_status = {}
+            self._cleanup_status = cleanup_status
+        cleanup_status[job] = status
+        self._refresh()
+
+    def _finish_cleanup_job(self, job: JobKey) -> None:
+        self._forget_job_record(job)
+        getattr(self, "_cleanup_jobs", set()).discard(job)
+        getattr(self, "_cleanup_status", {}).pop(job, None)
+        self._refresh()
 
     def _do_mark_spurious(self, pr: int) -> str:
         checks = github.get_pr_checks_all(pr)
@@ -979,22 +1053,31 @@ class MuxApp(App):
             if parent_pr is not None:
                 parent_hints[job] = _pr_job(parent_pr)
         jobs, depths = _stack_display_layout(list(self.procs), parent_hints)
+        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
+        cleanup_status = getattr(self, "_cleanup_status", {})
         for job in jobs:
             _, pr = job
             p, _, log_path = self.procs[job]
             rc = p.poll()
             last = _last_log_line(log_path)
-            structured = read_status(pr)
-            started_at = getattr(self, "_job_started_at", {}).get(job)
-            stale = _status_is_stale(structured, started_at=started_at, rc=rc)
-            if structured is None:
+            if job in cleanup_jobs:
+                structured = None
+                stale = False
                 self._pr_status.pop(job, None)
+                phase = "🟢"
+                status = cleanup_status.get(job, "cleanup: queued")
             else:
-                self._pr_status[job] = structured
-            phase = _phase_label(structured, rc=rc, stale=stale)
-            status = _status_message(
-                structured, rc=rc, last_log=last, stale=stale
-            )
+                structured = read_status(pr)
+                started_at = getattr(self, "_job_started_at", {}).get(job)
+                stale = _status_is_stale(structured, started_at=started_at, rc=rc)
+                if structured is None:
+                    self._pr_status.pop(job, None)
+                else:
+                    self._pr_status[job] = structured
+                phase = _phase_label(structured, rc=rc, stale=stale)
+                status = _status_message(
+                    structured, rc=rc, last_log=last, stale=stale
+                )
             title = self._pr_titles.get(job, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -1017,28 +1100,23 @@ class MuxApp(App):
         The log file is kept so the operator can audit why the shepherd quit.
         """
         job = _coerce_job(job)
-        _, pr = job
+        _cleanup_job_files(job)
+        self._forget_job_record(job)
+        getattr(self, "_cleanup_jobs", set()).discard(job)
+        getattr(self, "_cleanup_status", {}).pop(job, None)
+
+    def _forget_job_record(self, job: JobKey | int) -> None:
+        job = _coerce_job(job)
         entry = self.procs.pop(job, None)
         if entry is not None:
             try:
                 entry[1].close()  # type: ignore[attr-defined]
             except Exception:
                 pass
-        for path in (state_file(pr), context_file(pr), status_file(pr)):
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        try:
-            from mergedog import repo as repo_mod
-
-            repo_mod.wipe_worktree(pr)
-        except Exception:
-            pass
         _remove_mux_job(job)
         self._pr_titles.pop(job, None)
         getattr(self, "_job_started_at", {}).pop(job, None)
-        self._unresumable_jobs.discard(job)
+        getattr(self, "_unresumable_jobs", set()).discard(job)
 
     def _prune_pr(self, pr: int) -> None:
         self._prune_job(_pr_job(pr))
@@ -1067,7 +1145,13 @@ class MuxApp(App):
                 if not rest:
                     return "usage: rebase <pr> | rebase all"
                 if rest[0] == "all":
-                    n = len(self.procs)
+                    n = len(
+                        [
+                            job
+                            for job in self.procs
+                            if job not in getattr(self, "_cleanup_jobs", set())
+                        ]
+                    )
                     if not n:
                         return "no PRs to rebase"
                     self._do_rebase_all()
@@ -1077,7 +1161,13 @@ class MuxApp(App):
                 if not rest:
                     return "usage: restart <pr> | restart all | restart dead"
                 if rest[0] == "all":
-                    n = len(self.procs)
+                    n = len(
+                        [
+                            job
+                            for job in self.procs
+                            if job not in getattr(self, "_cleanup_jobs", set())
+                        ]
+                    )
                     if not n:
                         return "no PRs to restart"
                     self._do_restart_all(rest[1:])
@@ -1148,11 +1238,15 @@ class MuxApp(App):
     def _format_status(self) -> str:
         """JSON status of all tracked jobs (consumed by MCP server)."""
         rows = []
+        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
+        cleanup_status = getattr(self, "_cleanup_status", {})
         for job in sorted(self.procs):
             kind, pr = job
             p, _, log_path = self.procs[job]
             rc = p.poll()
-            if rc is None:
+            if job in cleanup_jobs:
+                state = "cleaning"
+            elif rc is None:
                 state = "running"
             elif rc == 0:
                 state = "exited_ok"
@@ -1162,18 +1256,27 @@ class MuxApp(App):
                 state = "exited_error"
             last = _last_log_line(log_path)
             title = self._pr_titles.get(job, "") or _read_pr_title(pr)
-            structured = read_status(pr)
-            started_at = getattr(self, "_job_started_at", {}).get(job)
-            stale = _status_is_stale(structured, started_at=started_at, rc=rc)
-            status_message = _status_message(
-                structured, rc=rc, last_log=last, stale=stale
-            )
+            if job in cleanup_jobs:
+                structured = None
+                stale = False
+                phase = "🟢"
+                status_message = cleanup_status.get(job, "cleanup: queued")
+            else:
+                structured = read_status(pr)
+                started_at = getattr(self, "_job_started_at", {}).get(job)
+                stale = _status_is_stale(
+                    structured, started_at=started_at, rc=rc
+                )
+                phase = _phase_label(structured, rc=rc, stale=stale)
+                status_message = _status_message(
+                    structured, rc=rc, last_log=last, stale=stale
+                )
             rows.append({
                 "kind": kind,
                 "pr": pr,
                 "title": title,
                 "state": state,
-                "phase": _phase_label(structured, rc=rc, stale=stale),
+                "phase": phase,
                 "status": status_message,
                 "last_log": last,
                 "shepherd_status_stale": stale,
