@@ -134,6 +134,16 @@ class TestGhRetries(unittest.TestCase):
             "retrying with /usr/local/bin/gh"
         )
 
+    def test_post_pr_comment_uses_retrying_gh_wrapper_with_stdin(self):
+        with mock.patch.object(github, "_gh") as gh:
+            github.post_pr_comment(123, "body text")
+
+        gh.assert_called_once_with(
+            ["pr", "comment", "123", "--repo", github.REPO, "--body-file", "-"],
+            input_text="body text",
+            log_context="posting PR comment",
+        )
+
 
 class TestPrMergeCommit(unittest.TestCase):
     def test_returns_merge_commit_for_merged_pr(self):

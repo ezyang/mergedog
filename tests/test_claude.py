@@ -88,7 +88,7 @@ class TestInvoke(unittest.TestCase):
             marker = worktree / claude.SPURIOUS_MARKER
 
             def run_llm(*args, **kwargs):
-                marker.touch()
+                marker.write_text("lint is unrelated to this PR\n")
                 return 0, []
 
             with (
@@ -120,6 +120,7 @@ class TestInvoke(unittest.TestCase):
 
         self.assertTrue(result.ran_cleanly)
         self.assertIsNone(result.new_sha)
+        self.assertEqual(result.spurious_reason, "lint is unrelated to this PR")
         self.assertFalse(marker.exists())
 
     def test_operator_fix_still_allows_already_satisfied_noop(self):

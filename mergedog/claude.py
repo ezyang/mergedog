@@ -38,6 +38,7 @@ class LLMResult:
     new_sha: str | None
     transcript: list[str]
     halt_reason: str | None = None
+    spurious_reason: str | None = None
 
     def __iter__(self) -> Iterator[object]:
         # Preserve the old ``ran_cleanly, new_sha, transcript = invoke_*()``
@@ -470,6 +471,18 @@ def _commits_between(worktree: Path, before: str, after: str) -> int:
     return int(proc.stdout.strip() or "0")
 
 
+def _read_marker_reason(path: Path, *, max_chars: int = 1200) -> str | None:
+    try:
+        text = sanitize_untrusted_text(path.read_text()).strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + " [truncated]"
+    return text
+
+
 def _invoke(
     worktree: Path,
     prompt: str,
@@ -559,6 +572,7 @@ def _invoke(
         rebase_path.unlink()
 
     spurious = spurious_path.exists()
+    spurious_reason = _read_marker_reason(spurious_path) if spurious else None
     if spurious:
         spurious_path.unlink()
 
@@ -598,7 +612,9 @@ def _invoke(
             log(f"{agent} signalled spurious failures (no commit)")
         else:
             log(f"{agent} made no commit (treating as no-op)")
-        return LLMResult(True, None, transcript)
+        return LLMResult(
+            True, None, transcript, spurious_reason=spurious_reason
+        )
 
     n = _commits_between(worktree, before, after)
     if n != 1 and not allow_multiple_commits:

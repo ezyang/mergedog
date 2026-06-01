@@ -25,6 +25,7 @@ from mergedog.handoff import (
     is_retryable_merge_failure,
     mergebot_ignored_check_names,
     post_handoff_comment,
+    suppression_drci_status_warning,
     utc_now_iso,
     watch_post_handoff,
 )
@@ -2114,6 +2115,14 @@ def _shepherd_body(
                 started_at = utc_now_iso()
                 result = claude_mod.invoke_fixer(worktree, prompt)
                 ran_cleanly, new_sha, transcript = result
+                session_notes: list[str] = []
+                if session_failed_jobs:
+                    session_notes.append(
+                        f"failing jobs: {', '.join(session_failed_jobs)}"
+                    )
+                if result.spurious_reason:
+                    reason = " ".join(result.spurious_reason.split())
+                    session_notes.append(f"rationale: {reason}")
                 _record_claude_session(
                     sessions,
                     mode="fix-CI",
@@ -2124,11 +2133,9 @@ def _shepherd_body(
                     transcript=transcript,
                     on_commit="pushed fix commit {sha}",
                     on_clean_noop="judged failures spurious (no commit)",
-                    extra=(
-                        f" — failing jobs: {', '.join(session_failed_jobs)}"
-                        if session_failed_jobs
-                        else ""
-                    ),
+                    extra=f" — {'; '.join(session_notes)}"
+                    if session_notes
+                    else "",
                 )
                 if not ran_cleanly:
                     if _llm_requested_rebase(result):
@@ -2525,15 +2532,22 @@ def _shepherd_body(
             break
 
         handoff_started_iso = utc_now_iso()
-        post_handoff_comment(
+        suppressed_failures = sorted(spurious_check_names)
+        drci_summary = _latest_drci_summary_for_handoff(
+            pr, current, spurious_check_names
+        )
+        suppression_warning = suppression_drci_status_warning(
+            suppressed_failures, drci_summary
+        )
+        if suppression_warning:
+            log(f"WARNING: {suppression_warning}")
+        handoff_comment_ok = post_handoff_comment(
             pr,
             pr_data,
             sessions,
             pushed_changes=pushed_changes,
-            suppressed_failures=sorted(spurious_check_names),
-            drci_summary=_latest_drci_summary_for_handoff(
-                pr, current, spurious_check_names
-            ),
+            suppressed_failures=suppressed_failures,
+            drci_summary=drci_summary,
             recovering=recovery_attempts > 0,
         )
         # Anchor the watch loop on the actual handoff comment timestamp,
@@ -2541,7 +2555,13 @@ def _shepherd_body(
         # already happened between the last handoff and our restart. But
         # also floor on any failure we've already halted on, so the next
         # restart doesn't re-react to the same stale comment.
-        handoff_iso = github.latest_mergedog_handoff_iso(pr) or handoff_started_iso
+        try:
+            handoff_iso = (
+                github.latest_mergedog_handoff_iso(pr) or handoff_started_iso
+            )
+        except Exception as e:
+            log(f"WARNING: could not verify handoff comment timestamp: {e}")
+            handoff_iso = handoff_started_iso
         since_iso = max(handoff_iso, trust.last_observed_failure_iso)
         merge_instruction = (
             f"comment `{PROJECT.merge_command}` on "
@@ -2556,19 +2576,31 @@ def _shepherd_body(
             handoff_category = "ready"
             handoff_waiting_on = "approval"
             handoff_user_action = (
-                "approve the PR after reviewing mergedog interventions"
+                "approve after reviewing local mergedog log"
+                if handoff_comment_ok is False
+                else "approve the PR after reviewing mergedog interventions"
             )
             handoff_message = "waiting for maintainer approval"
         else:
             handoff_category = "waiting"
             handoff_waiting_on = "human_merge"
             handoff_user_action = (
-                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+                (
+                    "review local mergedog log, then "
+                    f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
+                )
+                if handoff_comment_ok is False
+                else f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
             )
             handoff_message = (
                 "waiting for human reviewer to "
                 f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}"
             )
+        handoff_warning_suffix = ""
+        if suppression_warning:
+            handoff_warning_suffix += f"; {suppression_warning}"
+        if handoff_comment_ok is False:
+            handoff_warning_suffix += "; handoff comment failed"
         _write_status_best_effort(
             pr,
             phase="watching_merge",
@@ -2576,7 +2608,7 @@ def _shepherd_body(
             waiting_on=handoff_waiting_on,
             user_action=handoff_user_action,
             message=_status_with_interventions(
-                handoff_message, intervention_count
+                handoff_message + handoff_warning_suffix, intervention_count
             ),
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
@@ -2592,6 +2624,8 @@ def _shepherd_body(
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             suppressed_check_names=spurious_check_names,
+            handoff_comment_ok=handoff_comment_ok,
+            suppression_warning=suppression_warning,
         )
         if result == "closed":
             complete(

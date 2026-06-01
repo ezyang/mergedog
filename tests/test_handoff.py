@@ -83,6 +83,48 @@ class TestHandoffComments(unittest.TestCase):
         self.assertIn("Latest Dr. CI summary", body)
         self.assertIn("lintrunner-noclang-all / lint failed", body)
 
+    def test_handoff_comment_warns_when_suppressions_differ_from_drci(self):
+        drci_summary = (
+            "<b>NEW FAILURES</b> - The following jobs have failed:<p>\n"
+            "* [Lint / lintrunner-noclang-all / lint](https://hud)\n"
+            "</p>\n"
+            "<b>BROKEN TRUNK</b> - The following job failed on trunk:<p>\n"
+            "* [inductor / unit-test / inductor-test / test-osdc](https://hud)\n"
+            "</p>\n"
+        )
+
+        comparison = handoff.compare_suppressed_failures_with_drci(
+            [
+                "lintrunner-noclang-all / lint",
+                "unit-test / inductor-test / test-osdc",
+                "win-vs2022-cpu-py3 / build",
+            ],
+            drci_summary,
+        )
+
+        self.assertEqual(comparison.not_listed, ("win-vs2022-cpu-py3 / build",))
+        self.assertEqual(
+            comparison.not_marked_unrelated,
+            ("lintrunner-noclang-all / lint",),
+        )
+        self.assertIn("not listed", comparison.status_warning() or "")
+        self.assertIn("not marked unrelated", comparison.status_warning() or "")
+
+        body = handoff._format_handoff_comment(
+            {"number": 101, "headRefOid": "b" * 40},
+            [],
+            suppressed_failures=[
+                "lintrunner-noclang-all / lint",
+                "unit-test / inductor-test / test-osdc",
+                "win-vs2022-cpu-py3 / build",
+            ],
+            drci_summary=drci_summary,
+        )
+
+        self.assertIn("suppressed check list differs", body)
+        self.assertIn("not listed by Dr. CI", body)
+        self.assertIn("not marked unrelated by Dr. CI", body)
+
     def test_handoff_comment_idempotency_is_scoped_to_head(self):
         comments = [
             {
@@ -349,6 +391,31 @@ class TestWatchStackPostHandoff(unittest.TestCase):
         self.assertIn(
             "ready for human merge; 2 suppressed failures",
             write_status.call_args.kwargs["message"],
+        )
+
+    def test_handoff_status_surfaces_comment_failure_and_drci_warning(self):
+        with mock.patch.object(handoff, "write_status") as write_status:
+            handoff._write_handoff_status(
+                101,
+                approved=True,
+                merging=False,
+                intervention_count=0,
+                suppressed_failure_count=2,
+                handoff_comment_ok=False,
+                suppression_warning="suppression list differs from Dr. CI",
+            )
+
+        kwargs = write_status.call_args.kwargs
+        self.assertIn("suppression list differs from Dr. CI", kwargs["message"])
+        self.assertIn("handoff comment failed", kwargs["message"])
+        self.assertEqual(
+            kwargs["user_action"],
+            "review local mergedog log and merge when satisfied",
+        )
+        self.assertFalse(kwargs["handoff_comment_ok"])
+        self.assertEqual(
+            kwargs["suppression_warning"],
+            "suppression list differs from Dr. CI",
         )
 
     def test_watch_post_handoff_reports_pending_ci_instead_of_ready(self):

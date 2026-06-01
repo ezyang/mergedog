@@ -8,6 +8,7 @@ failure (which kicks the shepherd into a recovery cycle).
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -51,6 +52,40 @@ def utc_now_iso() -> str:
 # GitHub PR comments cap out at 65,536 characters. We leave headroom for
 # our own framing and a "[truncated]" tail.
 _MAX_COMMENT_LEN = 60000
+_DRCI_HEADING_RE = re.compile(r"<b>([^<]+)</b>")
+_DRCI_JOB_LINK_RE = re.compile(r"\* \[([^\]]+)\]\(")
+_DRCI_UNRELATED_HEADINGS = {
+    "BROKEN TRUNK",
+    "FLAKY",
+    "FLAKY FAILURES",
+    "UNRELATED FAILURE",
+    "UNRELATED FAILURES",
+}
+
+
+@dataclass(frozen=True)
+class SuppressionDrciComparison:
+    """How mergedog's suppressed-check list compares with Dr. CI."""
+
+    not_listed: tuple[str, ...] = ()
+    not_marked_unrelated: tuple[str, ...] = ()
+
+    @property
+    def has_warning(self) -> bool:
+        return bool(self.not_listed or self.not_marked_unrelated)
+
+    def status_warning(self) -> str | None:
+        if not self.has_warning:
+            return None
+        parts: list[str] = []
+        if self.not_listed:
+            parts.append(f"{len(self.not_listed)} not listed")
+        if self.not_marked_unrelated:
+            parts.append(
+                f"{len(self.not_marked_unrelated)} not marked unrelated"
+            )
+        detail = f" ({', '.join(parts)} by Dr. CI)" if parts else ""
+        return f"suppression list differs from Dr. CI{detail}"
 
 
 def _format_handoff_comment(
@@ -190,6 +225,9 @@ def _format_ci_notes(
     if not suppressed_failures and not drci_summary:
         return []
     lines = ["### CI notes at handoff", ""]
+    comparison = compare_suppressed_failures_with_drci(
+        suppressed_failures, drci_summary
+    )
     if suppressed_failures:
         lines.extend(
             [
@@ -202,6 +240,32 @@ def _format_ci_notes(
             f"- `{sanitize_untrusted_text(name)}`" for name in suppressed_failures
         )
         lines.append("")
+    if comparison.has_warning:
+        lines.extend(
+            [
+                "**Warning:** mergedog's suppressed check list differs from "
+                "the latest Dr. CI summary.",
+                "",
+            ]
+        )
+        if comparison.not_listed:
+            lines.append("Suppressed by mergedog but not listed by Dr. CI:")
+            lines.append("")
+            lines.extend(
+                f"- `{sanitize_untrusted_text(name)}`"
+                for name in comparison.not_listed
+            )
+            lines.append("")
+        if comparison.not_marked_unrelated:
+            lines.append(
+                "Suppressed by mergedog but not marked unrelated by Dr. CI:"
+            )
+            lines.append("")
+            lines.extend(
+                f"- `{sanitize_untrusted_text(name)}`"
+                for name in comparison.not_marked_unrelated
+            )
+            lines.append("")
     if drci_summary:
         lines.extend(
             [
@@ -216,6 +280,64 @@ def _format_ci_notes(
             ]
         )
     return lines
+
+
+def compare_suppressed_failures_with_drci(
+    suppressed_failures: list[str] | set[str] | tuple[str, ...],
+    drci_summary: str | None,
+) -> SuppressionDrciComparison:
+    """Compare mergedog suppressions with Dr. CI's unrelated-failure view."""
+    suppressed = tuple(sorted(set(suppressed_failures)))
+    if not suppressed or not drci_summary:
+        return SuppressionDrciComparison()
+    sections = _drci_failure_sections(drci_summary)
+    all_labels = tuple(label for labels in sections.values() for label in labels)
+    unrelated_labels = tuple(
+        label
+        for heading, labels in sections.items()
+        if heading in _DRCI_UNRELATED_HEADINGS
+        for label in labels
+    )
+    not_listed: list[str] = []
+    not_marked_unrelated: list[str] = []
+    for name in suppressed:
+        if not _any_drci_label_matches(name, all_labels):
+            not_listed.append(name)
+        elif not _any_drci_label_matches(name, unrelated_labels):
+            not_marked_unrelated.append(name)
+    return SuppressionDrciComparison(
+        not_listed=tuple(not_listed),
+        not_marked_unrelated=tuple(not_marked_unrelated),
+    )
+
+
+def suppression_drci_status_warning(
+    suppressed_failures: list[str] | set[str] | tuple[str, ...],
+    drci_summary: str | None,
+) -> str | None:
+    return compare_suppressed_failures_with_drci(
+        suppressed_failures, drci_summary
+    ).status_warning()
+
+
+def _drci_failure_sections(summary: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current_heading: str | None = None
+    for line in summary.splitlines():
+        heading_match = _DRCI_HEADING_RE.search(line)
+        if heading_match:
+            current_heading = heading_match.group(1).strip().upper()
+            sections.setdefault(current_heading, [])
+        if current_heading is None:
+            continue
+        sections[current_heading].extend(
+            label.strip() for label in _DRCI_JOB_LINK_RE.findall(line)
+        )
+    return sections
+
+
+def _any_drci_label_matches(check_name: str, labels: tuple[str, ...]) -> bool:
+    return any(check_name in label or label in check_name for label in labels)
 
 
 def _truncate_drci_summary(summary: str, limit: int = 8000) -> str:
@@ -250,7 +372,7 @@ def post_handoff_comment(
     drci_summary: str | None = None,
     force: bool = False,
     recovering: bool = False,
-) -> None:
+) -> bool:
     # Recovery handoffs always post a fresh comment (forcing past the
     # "already handed off" check) -- the prior comment said "ready to
     # merge", which is now stale, and the human needs the new framing.
@@ -261,7 +383,7 @@ def post_handoff_comment(
         and github.has_mergedog_handoff_comment(pr, head_sha=head_sha)
     ):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
-        return
+        return True
     body = _format_handoff_comment(
         pr_data,
         sessions,
@@ -273,9 +395,11 @@ def post_handoff_comment(
     try:
         github.post_pr_comment(pr, body)
         log(f"posted handoff summary to PR #{pr}")
+        return True
     except Exception as e:
         # Don't halt on comment failure -- shepherding is otherwise complete.
         log(f"WARNING: failed to post handoff comment: {e}")
+        return False
 
 
 PYTORCHMERGEBOT_LOGIN = PROJECT.mergebot_login
@@ -414,6 +538,29 @@ def _suppressed_failure_suffix(suppressed_failure_count: int) -> str:
     return f"; {suppressed_failure_count} suppressed failure{plural}"
 
 
+def _handoff_warning_suffix(
+    *,
+    handoff_comment_ok: bool | None = None,
+    suppression_warning: str | None = None,
+) -> str:
+    suffix = ""
+    if suppression_warning:
+        suffix += f"; {suppression_warning}"
+    if handoff_comment_ok is False:
+        suffix += "; handoff comment failed"
+    return suffix
+
+
+def _write_status_with_handoff_fields(pr: int, **fields: object) -> None:
+    handoff_comment_ok = fields.pop("handoff_comment_ok", None)
+    suppression_warning = fields.pop("suppression_warning", None)
+    if handoff_comment_ok is not None:
+        fields["handoff_comment_ok"] = handoff_comment_ok
+    if suppression_warning:
+        fields["suppression_warning"] = suppression_warning
+    write_status(pr, **fields)  # type: ignore[arg-type]
+
+
 def _apply_suppressed_overrides(
     checks: list[dict], suppressed_check_names: set[str] | None
 ) -> list[dict]:
@@ -467,6 +614,8 @@ def _write_post_handoff_ci_status(
     intervention_count: int | None,
     human_ack_sha: str | None,
     suppressed_failure_count: int = 0,
+    handoff_comment_ok: bool | None = None,
+    suppression_warning: str | None = None,
 ) -> None:
     if status == "failed":
         failure_plural = "" if failed == 1 else "s"
@@ -483,8 +632,12 @@ def _write_post_handoff_ci_status(
         waiting_on = "ci"
         action = None
     message += _suppressed_failure_suffix(suppressed_failure_count)
+    message += _handoff_warning_suffix(
+        handoff_comment_ok=handoff_comment_ok,
+        suppression_warning=suppression_warning,
+    )
     try:
-        write_status(
+        _write_status_with_handoff_fields(
             pr,
             phase="polling_ci",
             category=category,
@@ -498,6 +651,8 @@ def _write_post_handoff_ci_status(
             ci_done=done,
             ci_total=total,
             ci_failed=failed,
+            handoff_comment_ok=handoff_comment_ok,
+            suppression_warning=suppression_warning,
         )
     except Exception:
         pass
@@ -511,6 +666,8 @@ def _write_handoff_status(
     intervention_count: int | None = None,
     human_ack_sha: str | None = None,
     suppressed_failure_count: int = 0,
+    handoff_comment_ok: bool | None = None,
+    suppression_warning: str | None = None,
 ) -> None:
     if merging:
         category = "waiting"
@@ -520,15 +677,23 @@ def _write_handoff_status(
     elif approved:
         category = "ready"
         waiting_on = None
-        user_action = "merge when satisfied"
+        user_action = (
+            "review local mergedog log and merge when satisfied"
+            if handoff_comment_ok is False
+            else "merge when satisfied"
+        )
         message = "ready for human merge"
     else:
         category = "ready"
         waiting_on = "approval"
-        user_action = "approve the PR after reviewing mergedog interventions"
+        user_action = (
+            "approve after reviewing local mergedog log"
+            if handoff_comment_ok is False
+            else "approve the PR after reviewing mergedog interventions"
+        )
         message = "waiting for maintainer approval"
     try:
-        write_status(
+        _write_status_with_handoff_fields(
             pr,
             phase="watching_merge" if merging else "ready",
             category=category,
@@ -537,12 +702,18 @@ def _write_handoff_status(
             message=(
                 message
                 + _suppressed_failure_suffix(suppressed_failure_count)
+                + _handoff_warning_suffix(
+                    handoff_comment_ok=handoff_comment_ok,
+                    suppression_warning=suppression_warning,
+                )
                 + _intervention_suffix(intervention_count)
             ),
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             approved=approved,
             merging=merging,
+            handoff_comment_ok=handoff_comment_ok,
+            suppression_warning=suppression_warning,
         )
     except Exception:
         pass
@@ -579,6 +750,8 @@ def watch_post_handoff(
     intervention_count: int | None = None,
     human_ack_sha: str | None = None,
     suppressed_check_names: set[str] | None = None,
+    handoff_comment_ok: bool | None = None,
+    suppression_warning: str | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -623,6 +796,8 @@ def watch_post_handoff(
                 merging=merging,
                 intervention_count=intervention_count,
                 human_ack_sha=human_ack_sha,
+                handoff_comment_ok=handoff_comment_ok,
+                suppression_warning=suppression_warning,
             )
             msg = _merging_progress_line(pr)
             if msg != last_merging_msg:
@@ -649,6 +824,8 @@ def watch_post_handoff(
                         intervention_count=intervention_count,
                         human_ack_sha=human_ack_sha,
                         suppressed_failure_count=suppressed,
+                        handoff_comment_ok=handoff_comment_ok,
+                        suppression_warning=suppression_warning,
                     )
                     if ci_status == "failed":
                         log(
@@ -665,6 +842,8 @@ def watch_post_handoff(
                 intervention_count=intervention_count,
                 human_ack_sha=human_ack_sha,
                 suppressed_failure_count=suppressed if ci is not None else 0,
+                handoff_comment_ok=handoff_comment_ok,
+                suppression_warning=suppression_warning,
             )
             last_merging_msg = None
             if kind == "started":

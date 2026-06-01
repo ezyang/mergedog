@@ -38,6 +38,8 @@ def write_status(
     ci_failed: int | None = None,
     fix_attempts: int | None = None,
     max_fix_attempts: int | None = None,
+    handoff_comment_ok: bool | None = None,
+    suppression_warning: str | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     """Atomically write one PR's structured shepherd status.
@@ -65,6 +67,8 @@ def write_status(
         "ci_failed": ci_failed,
         "fix_attempts": fix_attempts,
         "max_fix_attempts": max_fix_attempts,
+        "handoff_comment_ok": handoff_comment_ok,
+        "suppression_warning": suppression_warning,
     }
     payload.update({k: v for k, v in optional.items() if v is not None})
 

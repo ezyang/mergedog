@@ -27,11 +27,13 @@ Your job, right now, is to decide which of five things to do and do exactly it:
   1. Make exactly one new commit on the current branch that fixes the real \
      CI failures. Do NOT push; the harness will push for you.
 
-  2. Signal SPURIOUS by running ``touch .mergedog-spurious`` and then \
-     exiting without committing. Choose this if the failures look spurious \
-     -- flaky tests, infra hiccups, unrelated breakage on trunk, etc. The \
-     harness will then advance the PR. A human reviews everything at the \
-     end, so a wrong call here is recoverable.
+  2. Signal SPURIOUS by writing a short rationale to \
+     ``.mergedog-spurious`` and then exiting without committing. Name each \
+     failing check you are dismissing and explain why it is unrelated or \
+     transient. Choose this if the failures look spurious -- flaky tests, \
+     infra hiccups, unrelated breakage on trunk, etc. The harness will then \
+     advance the PR. A human reviews everything at the end, so a wrong call \
+     here is recoverable.
 
      Do not fix failures you judge unrelated to this PR, even if the fix \
      looks obvious, safe, or small. mergedog commits must only address \

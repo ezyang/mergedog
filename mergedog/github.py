@@ -123,10 +123,14 @@ def _gh(
     check: bool = True,
     loud: bool = False,
     log_context: str | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     global _GH_COMMAND
     for attempt in range(_GH_MAX_RETRIES):
-        proc = run([*_GH_COMMAND, *args], check=False, loud=(loud and attempt == 0))
+        run_kwargs = {"check": False, "loud": loud and attempt == 0}
+        if input_text is not None:
+            run_kwargs["input_text"] = input_text
+        proc = run([*_GH_COMMAND, *args], **run_kwargs)
         if _is_gh_startup_crash(proc):
             replacement = _find_working_gh_executable(_GH_COMMAND[0])
             if replacement is not None:
@@ -136,7 +140,10 @@ def _gh(
                     f"retrying with {replacement}"
                 )
                 _GH_COMMAND = [replacement]
-                proc = run([*_GH_COMMAND, *args], check=False, loud=False)
+                run_kwargs = {"check": False, "loud": False}
+                if input_text is not None:
+                    run_kwargs["input_text"] = input_text
+                proc = run([*_GH_COMMAND, *args], **run_kwargs)
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
             if attempt > 0 and proc.returncode == 0:
                 suffix = f" while {log_context}" if log_context else ""
@@ -487,11 +494,10 @@ def remove_label(pr: int, label: str) -> None:
 def post_pr_comment(pr: int, body: str) -> None:
     """Post a comment on the PR. Body is passed via stdin to dodge argv limits."""
     body = sanitize_untrusted_text(body)
-    subprocess.run(
-        ["gh", "pr", "comment", str(pr), "--repo", REPO, "--body-file", "-"],
-        input=body,
-        text=True,
-        check=True,
+    _gh(
+        ["pr", "comment", str(pr), "--repo", REPO, "--body-file", "-"],
+        input_text=body,
+        log_context="posting PR comment",
     )
 
 
