@@ -211,6 +211,67 @@ def _gh_pr_checks_json(args: list[str]) -> list[dict]:
     return []  # unreachable
 
 
+def _check_run_state(status: str | None, conclusion: str | None) -> str:
+    if status != "completed":
+        return "PENDING"
+    return (conclusion or "UNKNOWN").upper()
+
+
+def _check_run_bucket(status: str | None, conclusion: str | None) -> str:
+    if status != "completed":
+        return "pending"
+    if conclusion in ("success", "neutral", "skipped"):
+        return "pass"
+    if conclusion == "cancelled":
+        return "cancel"
+    return "fail"
+
+
+def _check_run_to_pr_check(run: dict) -> dict:
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    return {
+        "name": run.get("name") or "<unnamed check>",
+        "state": _check_run_state(status, conclusion),
+        "workflow": "",
+        "link": run.get("html_url") or "",
+        "bucket": _check_run_bucket(status, conclusion),
+        "completedAt": run.get("completed_at") or "",
+    }
+
+
+def _workflow_run_to_pr_check(run: dict) -> dict:
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    return {
+        "name": run.get("name") or f"workflow run {run.get('id', '?')}",
+        "state": _check_run_state(status, conclusion),
+        "workflow": run.get("name") or "",
+        "link": run.get("html_url") or "",
+        "bucket": _check_run_bucket(status, conclusion),
+        "completedAt": run.get("updated_at") if status == "completed" else "",
+    }
+
+
+def list_check_runs_for_sha(sha: str, per_page: int = 100) -> list[dict]:
+    """Return check-runs for a commit using REST as a ``gh pr checks`` fallback."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        data = _gh_json(
+            [
+                "api",
+                f"repos/{REPO}/commits/{sha}/check-runs"
+                f"?per_page={per_page}&page={page}",
+            ]
+        )
+        runs = data.get("check_runs", []) or []
+        out.extend(runs)
+        if len(runs) < per_page:
+            return out
+        page += 1
+
+
 def get_pr(pr: int, *, log_context: str | None = None) -> dict:
     data = _gh_json(
         [
@@ -476,7 +537,7 @@ def get_pr_checks_all(pr: int) -> list[dict]:
 
     ``gh pr checks --json`` already filters to the head commit.
     """
-    return _gh_pr_checks_json(
+    checks = _gh_pr_checks_json(
         [
             "pr",
             "checks",
@@ -487,6 +548,30 @@ def get_pr_checks_all(pr: int) -> list[dict]:
             "name,state,workflow,link,bucket,completedAt",
         ]
     )
+    if checks:
+        return checks
+
+    # On the migrated host, ``gh pr checks`` can report "no checks" even
+    # though Actions workflow runs exist for the same head SHA. Fall back to
+    # lower-level GitHub APIs so the shepherd does not wait forever at 0/0.
+    sha = get_pr_head_sha(pr)
+    check_runs = list_check_runs_for_sha(sha)
+    if check_runs:
+        log(
+            f"gh pr checks returned no checks for PR #{pr}; "
+            f"using {len(check_runs)} check-run(s) from REST"
+        )
+        return [_check_run_to_pr_check(run) for run in check_runs]
+
+    workflow_runs = list_workflow_runs_for_sha(sha)
+    if workflow_runs:
+        log(
+            f"gh pr checks returned no checks for PR #{pr}; "
+            f"using {len(workflow_runs)} workflow-run fallback check(s)"
+        )
+        return [_workflow_run_to_pr_check(run) for run in workflow_runs]
+
+    return []
 
 
 def add_label(pr: int, label: str, *, loud: bool = True) -> None:

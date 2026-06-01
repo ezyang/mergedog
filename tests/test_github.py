@@ -191,5 +191,107 @@ class TestPrMergeCommit(unittest.TestCase):
             self.assertIsNone(github.get_pr_merge_commit_sha(1))
 
 
+class TestPrChecksFallback(unittest.TestCase):
+    def test_uses_gh_pr_checks_when_present(self):
+        checks = [{"name": "pull", "bucket": "pass"}]
+
+        with mock.patch.object(
+            github, "_gh_pr_checks_json", return_value=checks
+        ), mock.patch.object(github, "get_pr_head_sha") as head:
+            self.assertIs(github.get_pr_checks_all(123), checks)
+
+        head.assert_not_called()
+
+    def test_falls_back_to_rest_check_runs(self):
+        check_runs = [
+            {
+                "name": "linux",
+                "status": "completed",
+                "conclusion": "failure",
+                "html_url": "https://github.com/pytorch/pytorch/actions/runs/1/job/2",
+                "completed_at": "2026-06-01T01:02:03Z",
+            },
+            {
+                "name": "macos",
+                "status": "in_progress",
+                "conclusion": None,
+                "html_url": "https://github.com/pytorch/pytorch/actions/runs/3/job/4",
+                "completed_at": None,
+            },
+        ]
+
+        with (
+            mock.patch.object(github, "_gh_pr_checks_json", return_value=[]),
+            mock.patch.object(github, "get_pr_head_sha", return_value="abc"),
+            mock.patch.object(
+                github, "list_check_runs_for_sha", return_value=check_runs
+            ),
+            mock.patch.object(github, "list_workflow_runs_for_sha") as workflows,
+            mock.patch.object(github, "log"),
+        ):
+            self.assertEqual(
+                github.get_pr_checks_all(123),
+                [
+                    {
+                        "name": "linux",
+                        "state": "FAILURE",
+                        "workflow": "",
+                        "link": (
+                            "https://github.com/pytorch/pytorch/actions/runs/1/job/2"
+                        ),
+                        "bucket": "fail",
+                        "completedAt": "2026-06-01T01:02:03Z",
+                    },
+                    {
+                        "name": "macos",
+                        "state": "PENDING",
+                        "workflow": "",
+                        "link": (
+                            "https://github.com/pytorch/pytorch/actions/runs/3/job/4"
+                        ),
+                        "bucket": "pending",
+                        "completedAt": "",
+                    },
+                ],
+            )
+
+        workflows.assert_not_called()
+
+    def test_falls_back_to_workflow_runs_when_check_runs_empty(self):
+        workflow_runs = [
+            {
+                "id": 10,
+                "name": "trunk",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "html_url": "https://github.com/pytorch/pytorch/actions/runs/10",
+                "updated_at": "2026-06-01T01:02:03Z",
+            }
+        ]
+
+        with (
+            mock.patch.object(github, "_gh_pr_checks_json", return_value=[]),
+            mock.patch.object(github, "get_pr_head_sha", return_value="abc"),
+            mock.patch.object(github, "list_check_runs_for_sha", return_value=[]),
+            mock.patch.object(
+                github, "list_workflow_runs_for_sha", return_value=workflow_runs
+            ),
+            mock.patch.object(github, "log"),
+        ):
+            self.assertEqual(
+                github.get_pr_checks_all(123),
+                [
+                    {
+                        "name": "trunk",
+                        "state": "CANCELLED",
+                        "workflow": "trunk",
+                        "link": "https://github.com/pytorch/pytorch/actions/runs/10",
+                        "bucket": "cancel",
+                        "completedAt": "2026-06-01T01:02:03Z",
+                    }
+                ],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
