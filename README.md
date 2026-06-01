@@ -92,7 +92,7 @@ TUI commands (type in the input bar at the bottom):
 | `restart all` | Kill all current session shepherds and respawn |
 | `restart dead` | Re-spawn only crashed shepherds |
 | `remove <pr>` | SIGTERM + wipe worktree, state, context |
-| `rebase <pr>` | Shorthand for `add <pr> --rebase` |
+| `rebase <pr>` | Start or restart a shepherd with `--rebase` |
 | `rebase all` | Kill all current session shepherds and respawn with `--rebase` |
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
 | `mark-spurious <pr>` | Snapshot current failed/cancelled checks as spurious and restart |

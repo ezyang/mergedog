@@ -15,7 +15,7 @@ Commands typed at the bottom (enter to submit):
     restart <pr>                      kill and re-spawn a shepherd
     restart all                       kill and re-spawn every session job
     restart dead                      re-spawn only crashed shepherds
-    rebase <pr>                       shorthand for ``add <pr> --rebase``
+    rebase <pr>                       start/restart a shepherd with --rebase
     rebase all                        re-run every session job with --rebase
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
@@ -1156,7 +1156,9 @@ class MuxApp(App):
                         return "no PRs to rebase"
                     self._do_rebase_all()
                     return f"rebasing {n} job(s)"
-                return self._do_add(_parse_pr(rest[0]), ["--rebase", *rest[1:]])
+                pr = _parse_pr(rest[0])
+                self._do_cancel_job(_pr_job(pr), keep_resumable=True)
+                return self._do_add(pr, ["--rebase", *rest[1:]])
             elif cmd in ("restart", "r"):
                 if not rest:
                     return "usage: restart <pr> | restart all | restart dead"

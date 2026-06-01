@@ -552,6 +552,47 @@ class TestMuxCommands(unittest.TestCase):
             123, ["--operator-fix-context=Return type should be TypeGuard"]
         )
 
+    def test_rebase_restarts_running_job_with_rebase_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            old_proc = _FakeProc(None)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {
+                mux._pr_job(123): (old_proc, object(), Path("123.log"))
+            }
+            app._unresumable_jobs = set()
+            app._pr_titles = {}
+            app.ignore_sev = False
+            app.manage_mergedog_label = False
+            app.gchat_to = None
+            app.repo_slug = None
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group") as terminate_group,
+                mock.patch.object(mux, "_spawn") as spawn,
+            ):
+                mux._write_mux_jobs([mux._pr_job(123)])
+                terminate_group.side_effect = lambda p: setattr(p, "_rc", -15)
+                spawn.return_value = (
+                    _FakeProc(None),
+                    object(),
+                    Path("123.log"),
+                )
+                result = app._dispatch_command("rebase 123")
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(result, "[123] started")
+        terminate_group.assert_called_once_with(old_proc)
+        spawn.assert_called_once_with(
+            mux._pr_job(123), ["--rebase"], spawn_pr=None
+        )
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+
     def test_cleanup_prunes_successful_completed_jobs(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         completed = mux._pr_job(123)
