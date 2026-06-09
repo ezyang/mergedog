@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
 from mergedog.project import get_project_policy
-from mergedog.sanitize import sanitize_untrusted_text
+from mergedog.sanitize import sanitize_untrusted_text, strip_html_comments
 from mergedog.status import write_status
 
 PROJECT = get_project_policy()
@@ -341,10 +341,11 @@ def _any_drci_label_matches(check_name: str, labels: tuple[str, ...]) -> bool:
 
 
 def _truncate_drci_summary(summary: str, limit: int = 8000) -> str:
+    summary = strip_html_comments(sanitize_untrusted_text(summary)).strip()
     if len(summary) <= limit:
-        return sanitize_untrusted_text(summary)
+        return summary
     return (
-        sanitize_untrusted_text(summary[:limit])
+        summary[:limit]
         + "\n\n_[truncated; see the PR's Dr. CI comment for the full summary]_"
     )
 
