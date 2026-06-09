@@ -83,6 +83,29 @@ class TestHandoffComments(unittest.TestCase):
         self.assertIn("Latest Dr. CI summary", body)
         self.assertIn("lintrunner-noclang-all / lint failed", body)
 
+    def test_handoff_comment_strips_drci_machine_markers(self):
+        body = handoff._format_handoff_comment(
+            {
+                "number": 101,
+                "headRefOid": "b" * 40,
+            },
+            [],
+            drci_summary=(
+                "<!-- drci-comment-start -->\n"
+                "## :x: 1 New Failure\n"
+                "As of commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:\n"
+                "<!-- drci-comment-end -->"
+            ),
+        )
+
+        self.assertNotIn("drci-comment-start", body)
+        self.assertNotIn("drci-comment-end", body)
+        self.assertIn("## :x: 1 New Failure", body)
+        self.assertIn(
+            "As of commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:",
+            body,
+        )
+
     def test_handoff_comment_warns_when_suppressions_differ_from_drci(self):
         drci_summary = (
             "<b>NEW FAILURES</b> - The following jobs have failed:<p>\n"
