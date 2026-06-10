@@ -56,14 +56,14 @@ def _get_relevant_labels() -> tuple[list[dict], list[dict], list[dict]]:
     labels = _get_cached_labels()
     if labels is None:
         labels = _fetch_and_cache_labels()
-    ciflow = [l for l in labels if l["name"].startswith("ciflow/")]
-    release_notes = [l for l in labels if l["name"].startswith(_RELEASE_NOTES_PREFIX)]
-    topic = [l for l in labels if l["name"].startswith(_TOPIC_PREFIX)]
+    ciflow = [lb for lb in labels if lb["name"].startswith("ciflow/")]
+    release_notes = [lb for lb in labels if lb["name"].startswith(_RELEASE_NOTES_PREFIX)]
+    topic = [lb for lb in labels if lb["name"].startswith(_TOPIC_PREFIX)]
     return ciflow, release_notes, topic
 
 
 def _pr_needs_autolabel(pr_data: dict) -> bool:
-    existing = {l.get("name", "") for l in pr_data.get("labels", [])}
+    existing = {lb.get("name", "") for lb in pr_data.get("labels", [])}
     if _TOPIC_NOT_USER_FACING in existing:
         return False
     has_release_notes = any(n.startswith(_RELEASE_NOTES_PREFIX) for n in existing)
@@ -124,9 +124,9 @@ def _format_labels_section(
         ("ciflow labels", ciflow),
     ]:
         lines = [f"  {heading}:"]
-        for l in sorted(group, key=lambda x: x["name"]):
-            name = sanitize_untrusted_text(l["name"])
-            desc = sanitize_untrusted_text(l.get("description") or "")
+        for lb in sorted(group, key=lambda x: x["name"]):
+            name = sanitize_untrusted_text(lb["name"])
+            desc = sanitize_untrusted_text(lb.get("description") or "")
             if desc:
                 lines.append(f"    - {name}: {desc}")
             else:
@@ -184,7 +184,7 @@ def _invoke_claude_for_labels(prompt: str) -> list[str]:
         return []
     if not isinstance(labels, list):
         return []
-    return [l for l in labels if isinstance(l, str)]
+    return [lb for lb in labels if isinstance(lb, str)]
 
 
 def _prompt_text(value: str) -> str:
@@ -198,12 +198,12 @@ def _validate_labels(
     topic: list[dict],
 ) -> list[str]:
     """Filter suggested labels to only those that actually exist."""
-    valid_names = {l["name"] for l in ciflow + release_notes + topic}
-    result = [l for l in suggested if l in valid_names]
+    valid_names = {lb["name"] for lb in ciflow + release_notes + topic}
+    result = [lb for lb in suggested if lb in valid_names]
     has_not_user_facing = _TOPIC_NOT_USER_FACING in result
     if has_not_user_facing:
         result = [
-            l for l in result if not l.startswith(_RELEASE_NOTES_PREFIX)
+            lb for lb in result if not lb.startswith(_RELEASE_NOTES_PREFIX)
         ]
     return result
 
@@ -217,7 +217,7 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
         return
 
     ciflow, release_notes, topic = _get_relevant_labels()
-    existing = {l.get("name", "") for l in pr_data.get("labels", [])}
+    existing = {lb.get("name", "") for lb in pr_data.get("labels", [])}
     changed_files = _get_changed_files(pr)
     body = pr_data.get("body", "") or ""
     if len(body) > 3000:

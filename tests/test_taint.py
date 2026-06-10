@@ -46,7 +46,7 @@ class TestTaintedStrPropagation:
     def test_splitlines(self):
         t = taint("line1\nline2", "test")
         lines = t.splitlines()
-        assert all(isinstance(l, TaintedStr) for l in lines)
+        assert all(isinstance(ln, TaintedStr) for ln in lines)
 
     def test_replace(self):
         t = taint("hello", "test")

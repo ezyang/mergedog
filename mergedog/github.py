@@ -435,7 +435,7 @@ def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
             "labels,reviewDecision",
         ]
     )
-    labels = [l.get("name", "") for l in data.get("labels", []) or []]
+    labels = [lb.get("name", "") for lb in data.get("labels", []) or []]
     return labels, data.get("reviewDecision") or None
 
 
@@ -585,7 +585,7 @@ def post_pr_comment(pr: int, body: str) -> None:
 def has_label(pr_data: dict, label: str | None) -> bool:
     if label is None:
         return False
-    return any(l.get("name") == label for l in pr_data.get("labels", []))
+    return any(lb.get("name") == label for lb in pr_data.get("labels", []))
 
 
 CI_SEV_LABEL = PROJECT.ci_sev_label
@@ -688,9 +688,9 @@ def get_repo_labels(per_page: int = 100) -> list[dict]:
         )
         if not data:
             break
-        for l in data:
+        for lb in data:
             labels.append(
-                {"name": l.get("name", ""), "description": l.get("description") or ""}
+                {"name": lb.get("name", ""), "description": lb.get("description") or ""}
             )
         if len(data) < per_page:
             break
@@ -932,7 +932,7 @@ def _trim_log_for_prompt(text: str, max_chars: int) -> str:
     forward mostly reaches "ninja: build stopped" and shutdown noise.
     """
     text = sanitize_untrusted_text(text)
-    lines = [_strip_gh_log_prefix(l) for l in text.splitlines()]
+    lines = [_strip_gh_log_prefix(ln) for ln in text.splitlines()]
     cleaned = "\n".join(lines)
     if len(cleaned) <= max_chars:
         return cleaned
