@@ -837,9 +837,12 @@ class TestMuxCommands(unittest.TestCase):
                 jobs_data = json.loads(jobs_file.read_text())
                 prs_data = json.loads(prs_file.read_text())
 
+        # Still-running 123 resumes normally on the next start; halted
+        # 789 is persisted with its exit code so the next mux parks it
+        # instead of re-running (and re-notifying) the halt.
         self.assertEqual(
             jobs_data,
-            [{"kind": "pr", "pr": 123}, {"kind": "pr", "pr": 789}],
+            [{"kind": "pr", "pr": 123}, {"kind": "pr", "pr": 789, "rc": 1}],
         )
         self.assertEqual(prs_data, [123, 789])
 
@@ -870,7 +873,7 @@ class TestMuxCommands(unittest.TestCase):
                 jobs_data = json.loads(jobs_file.read_text())
                 prs_data = json.loads(prs_file.read_text())
 
-        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 456}])
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 456, "rc": 1}])
         self.assertEqual(prs_data, [456])
 
 
@@ -888,9 +891,12 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, skipped = mux._resolve_initial_jobs([], resume_known=True)
+                jobs, parked, skipped = mux._resolve_initial_jobs(
+                    [], resume_known=True
+                )
 
         self.assertEqual(jobs, [mux._pr_job(123)])
+        self.assertEqual(parked, {})
         self.assertEqual(skipped, [])
 
     def test_resolve_initial_jobs_can_skip_resume_known(self):
@@ -904,12 +910,13 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, skipped = mux._resolve_initial_jobs(
+                jobs, parked, skipped = mux._resolve_initial_jobs(
                     ["456"],
                     resume_known=False,
                 )
 
         self.assertEqual(jobs, [mux._pr_job(456)])
+        self.assertEqual(parked, {})
         self.assertEqual(skipped, [])
 
     def test_resolve_initial_jobs_deduplicates_known_and_explicit_prs(self):
@@ -923,13 +930,117 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, skipped = mux._resolve_initial_jobs(
+                jobs, parked, skipped = mux._resolve_initial_jobs(
                     ["123", "456"],
                     resume_known=True,
                 )
 
         self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
+        self.assertEqual(parked, {})
         self.assertEqual(skipped, [])
+
+    def test_resolve_initial_jobs_parks_previously_halted_jobs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps(
+                    [
+                        {"kind": "pr", "pr": 123},
+                        {"kind": "pr", "pr": 456, "rc": 1},
+                    ]
+                )
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, parked, skipped = mux._resolve_initial_jobs(
+                    [], resume_known=True
+                )
+
+        self.assertEqual(jobs, [mux._pr_job(123)])
+        self.assertEqual(parked, {mux._pr_job(456): 1})
+        self.assertEqual(skipped, [])
+
+    def test_explicit_pr_overrides_parking(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 456, "rc": 1}])
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, parked, skipped = mux._resolve_initial_jobs(
+                    ["456"], resume_known=True
+                )
+
+        self.assertEqual(jobs, [mux._pr_job(456)])
+        self.assertEqual(parked, {})
+        self.assertEqual(skipped, [])
+
+    def test_respawn_clears_persisted_exit_code(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                mux._add_mux_job(mux._pr_job(123))
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+
+    def test_restart_unparks_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            parked = mux._pr_job(123)
+            app.procs = {}
+            app._parked_jobs = {parked: 1}
+            app._unresumable_jobs = set()
+            app._pr_titles = {}
+            app.ignore_sev = False
+            app.manage_mergedog_label = False
+            app.gchat_to = None
+            app.repo_slug = None
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_spawn") as spawn,
+            ):
+                spawn.return_value = (
+                    _FakeProc(None),
+                    object(),
+                    Path("123.log"),
+                )
+                result = app._dispatch_command("restart 123")
+
+        self.assertEqual(result, "[123] started")
+        self.assertEqual(app._parked_jobs, {})
+
+    def test_parked_jobs_count_as_dead(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {}
+        app._parked_jobs = {mux._pr_job(123): 1}
+        self.assertEqual(app._dead_jobs(), [mux._pr_job(123)])
 
     def test_read_mux_jobs_falls_back_to_legacy_prs(self):
         with tempfile.TemporaryDirectory() as d:

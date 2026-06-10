@@ -548,58 +548,79 @@ def _write_mux_prs(prs: list[int]) -> None:
     os.replace(tmp, MUX_PRS_FILE)
 
 
-def _read_mux_jobs() -> list[JobKey]:
-    """Curated mux jobs.
+def _read_mux_job_records() -> dict[JobKey, dict]:
+    """Curated mux jobs with their persisted metadata.
 
     ``mux-prs.json`` remains as the backwards-compatible regular-PR list
-    for older tools. Newer mux instances persist jobs here.
+    for older tools. Newer mux instances persist jobs here. Each record
+    may carry ``rc``: the exit code the shepherd had when the previous
+    mux shut down, so a restart can tell halted jobs from running ones.
     """
     if not MUX_JOBS_FILE.exists():
-        return [_pr_job(pr) for pr in _read_mux_prs()]
+        return {_pr_job(pr): {} for pr in _read_mux_prs()}
     try:
         data = json.loads(MUX_JOBS_FILE.read_text())
     except (OSError, json.JSONDecodeError):
-        return []
-    out: set[JobKey] = set()
+        return {}
+    out: dict[JobKey, dict] = {}
     for item in data:
         try:
             if isinstance(item, int):
-                out.add(_pr_job(item))
+                out[_pr_job(item)] = {}
             elif isinstance(item, str):
-                out.add(_pr_job(_parse_pr(item)))
+                out[_pr_job(_parse_pr(item))] = {}
             elif isinstance(item, dict):
                 kind = str(item.get("kind", PR_JOB))
                 pr = int(item["pr"])
                 if kind == PR_JOB:
-                    out.add(_pr_job(pr))
+                    record = {}
+                    if isinstance(item.get("rc"), int):
+                        record["rc"] = item["rc"]
+                    out[_pr_job(pr)] = record
         except (TypeError, ValueError, KeyError):
             continue
-    return sorted(out)
+    return out
+
+
+def _read_mux_jobs() -> list[JobKey]:
+    return sorted(_read_mux_job_records())
+
+
+def _write_mux_job_records(records: dict[JobKey, dict]) -> None:
+    MUX_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MUX_JOBS_FILE.with_suffix(".json.tmp")
+    items = []
+    for kind, pr in sorted(records):
+        item: dict = {"kind": kind, "pr": pr}
+        rc = records[(kind, pr)].get("rc")
+        if isinstance(rc, int):
+            item["rc"] = rc
+        items.append(item)
+    tmp.write_text(json.dumps(items))
+    os.replace(tmp, MUX_JOBS_FILE)
+    _write_mux_prs([pr for _, pr in records])
 
 
 def _write_mux_jobs(jobs: list[JobKey]) -> None:
-    jobs = sorted(set(jobs))
-    MUX_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MUX_JOBS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps([{"kind": kind, "pr": pr} for kind, pr in jobs]))
-    os.replace(tmp, MUX_JOBS_FILE)
-    _write_mux_prs([pr for _, pr in jobs])
+    _write_mux_job_records({job: {} for job in jobs})
 
 
 def _add_mux_job(job: JobKey) -> None:
-    jobs = set(_read_mux_jobs())
-    if job in jobs:
+    records = _read_mux_job_records()
+    # Always rewrite the record: a (re)spawned job sheds any recorded
+    # exit code, so a later resume treats it as live rather than parked.
+    if records.get(job) == {}:
         return
-    jobs.add(job)
-    _write_mux_jobs(sorted(jobs))
+    records[job] = {}
+    _write_mux_job_records(records)
 
 
 def _remove_mux_job(job: JobKey) -> None:
-    jobs = set(_read_mux_jobs())
-    if job not in jobs:
+    records = _read_mux_job_records()
+    if job not in records:
         return
-    jobs.discard(job)
-    _write_mux_jobs(sorted(jobs))
+    records.pop(job)
+    _write_mux_job_records(records)
 
 
 def _add_mux_pr(pr: int) -> None:
@@ -614,10 +635,29 @@ def _resolve_initial_jobs(
     raw_prs: list[str],
     *,
     resume_known: bool,
-) -> tuple[list[JobKey], list[tuple[str, argparse.ArgumentTypeError]]]:
+) -> tuple[
+    list[JobKey],
+    dict[JobKey, int],
+    list[tuple[str, argparse.ArgumentTypeError]],
+]:
+    """Split resumable jobs from parked (previously halted) ones.
+
+    A job whose record carries an exit code halted before the previous
+    mux shut down. Respawning it would just repeat the halt -- and
+    re-fire its halt notification -- so it is parked: shown in the table
+    as HALT, only respawned on an explicit ``restart``/``add``. An
+    explicitly listed PR on the command line *is* that explicit ask, so
+    it overrides parking.
+    """
     initial: list[JobKey] = []
+    parked: dict[JobKey, int] = {}
     if resume_known:
-        initial.extend(_read_mux_jobs())
+        for job, record in sorted(_read_mux_job_records().items()):
+            rc = record.get("rc")
+            if isinstance(rc, int):
+                parked[job] = rc
+            else:
+                initial.append(job)
 
     skipped: list[tuple[str, argparse.ArgumentTypeError]] = []
     for raw in raw_prs:
@@ -628,7 +668,9 @@ def _resolve_initial_jobs(
 
     seen: set[JobKey] = set()
     initial = [job for job in initial if not (job in seen or seen.add(job))]
-    return initial, skipped
+    for job in initial:
+        parked.pop(job, None)
+    return initial, parked, skipped
 
 
 def _spawn(
@@ -694,6 +736,7 @@ class MuxApp(App):
         self,
         initial: list[JobKey | int],
         *,
+        parked: dict[JobKey, int] | None = None,
         ignore_sev: bool = False,
         manage_mergedog_label: bool = False,
         max_fix_commits: int = MAX_FIX_COMMITS,
@@ -708,6 +751,11 @@ class MuxApp(App):
         self._pr_status: dict[JobKey, dict] = {}
         self._cleanup_jobs: set[JobKey] = set()
         self._cleanup_status: dict[JobKey, str] = {}
+        # Jobs that halted before a previous mux shut down. Kept visible
+        # as HALT rows but not respawned: rerunning them would repeat the
+        # halt (and its notification) on every mux restart. An explicit
+        # ``restart``/``add`` unparks them.
+        self._parked_jobs: dict[JobKey, int] = dict(parked or {})
         self._initial = [_coerce_job(job) for job in initial]
         self.ignore_sev = ignore_sev
         self.manage_mergedog_label = manage_mergedog_label
@@ -778,6 +826,7 @@ class MuxApp(App):
             return f"[{label}] cleanup in progress"
         if job in self.procs and self.procs[job][0].poll() is None:
             return f"[{label}] already running"
+        getattr(self, "_parked_jobs", {}).pop(job, None)
         started_at = time.time()
         try:
             self.procs[job] = _spawn(
@@ -805,11 +854,17 @@ class MuxApp(App):
         return [f"--operator-fix-context={request}"]
 
     def _dead_jobs(self) -> list[JobKey]:
-        return sorted(
+        dead = {
             job
             for job, (p, _, _) in self.procs.items()
             if p.poll() not in (None, 0, EXIT_PR_NOT_ACTIONABLE)
+        }
+        dead.update(
+            job
+            for job in getattr(self, "_parked_jobs", {})
+            if job not in self.procs
         )
+        return sorted(dead)
 
     def _completed_jobs(self) -> list[JobKey]:
         cleanup_jobs = getattr(self, "_cleanup_jobs", set())
@@ -830,11 +885,13 @@ class MuxApp(App):
         # while shepherds tear down. ``self.notify`` is thread-safe in
         # Textual (it posts a message to the app loop).
         cleanup_jobs = getattr(self, "_cleanup_jobs", set())
+        parked_jobs = getattr(self, "_parked_jobs", {})
         jobs = [_coerce_job(job) for job in jobs]
         jobs = [
             job
             for job in jobs
-            if job in self.procs and job not in cleanup_jobs
+            if (job in self.procs or job in parked_jobs)
+            and job not in cleanup_jobs
         ]
         if not jobs:
             self.notify(empty, severity="warning")
@@ -844,6 +901,8 @@ class MuxApp(App):
         # block up to ``grace`` seconds *per PR* in series before the
         # next SIGTERM was even sent.
         for job in jobs:
+            if job not in self.procs:
+                continue
             p = self.procs[job][0]
             if p.poll() is None:
                 try:
@@ -854,9 +913,11 @@ class MuxApp(App):
         # processes, and the second SIGTERM it sends to stragglers is
         # harmless.
         for job in jobs:
-            _terminate_group(self.procs[job][0])
+            if job in self.procs:
+                _terminate_group(self.procs[job][0])
         shepherd_args = self._shepherd_args(extra)
         for job in jobs:
+            parked_jobs.pop(job, None)
             started_at = time.time()
             try:
                 self.procs[job] = _spawn(job, shepherd_args)
@@ -867,10 +928,13 @@ class MuxApp(App):
             self._pr_titles.pop(job, None)
         self.notify(f"{action} {len(jobs)} job(s)")
 
+    def _all_jobs(self) -> list[JobKey]:
+        return sorted(set(self.procs) | set(getattr(self, "_parked_jobs", {})))
+
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_restart_all(self, extra: list[str] | None = None) -> None:
         self._restart_jobs(
-            sorted(self.procs),
+            self._all_jobs(),
             extra or [],
             "restarting",
             "no PRs to restart",
@@ -892,7 +956,7 @@ class MuxApp(App):
     @work(thread=True, exclusive=True, group="restart-all")
     def _do_rebase_all(self) -> None:
         self._restart_jobs(
-            sorted(self.procs),
+            self._all_jobs(),
             ["--rebase"],
             "rebasing",
             "no PRs to rebase",
@@ -993,6 +1057,9 @@ class MuxApp(App):
             return f"[{label}] cleanup in progress"
         entry = self.procs.get(job)
         if entry is None:
+            if getattr(self, "_parked_jobs", {}).pop(job, None) is not None:
+                self._prune_job(job)
+                return f"[{label}] removed"
             return f"[{label}] unknown"
         if entry[0].poll() is None:
             _terminate_group(entry[0])
@@ -1136,6 +1203,30 @@ class MuxApp(App):
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
             table.add_row(pr_cell, Text(_truncate_title(title)), phase, status)
+        for job in sorted(getattr(self, "_parked_jobs", {})):
+            if job in self.procs:
+                continue
+            _, pr = job
+            title = self._pr_titles.get(job, "") or _read_pr_title(pr)
+            if title:
+                self._pr_titles[job] = title
+            pr_cell = Text(
+                _job_label(job),
+                style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
+            )
+            structured = read_status(pr)
+            detail = (structured or {}).get("message")
+            status = (
+                detail
+                if isinstance(detail, str) and detail
+                else "halted before mux restart"
+            )
+            table.add_row(
+                pr_cell,
+                Text(_truncate_title(title)),
+                PHASE_HALTED,
+                f"{status} (not resumed; `restart {pr}` to re-run)",
+            )
 
     def _prune_job(self, job: JobKey | int) -> None:
         """Forget a shepherd and clean up its on-disk state.
@@ -1160,6 +1251,7 @@ class MuxApp(App):
         self._pr_titles.pop(job, None)
         getattr(self, "_job_started_at", {}).pop(job, None)
         getattr(self, "_unresumable_jobs", set()).discard(job)
+        getattr(self, "_parked_jobs", {}).pop(job, None)
 
     def _prune_pr(self, pr: int) -> None:
         self._prune_job(_pr_job(pr))
@@ -1212,7 +1304,7 @@ class MuxApp(App):
                     n = len(
                         [
                             job
-                            for job in self.procs
+                            for job in self._all_jobs()
                             if job not in getattr(self, "_cleanup_jobs", set())
                         ]
                     )
@@ -1230,7 +1322,7 @@ class MuxApp(App):
                     n = len(
                         [
                             job
-                            for job in self.procs
+                            for job in self._all_jobs()
                             if job not in getattr(self, "_cleanup_jobs", set())
                         ]
                     )
@@ -1283,6 +1375,8 @@ class MuxApp(App):
                 entry = self.procs.get(_pr_job(pr))
                 if entry is not None:
                     return str(entry[2])
+                if _pr_job(pr) in getattr(self, "_parked_jobs", {}):
+                    return str(LOG_DIR / _job_log_name(_pr_job(pr)))
                 return f"[{pr}] unknown"
             elif cmd == "migrate":
                 return self._format_migrate()
@@ -1349,6 +1443,25 @@ class MuxApp(App):
                 "last_log": last,
                 "shepherd_status_stale": stale,
                 "shepherd_status": structured,
+            })
+        for job in sorted(getattr(self, "_parked_jobs", {})):
+            if job in self.procs:
+                continue
+            kind, pr = job
+            log_path = LOG_DIR / _job_log_name(job)
+            rows.append({
+                "kind": kind,
+                "pr": pr,
+                "title": self._pr_titles.get(job, "") or _read_pr_title(pr),
+                "state": "parked",
+                "phase": PHASE_HALTED,
+                "status": (
+                    "halted before mux restart; not resumed "
+                    f"(`restart {pr}` to re-run)"
+                ),
+                "last_log": _last_log_line(log_path),
+                "shepherd_status_stale": True,
+                "shepherd_status": read_status(pr),
             })
         return json.dumps(rows, indent=2)
 
@@ -1446,14 +1559,19 @@ class MuxApp(App):
 
     def on_unmount(self) -> None:
         unresumable_jobs = getattr(self, "_unresumable_jobs", set())
-        _write_mux_jobs(
-            sorted(
-                job
-                for job, (p, _f, _) in self.procs.items()
-                if job not in unresumable_jobs
-                and p.poll() not in (0, EXIT_PR_NOT_ACTIONABLE)
-            )
-        )
+        records: dict[JobKey, dict] = {
+            job: {"rc": rc}
+            for job, rc in getattr(self, "_parked_jobs", {}).items()
+        }
+        for job, (p, _f, _) in self.procs.items():
+            rc = p.poll()
+            if job in unresumable_jobs or rc in (0, EXIT_PR_NOT_ACTIONABLE):
+                continue
+            # Live jobs resume on the next mux start; jobs that halted
+            # carry their exit code so the next mux parks them instead
+            # of re-running (and re-notifying) a deterministic halt.
+            records[job] = {} if rc is None else {"rc": rc}
+        _write_mux_job_records(records)
         if self._ipc_server is not None:
             self._ipc_server.close()
         if self._lock_fd >= 0:
@@ -1578,7 +1696,7 @@ def main() -> int:
     resume_known = args.resume_known
     if resume_known is None:
         resume_known = not args.prs
-    initial, skipped = _resolve_initial_jobs(
+    initial, parked, skipped = _resolve_initial_jobs(
         args.prs,
         resume_known=resume_known,
     )
@@ -1587,6 +1705,7 @@ def main() -> int:
 
     app = MuxApp(
         initial,
+        parked=parked,
         ignore_sev=args.ignore_sev,
         manage_mergedog_label=args.manage_mergedog_label,
         max_fix_commits=args.max_fix_commits,
