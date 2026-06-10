@@ -10,7 +10,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Mapping
+from collections.abc import Iterator, Mapping
 
 from mergedog.config import LLMConfig, get_llm_config
 from mergedog.log import log

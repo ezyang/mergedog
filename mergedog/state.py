@@ -44,7 +44,7 @@ class TrustDB:
     path: Path | None = None
 
     @classmethod
-    def load_or_create(cls, pr: int) -> "TrustDB":
+    def load_or_create(cls, pr: int) -> TrustDB:
         path = state_file(pr)
         if path.exists():
             data = json.loads(path.read_text())

@@ -96,7 +96,7 @@ def seed_trust_from_reviews(
 
     head_sha = pr_data["headRefOid"]
     if head_sha == approval_sha:
-        log(f"current PR head matches the approval SHA")
+        log("current PR head matches the approval SHA")
     elif trust.is_trusted(head_sha):
         log(
             f"current PR head {head_sha[:12]} is already in our trust DB "

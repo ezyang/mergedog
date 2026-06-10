@@ -94,7 +94,7 @@ class StackMember:
     orig_ref: str
 
     @classmethod
-    def from_pr_data(cls, pr_data: dict) -> "StackMember":
+    def from_pr_data(cls, pr_data: dict) -> StackMember:
         head = pr_data.get("headRefName") or ""
         if not (head.startswith("gh/") and head.endswith("/head")):
             die(

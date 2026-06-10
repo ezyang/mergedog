@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from mergedog.log import die, log
 from mergedog.net import github_api_env_extra, is_transient_network_error

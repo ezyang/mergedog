@@ -1720,8 +1720,8 @@ def _shepherd_body(
                 trust_mergebot_rebase_if_equivalent(
                     trust,
                     current,
-                    ensure_current_available=lambda: _fetch_current_pr_head_for_trust(
-                        pr, trust, current
+                    ensure_current_available=lambda sha=current: (
+                        _fetch_current_pr_head_for_trust(pr, trust, sha)
                     ),
                 )
             if not trust.is_trusted(current):
