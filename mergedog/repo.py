@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import re
 import shutil
 import subprocess
 import time
@@ -684,13 +685,16 @@ def trunk_revert_context(worktree: Path) -> str | None:
     return f"{header}\n\n{body}"
 
 
-MERGE_COMMIT_SUBJECT = "[MERGEDOG] Merge main into PR branch"
+# Commit-subject prefix marking commits mergedog itself authored; the
+# trust DB and audit trail key off it.
+MERGEDOG_PREFIX = "[MERGEDOG]"
+MERGE_COMMIT_SUBJECT = f"{MERGEDOG_PREFIX} Merge main into PR branch"
 # Used by claude when it had to resolve conflicts; the suffix is what we
 # tell claude to put on the commit. The harness only validates the
 # ``[MERGEDOG]`` prefix, but a distinct subject makes ``git log`` and the
 # handoff comment immediately show whether human-style judgment was
 # applied during the merge.
-MERGE_RESOLVED_SUBJECT = "[MERGEDOG] Merge main into PR branch (resolved conflicts)"
+MERGE_RESOLVED_SUBJECT = f"{MERGEDOG_PREFIX} Merge main into PR branch (resolved conflicts)"
 CLEAN_MERGE_BODY = "Clean merge with origin/main; no conflicts."
 
 
@@ -883,8 +887,8 @@ def ghstack_submit(
     line on Phabricator is unambiguously from this harness; idempotent
     when the caller already prefixed it (e.g. claude's fix-CI message).
     """
-    if not message.startswith("[MERGEDOG]"):
-        message = f"[MERGEDOG] {message}"
+    if not message.startswith(MERGEDOG_PREFIX):
+        message = f"{MERGEDOG_PREFIX} {message}"
     args = ["ghstack", "submit", "-m", message, "HEAD"]
     if no_stack:
         args.insert(2, "--no-stack")
@@ -908,7 +912,7 @@ def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> No
 
 
 
-_PR_TRAILER_RE = __import__("re").compile(
+_PR_TRAILER_RE = re.compile(
     r"Pull[- ]Request(?:[- ][Rr]esolved)?:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
 )
 

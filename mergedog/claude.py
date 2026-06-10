@@ -17,10 +17,9 @@ from mergedog.log import log
 from mergedog.paths import LINTRUNNER_VENV, REPO_DIR
 from mergedog.process import run
 from mergedog import repo as repo_mod
-from mergedog.repo import head_sha, head_subject
+from mergedog.repo import MERGEDOG_PREFIX, head_sha, head_subject
 from mergedog.sanitize import sanitize_untrusted_text
 
-MERGEDOG_PREFIX = "[MERGEDOG]"
 SPURIOUS_MARKER = ".mergedog-spurious"
 
 
