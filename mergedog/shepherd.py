@@ -23,6 +23,7 @@ from mergedog.handoff import (
     PushedChange,
     is_merge_conflict_failure,
     is_retryable_merge_failure,
+    latest_mergebot_event,
     mergebot_ignored_check_names,
     post_handoff_comment,
     suppression_drci_status_warning,
@@ -1444,6 +1445,54 @@ def _classify_failure_body(body: str) -> str:
     return "unclassified"
 
 
+def _recover_from_merge_conflict(
+    pr: int,
+    worktree: Path,
+    branch: str,
+    trust: TrustDB,
+    pr_data: dict,
+    sessions: list[ClaudeSession],
+    pushed_changes: list[PushedChange],
+    *,
+    is_ghstack: bool,
+    fork_remote: str | None,
+    ignore_sev: bool,
+    trusted_pr: bool,
+    change_summary: str,
+) -> None:
+    """Refresh the PR branch from main after a merge conflict.
+
+    Shared by the post-handoff conflict watcher, the mergebot
+    merge-conflict failure path, and the startup replay of a persisted
+    conflict failure.
+    """
+    repo.fetch_origin()
+    if is_ghstack:
+        _rebase_ghstack_onto_main(
+            pr, worktree, branch, trust, ignore_sev=ignore_sev,
+            pr_data=pr_data, sessions=sessions,
+        )
+    else:
+        assert fork_remote is not None
+        new_sha = _merge_main_resolving_conflicts(
+            worktree, trust, branch, pr_data, sessions,
+            ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+        )
+        if new_sha is not None:
+            log(
+                f"pushing merge commit {new_sha[:12]} to "
+                f"{fork_remote}/{branch}"
+            )
+            _safe_push(
+                pr, worktree, fork_remote, branch, new_sha,
+                reason="pushing merge-main commit after conflict",
+                ignore_sev=ignore_sev,
+            )
+            _record_pushed_change(
+                pushed_changes, worktree, new_sha, change_summary
+            )
+
+
 def _log_restored_state(trust: TrustDB) -> None:
     """Surface persisted idempotency state that will steer this run.
 
@@ -1702,46 +1751,64 @@ def _shepherd_body(
                     "merged main into the PR branch",
                 )
 
-    # On restart, if the last observed failure was a merge conflict that
-    # we never resolved (e.g. old code didn't have conflict handling),
-    # proactively rebase now rather than waiting for a new failure.
-    if trust.last_observed_failure_body and is_merge_conflict_failure(
-        trust.last_observed_failure_body
-    ):
+    # On restart, replay the last observed merge failure through the same
+    # classification the post-handoff watcher uses. The failure timestamp
+    # floor means the watcher will never re-react to this comment, so any
+    # handling it deserves has to happen here -- including handling that
+    # only exists because the code was updated since the failure was
+    # recorded. Unclassified failures need no replay: the normal loop
+    # re-inspects CI and claude judges from scratch.
+    replay_kind = _classify_failure_body(trust.last_observed_failure_body)
+    if replay_kind == "merge conflict":
         log(
             "prior merge-conflict failure detected on restart; "
             "rebasing onto main"
         )
-        repo.fetch_origin()
-        if is_ghstack:
-            _rebase_ghstack_onto_main(
-                pr, worktree, branch, trust, ignore_sev=ignore_sev,
-                pr_data=pr_data, sessions=sessions,
-            )
-        else:
-            assert fork_remote is not None
-            new_sha = _merge_main_resolving_conflicts(
-                worktree, trust, branch, pr_data, sessions,
-                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-            )
-            if new_sha is not None:
-                log(
-                    f"pushing merge commit {new_sha[:12]} to "
-                    f"{fork_remote}/{branch}"
-                )
-                _safe_push(
-                    pr, worktree, fork_remote, branch, new_sha,
-                    reason="pushing merge-main commit after conflict",
-                    ignore_sev=ignore_sev,
-                )
-                _record_pushed_change(
-                    pushed_changes,
-                    worktree,
-                    new_sha,
-                    "merged main into the PR branch after merge failure",
-                )
+        _recover_from_merge_conflict(
+            pr, worktree, branch, trust, pr_data, sessions, pushed_changes,
+            is_ghstack=is_ghstack, fork_remote=fork_remote,
+            ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+            change_summary="merged main into the PR branch after merge failure",
+        )
         trust.last_observed_failure_body = ""
         trust.save()
+    elif replay_kind == "retryable infra flake":
+        # Only retry if nothing has happened on the PR since the failure
+        # -- a newer mergebot event means a human (or a previous
+        # mergedog) already acted on it.
+        newer_event = None
+        try:
+            newer_event = latest_mergebot_event(
+                pr, trust.last_observed_failure_iso
+            )
+        except Exception as e:
+            log(f"WARNING: could not check for newer mergebot events: {e}")
+        if newer_event is not None:
+            log(
+                "prior retryable merge failure detected on restart, but "
+                "there is newer mergebot activity; leaving it to the "
+                "normal flow"
+            )
+        elif (
+            PROJECT.merge_command is not None
+            and auto_retries < MAX_MERGE_AUTO_RETRIES
+        ):
+            auto_retries += 1
+            trust.merge_auto_retries = auto_retries
+            trust.last_observed_failure_body = ""
+            trust.save()
+            log(
+                f"prior merge failure was a retryable infra flake with no "
+                f"activity since; auto-retrying `{PROJECT.merge_command}` "
+                f"({auto_retries}/{MAX_MERGE_AUTO_RETRIES})"
+            )
+            github.post_pr_comment(pr, PROJECT.merge_command)
+        else:
+            log(
+                "prior retryable merge failure detected on restart, but "
+                "no auto-retry budget remains; falling through to manual "
+                "recovery"
+            )
 
     if operator_fix_context is not None:
         if _run_operator_fix(
@@ -2760,33 +2827,16 @@ def _shepherd_body(
         if result == "conflict":
             recovery_attempts += 1
             log("post-handoff merge conflict detected; rebasing onto main")
-            repo.fetch_origin()
-            if is_ghstack:
-                _rebase_ghstack_onto_main(
-                    pr, worktree, branch, trust, ignore_sev=ignore_sev
-                )
-            else:
-                assert fork_remote is not None
-                new_sha = _merge_main_resolving_conflicts(
-                    worktree, trust, branch, pr_data, sessions,
-                    ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-                )
-                if new_sha is not None:
-                    log(
-                        f"pushing merge commit {new_sha[:12]} to "
-                        f"{fork_remote}/{branch}"
-                    )
-                    _safe_push(
-                        pr, worktree, fork_remote, branch, new_sha,
-                        reason="pushing merge-main commit after GitHub conflict",
-                        ignore_sev=ignore_sev,
-                    )
-                    _record_pushed_change(
-                        pushed_changes,
-                        worktree,
-                        new_sha,
-                        "merged main into the PR branch after GitHub reported conflicts",
-                    )
+            _recover_from_merge_conflict(
+                pr, worktree, branch, trust, pr_data, sessions,
+                pushed_changes,
+                is_ghstack=is_ghstack, fork_remote=fork_remote,
+                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                change_summary=(
+                    "merged main into the PR branch after GitHub "
+                    "reported conflicts"
+                ),
+            )
             last_status = None
             pr_data = github.get_pr(pr)
             continue
@@ -2838,33 +2888,15 @@ def _shepherd_body(
                 "pytorchmergebot merge failed due to merge conflict; "
                 "rebasing onto main"
             )
-            repo.fetch_origin()
-            if is_ghstack:
-                _rebase_ghstack_onto_main(
-                    pr, worktree, branch, trust, ignore_sev=ignore_sev
-                )
-            else:
-                assert fork_remote is not None
-                new_sha = _merge_main_resolving_conflicts(
-                    worktree, trust, branch, pr_data, sessions,
-                    ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-                )
-                if new_sha is not None:
-                    log(
-                        f"pushing merge commit {new_sha[:12]} to "
-                        f"{fork_remote}/{branch}"
-                    )
-                    _safe_push(
-                        pr, worktree, fork_remote, branch, new_sha,
-                        reason="pushing merge-main commit after conflict",
-                        ignore_sev=ignore_sev,
-                    )
-                    _record_pushed_change(
-                        pushed_changes,
-                        worktree,
-                        new_sha,
-                        "merged main into the PR branch after merge failure",
-                    )
+            _recover_from_merge_conflict(
+                pr, worktree, branch, trust, pr_data, sessions,
+                pushed_changes,
+                is_ghstack=is_ghstack, fork_remote=fork_remote,
+                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                change_summary=(
+                    "merged main into the PR branch after merge failure"
+                ),
+            )
             trust.last_observed_failure_body = ""
             trust.save()
             last_status = None
