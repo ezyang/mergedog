@@ -36,7 +36,7 @@ def acquire_lock() -> int:
         raise RuntimeError(
             f"Another mux is already running (pid {pid}).  "
             f"Kill it first or use --root to run a separate instance."
-        )
+        ) from None
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
     os.write(

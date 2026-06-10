@@ -177,7 +177,7 @@ def _resolve_extra_context(args: argparse.Namespace) -> str | None:
         try:
             return args.extra_context_file.read_text()
         except OSError as e:
-            raise SystemExit(f"failed to read --extra-context-file: {e}")
+            raise SystemExit(f"failed to read --extra-context-file: {e}") from None
     return args.extra_context
 
 
@@ -186,7 +186,7 @@ def _resolve_operator_fix_context(args: argparse.Namespace) -> str | None:
         try:
             return args.operator_fix_context_file.read_text()
         except OSError as e:
-            raise SystemExit(f"failed to read --operator-fix-context-file: {e}")
+            raise SystemExit(f"failed to read --operator-fix-context-file: {e}") from None
     return args.operator_fix_context
 
 
