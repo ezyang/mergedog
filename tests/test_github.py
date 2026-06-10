@@ -172,6 +172,37 @@ class TestGhRetries(unittest.TestCase):
             log_context="posting PR comment",
         )
 
+    def test_add_label_uses_rest_issue_endpoint(self):
+        with mock.patch.object(github, "_gh") as gh:
+            github.add_label(123, "topic: bug fixes", loud=False)
+
+        gh.assert_called_once_with(
+            [
+                "api",
+                "-X",
+                "POST",
+                f"repos/{github.REPO}/issues/123/labels",
+                "--input",
+                "-",
+            ],
+            input_text='{"labels": ["topic: bug fixes"]}',
+            loud=False,
+        )
+
+    def test_remove_label_uses_rest_issue_endpoint(self):
+        with mock.patch.object(github, "_gh") as gh:
+            github.remove_label(123, "topic: bug fixes")
+
+        gh.assert_called_once_with(
+            [
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{github.REPO}/issues/123/labels/topic%3A%20bug%20fixes",
+            ],
+            loud=True,
+        )
+
 
 class TestPrMergeCommit(unittest.TestCase):
     def test_returns_merge_commit_for_merged_pr(self):

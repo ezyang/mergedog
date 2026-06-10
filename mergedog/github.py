@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import time
 from typing import Any
+from urllib.parse import quote
 
 from mergedog.log import log
 from mergedog.net import github_api_env_extra
@@ -576,14 +577,20 @@ def get_pr_checks_all(pr: int) -> list[dict]:
 
 def add_label(pr: int, label: str, *, loud: bool = True) -> None:
     _gh(
-        ["pr", "edit", str(pr), "--repo", REPO, "--add-label", label],
+        ["api", "-X", "POST", f"repos/{REPO}/issues/{pr}/labels", "--input", "-"],
+        input_text=json.dumps({"labels": [label]}),
         loud=loud,
     )
 
 
 def remove_label(pr: int, label: str) -> None:
     _gh(
-        ["pr", "edit", str(pr), "--repo", REPO, "--remove-label", label],
+        [
+            "api",
+            "-X",
+            "DELETE",
+            f"repos/{REPO}/issues/{pr}/labels/{quote(label, safe='')}",
+        ],
         loud=True,
     )
 
