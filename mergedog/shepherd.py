@@ -1376,6 +1376,45 @@ def _merge_main_resolving_conflicts(
     return new_sha
 
 
+def _classify_failure_body(body: str) -> str:
+    if not body:
+        return "none"
+    if is_merge_conflict_failure(body):
+        return "merge conflict"
+    if is_retryable_merge_failure(body):
+        return "retryable infra flake"
+    return "unclassified"
+
+
+def _log_restored_state(trust: TrustDB) -> None:
+    """Surface persisted idempotency state that will steer this run.
+
+    Restored state silently changing behavior is how restarts get
+    "stuck": a spurious judgment or failure floor from a previous run
+    suppresses work the operator expects to happen. Logging it up front
+    makes the suppression visible and points at the escape hatch.
+    """
+    restored: list[str] = []
+    if trust.trusted_shas:
+        restored.append(f"  trusted SHAs: {len(trust.trusted_shas)}")
+    if trust.spurious_check_names:
+        names = ", ".join(trust.spurious_check_names)
+        restored.append(
+            f"  spurious judgments (reassess to clear): {names}"
+        )
+    if trust.last_observed_failure_iso:
+        kind = _classify_failure_body(trust.last_observed_failure_body)
+        restored.append(
+            f"  last observed merge failure: "
+            f"{trust.last_observed_failure_iso} ({kind}); older mergebot "
+            f"comments will not re-trigger recovery"
+        )
+    if restored:
+        log("restored state from previous run:")
+        for line in restored:
+            log(line)
+
+
 def _sigterm_to_systemexit(signum, frame) -> None:  # type: ignore[no-untyped-def]
     """Turn SIGTERM into SystemExit so the label-cleanup ``finally`` runs.
 
@@ -1456,6 +1495,7 @@ def _shepherd_body(
     branch = pr_data["headRefName"]
 
     trust = TrustDB.load_or_create(pr)
+    _log_restored_state(trust)
     trust.head_branch = branch
     if is_ghstack:
         # ghstack PRs live in origin (pytorch/pytorch). The /head ref is the

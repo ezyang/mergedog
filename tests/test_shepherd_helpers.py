@@ -407,3 +407,49 @@ class TestActionableLintFailureNames(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLogRestoredState(unittest.TestCase):
+    def _logged_lines(self, trust):
+        with mock.patch.object(shepherd, "log") as logged:
+            shepherd._log_restored_state(trust)
+        return [c.args[0] for c in logged.call_args_list]
+
+    def test_silent_on_fresh_state(self):
+        from mergedog.state import TrustDB
+
+        self.assertEqual(self._logged_lines(TrustDB(pr=1)), [])
+
+    def test_reports_restored_fields(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(
+            pr=1,
+            trusted_shas=["a" * 40, "b" * 40],
+            spurious_check_names=["lint / foo"],
+            last_observed_failure_iso="2026-06-01T00:00:00Z",
+            last_observed_failure_body="CONFLICT ... Merge conflict",
+        )
+        lines = self._logged_lines(trust)
+        joined = "\n".join(lines)
+        self.assertIn("restored state from previous run:", lines[0])
+        self.assertIn("trusted SHAs: 2", joined)
+        self.assertIn("lint / foo", joined)
+        self.assertIn("2026-06-01T00:00:00Z (merge conflict)", joined)
+
+
+class TestClassifyFailureBody(unittest.TestCase):
+    def test_classifications(self):
+        self.assertEqual(shepherd._classify_failure_body(""), "none")
+        self.assertEqual(
+            shepherd._classify_failure_body("CONFLICT x Merge conflict"),
+            "merge conflict",
+        )
+        self.assertEqual(
+            shepherd._classify_failure_body("HTTP Error 504"),
+            "retryable infra flake",
+        )
+        self.assertEqual(
+            shepherd._classify_failure_body("something else"),
+            "unclassified",
+        )
