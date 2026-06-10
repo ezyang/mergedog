@@ -21,6 +21,8 @@ from pathlib import Path
 
 from mergedog.paths import state_file
 
+SCHEMA_VERSION = 1
+
 
 @dataclass
 class TrustDB:
@@ -41,7 +43,24 @@ class TrustDB:
     # failures. Cleared whenever a fix commit is pushed (fresh CI
     # invalidates prior judgments).
     spurious_check_names: list[str] = field(default_factory=list)
+    # Fields written by a newer mergedog than this one. Carried through
+    # save() so that running old code against new state files doesn't
+    # silently strip what the newer code persisted.
+    extra_fields: dict = field(default_factory=dict)
     path: Path | None = None
+
+    _KNOWN_FIELDS = frozenset(
+        {
+            "schema_version",
+            "pr",
+            "trusted_shas",
+            "head_branch",
+            "head_repo_clone_url",
+            "last_observed_failure_iso",
+            "last_observed_failure_body",
+            "spurious_check_names",
+        }
+    )
 
     @classmethod
     def load_or_create(cls, pr: int) -> TrustDB:
@@ -62,6 +81,11 @@ class TrustDB:
                 spurious_check_names=list(
                     data.get("spurious_check_names", [])
                 ),
+                extra_fields={
+                    k: v
+                    for k, v in data.items()
+                    if k not in cls._KNOWN_FIELDS
+                },
                 path=path,
             )
         return cls(pr=pr, path=path)
@@ -76,6 +100,8 @@ class TrustDB:
         # rename instead.
         data = json.dumps(
             {
+                **self.extra_fields,
+                "schema_version": SCHEMA_VERSION,
                 "pr": self.pr,
                 "trusted_shas": self.trusted_shas,
                 "head_branch": self.head_branch,
