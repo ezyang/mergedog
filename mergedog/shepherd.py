@@ -26,7 +26,6 @@ from mergedog.handoff import (
     mergebot_ignored_check_names,
     post_handoff_comment,
     suppression_drci_status_warning,
-    utc_now_iso,
     watch_post_handoff,
 )
 from mergedog.head_trust import trust_mergebot_rebase_if_equivalent
@@ -49,7 +48,7 @@ from mergedog.prompts import (
 )
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
-from mergedog.status import write_status
+from mergedog.status import utc_now_iso, write_status
 from mergedog.trust_seed import seed_trust_from_reviews
 
 

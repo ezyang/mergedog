@@ -16,8 +16,8 @@ from mergedog.paths import status_file
 SCHEMA_VERSION = 1
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def write_status(
@@ -49,7 +49,7 @@ def write_status(
     """
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "updated_at": _now_iso(),
+        "updated_at": utc_now_iso(),
         "phase": phase,
     }
     optional = {

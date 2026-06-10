@@ -5,9 +5,9 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 from mergedog.paths import ROOT
+from mergedog.status import utc_now_iso
 
 
 _SECRET_KEY_RE = re.compile(
@@ -139,7 +139,7 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
     parts = [
         f"# mergedog rage PR #{pr}",
         "",
-        f"Generated: {datetime.now(UTC).isoformat()}",
+        f"Generated: {utc_now_iso()}",
         f"Root: `{root}`",
         f"mergedog git HEAD: `{_git_head()}`",
         "",

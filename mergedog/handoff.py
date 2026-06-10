@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
@@ -43,10 +42,6 @@ class PushedChange:
     summary: str
     subject: str | None = None
     source: str | None = None
-
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 # GitHub PR comments cap out at 65,536 characters. We leave headroom for
