@@ -243,24 +243,6 @@ def _fetch_lock(activity: str | None = None) -> Iterator[None]:
             fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
-def fetch_main() -> None:
-    """Fetch ``origin/main`` and the repo's known-good ref, if configured.
-
-    Much faster than a full ``fetch_origin`` but gives
-    ``select_rebase_target`` what it needs.
-    """
-    branches = ["main"]
-    if get_project_policy().known_good_ref == "origin/viable/strict":
-        branches.append("viable/strict")
-    with _fetch_lock():
-        run(
-            ["git", "fetch", "origin", *branches],
-            cwd=REPO_DIR,
-            capture=False,
-            loud=True,
-        )
-
-
 def fetch_origin() -> None:
     # ``capture=True`` (the default) so any future failure surfaces git's
     # stderr through ``process.run``'s error path instead of bare ``rc=1``.
@@ -574,19 +556,6 @@ def commit_message(worktree: Path, ref: str = "HEAD") -> str:
     ).stdout.rstrip("\n")
 
 
-def merge_base_age_seconds(worktree: Path, ref: str = "origin/main") -> int:
-    """Return the age in seconds of the merge-base between HEAD and ``ref``.
-
-    The merge-base is the commit on ``ref`` from which the PR branch
-    diverged. Its age is a good proxy for "how stale is this PR's view of
-    main": even if the contributor pushed yesterday, if they branched off
-    main two months ago, the merge-base is two months old.
-    """
-    base = run(["git", "merge-base", "HEAD", ref], cwd=worktree).stdout.strip()
-    ts = run(["git", "show", "-s", "--format=%ct", base], cwd=worktree).stdout.strip()
-    return int(time.time()) - int(ts)
-
-
 VIABLE_STRICT_REF = "origin/viable/strict"
 
 
@@ -794,10 +763,6 @@ def attempt_merge_main(worktree: Path, ref: str = "origin/main") -> tuple[str, s
                 f"{proc.stdout}\n{proc.stderr}"
             )
     return "conflict", None
-
-
-def abort_merge(worktree: Path) -> None:
-    run(["git", "merge", "--abort"], cwd=worktree, check=False, loud=True)
 
 
 def would_merge_conflict(worktree: Path, ref: str = "origin/main") -> bool:

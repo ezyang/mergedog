@@ -461,25 +461,6 @@ def latest_mergebot_event(
     return "other", iso, body
 
 
-def latest_mergebot_failure_event(
-    pr: int, since_iso: str
-) -> tuple[str, str] | None:
-    """Return the latest pytorchmergebot ``Merge failed`` event after ``since_iso``."""
-    if PYTORCHMERGEBOT_LOGIN is None:
-        return None
-    relevant = [
-        c
-        for c in github.get_pr_comments(pr)
-        if c.get("author") == PYTORCHMERGEBOT_LOGIN
-        and (c.get("created_at") or "") > since_iso
-        and "Merge failed" in (c.get("body") or "")
-    ]
-    if not relevant:
-        return None
-    latest = max(relevant, key=lambda c: c.get("created_at") or "")
-    return latest.get("created_at") or "", latest.get("body") or ""
-
-
 def mergebot_ignored_check_names(
     comments: list[dict], checks: list[dict], *, since_iso: str
 ) -> set[str]:

@@ -432,14 +432,6 @@ def get_pr_head_sha(pr: int) -> str:
     return data["headRefOid"]
 
 
-def get_pr_labels(pr: int) -> list[str]:
-    """Return the names of labels currently applied to the PR."""
-    data = _gh_json(
-        ["pr", "view", str(pr), "--repo", REPO, "--json", "labels"]
-    )
-    return [l.get("name", "") for l in data.get("labels", []) or []]
-
-
 def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
     """Return ``(labels, reviewDecision)`` in a single ``gh pr view`` call.
 
