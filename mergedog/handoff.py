@@ -645,6 +645,7 @@ def _write_handoff_status(
     suppressed_failure_count: int = 0,
     handoff_comment_ok: bool | None = None,
     suppression_warning: str | None = None,
+    approval_actionable: bool = True,
 ) -> None:
     if merging:
         category = "waiting"
@@ -661,12 +662,16 @@ def _write_handoff_status(
         )
         message = "ready for human merge"
     else:
-        category = "ready"
+        category = "ready" if approval_actionable else "waiting"
         waiting_on = "approval"
         user_action = (
-            "approve after reviewing local mergedog log"
-            if handoff_comment_ok is False
-            else "approve the PR after reviewing mergedog interventions"
+            (
+                "approve after reviewing local mergedog log"
+                if handoff_comment_ok is False
+                else "approve the PR after reviewing mergedog interventions"
+            )
+            if approval_actionable
+            else None
         )
         message = "waiting for maintainer approval"
     try:
@@ -729,6 +734,7 @@ def watch_post_handoff(
     suppressed_check_names: set[str] | None = None,
     handoff_comment_ok: bool | None = None,
     suppression_warning: str | None = None,
+    approval_actionable: bool = True,
 ) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -775,6 +781,7 @@ def watch_post_handoff(
                 human_ack_sha=human_ack_sha,
                 handoff_comment_ok=handoff_comment_ok,
                 suppression_warning=suppression_warning,
+                approval_actionable=approval_actionable,
             )
             msg = _merging_progress_line(pr)
             if msg != last_merging_msg:
@@ -821,6 +828,7 @@ def watch_post_handoff(
                 suppressed_failure_count=suppressed if ci is not None else 0,
                 handoff_comment_ok=handoff_comment_ok,
                 suppression_warning=suppression_warning,
+                approval_actionable=approval_actionable,
             )
             last_merging_msg = None
             if kind == "started":

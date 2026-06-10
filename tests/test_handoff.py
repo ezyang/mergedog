@@ -223,6 +223,27 @@ class TestHandoffComments(unittest.TestCase):
             merging=False,
         )
 
+    def test_handoff_status_marks_approval_external_when_not_actionable(self):
+        with mock.patch.object(handoff, "write_status") as write_status:
+            handoff._write_handoff_status(
+                101,
+                approved=False,
+                merging=False,
+                intervention_count=0,
+                approval_actionable=False,
+            )
+
+        kwargs = write_status.call_args.kwargs
+        self.assertEqual(kwargs["phase"], "ready")
+        self.assertEqual(kwargs["category"], "waiting")
+        self.assertEqual(kwargs["waiting_on"], "approval")
+        self.assertIsNone(kwargs["user_action"])
+        self.assertEqual(
+            kwargs["message"],
+            "waiting for maintainer approval; "
+            "0 mergedog interventions since last approval",
+        )
+
 
 class TestMergebotIgnoredChecks(unittest.TestCase):
     def test_extracts_current_failed_checks_from_trusted_mergebot_comment(self):

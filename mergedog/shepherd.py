@@ -2492,6 +2492,7 @@ def _shepherd_body(
                 continue
             log("ALL CI GREEN.")
             ready_for_merge = last_approved is not False
+            approval_actionable = not self_pr
             if suppressed_failed_count:
                 plural = "" if suppressed_failed_count == 1 else "s"
                 ci_green_phrase = (
@@ -2508,12 +2509,21 @@ def _shepherd_body(
             ready_user_action = (
                 "review mergedog handoff and merge when satisfied"
                 if ready_for_merge
-                else "approve the PR after reviewing mergedog interventions"
+                else (
+                    "approve the PR after reviewing mergedog interventions"
+                    if approval_actionable
+                    else None
+                )
             )
             _write_status_best_effort(
                 pr,
                 phase="ready",
-                category="ready",
+                category=(
+                    "ready"
+                    if ready_for_merge or approval_actionable
+                    else "waiting"
+                ),
+                waiting_on=None if ready_for_merge else "approval",
                 user_action=ready_user_action,
                 message=_status_with_interventions(
                     ready_message, intervention_count
@@ -2572,12 +2582,17 @@ def _shepherd_body(
             f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}."
         )
         if last_approved is False:
-            handoff_category = "ready"
+            approval_actionable = not self_pr
+            handoff_category = "ready" if approval_actionable else "waiting"
             handoff_waiting_on = "approval"
             handoff_user_action = (
-                "approve after reviewing local mergedog log"
-                if handoff_comment_ok is False
-                else "approve the PR after reviewing mergedog interventions"
+                (
+                    "approve after reviewing local mergedog log"
+                    if handoff_comment_ok is False
+                    else "approve the PR after reviewing mergedog interventions"
+                )
+                if approval_actionable
+                else None
             )
             handoff_message = "waiting for maintainer approval"
         else:
@@ -2625,6 +2640,7 @@ def _shepherd_body(
             suppressed_check_names=spurious_check_names,
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
+            approval_actionable=not self_pr,
         )
         if result == "closed":
             complete(
