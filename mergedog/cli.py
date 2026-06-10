@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -188,6 +190,63 @@ def _resolve_operator_fix_context(args: argparse.Namespace) -> str | None:
     return args.operator_fix_context
 
 
+def _cmd_parts(cmd: object) -> list[str]:
+    if isinstance(cmd, (list, tuple)):
+        return [str(part) for part in cmd]
+    if isinstance(cmd, str):
+        try:
+            return shlex.split(cmd)
+        except ValueError:
+            return [cmd]
+    return [str(cmd)]
+
+
+def _short_cmd(cmd: object) -> str:
+    parts = _cmd_parts(cmd)
+    if not parts:
+        return "command"
+    if parts[0] == "gh":
+        if len(parts) >= 4 and parts[1:3] == ["pr", "view"]:
+            return "gh pr view " + parts[3]
+        if len(parts) >= 3:
+            return " ".join(parts[:3])
+    return shlex.join(parts[:4])
+
+
+def _failure_stderr(exc: subprocess.CalledProcessError) -> str:
+    stderr = exc.stderr
+    if isinstance(stderr, bytes):
+        return stderr.decode(errors="replace")
+    if isinstance(stderr, str):
+        return stderr
+    output = exc.output
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    if isinstance(output, str):
+        return output
+    return ""
+
+
+def _external_failure_halt_message(exc: subprocess.CalledProcessError) -> str:
+    cmd = _short_cmd(exc.cmd)
+    stderr = _failure_stderr(exc)
+    stderr_lower = stderr.lower()
+    if (
+        "requires authentication" in stderr_lower
+        or "gh auth login" in stderr_lower
+        or "authentication failed" in stderr_lower
+    ):
+        return (
+            f"{cmd} failed: GitHub authentication is invalid; run "
+            "gh auth status -h github.com, refresh or re-login, then "
+            "restart the shepherd"
+        )
+
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    detail = lines[-1] if lines else f"exit {exc.returncode}"
+    return f"{cmd} failed: {detail}"
+
+
 def _single_main(argv: list[str]) -> int:
     promote_early_env(argv)
 
@@ -222,6 +281,10 @@ def _single_main(argv: list[str]) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
         return 130
+    except subprocess.CalledProcessError as e:
+        from mergedog.log import die
+
+        die(_external_failure_halt_message(e))
     return 0
 
 
