@@ -1659,7 +1659,18 @@ def _shepherd_body(
     )
     # Auto-retries for infra-flake merge failures (e.g. 504). Capped at
     # MAX_MERGE_AUTO_RETRIES to prevent runaway commenting during outages.
-    auto_retries = 0
+    # Persisted in the trust DB: each retry posts a visible merge command,
+    # so a restart must not refresh the budget mid-outage. --reassess (or
+    # editing the state file) resets it.
+    if reassess and trust.merge_auto_retries:
+        trust.merge_auto_retries = 0
+        trust.save()
+    auto_retries = trust.merge_auto_retries
+    if auto_retries:
+        log(
+            f"restored merge auto-retry count from previous run: "
+            f"{auto_retries}/{MAX_MERGE_AUTO_RETRIES}"
+        )
 
     # User-requested upfront merge of origin/main. Default behavior
     # otherwise is to never auto-rebase based on age -- mergedog only
@@ -2802,7 +2813,12 @@ def _shepherd_body(
                         "merge failure was retryable, but this repo has no "
                         "configured merge command to auto-retry"
                     )
+                # Persist before posting: if we're killed mid-post, the
+                # budget reads as spent -- the safe direction for a guard
+                # whose whole job is bounding comment spam.
                 auto_retries += 1
+                trust.merge_auto_retries = auto_retries
+                trust.save()
                 log(
                     f"{PROJECT.mergebot_login} merge failure is retryable "
                     f"(infra flake); auto-retrying `{PROJECT.merge_command}` "

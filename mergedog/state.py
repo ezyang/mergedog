@@ -49,6 +49,10 @@ class TrustDB:
     # budget; a new approval baseline (or --reassess) resets it.
     fix_commits_pushed: int = 0
     fix_budget_ack_sha: str = ""
+    # Auto-retry comments posted for retryable (infra-flake) merge
+    # failures. Persisted so restarts can't grant a fresh budget and
+    # spam the merge command during an outage. Reset by --reassess.
+    merge_auto_retries: int = 0
     # Fields written by a newer mergedog than this one. Carried through
     # save() so that running old code against new state files doesn't
     # silently strip what the newer code persisted.
@@ -67,6 +71,7 @@ class TrustDB:
             "spurious_check_names",
             "fix_commits_pushed",
             "fix_budget_ack_sha",
+            "merge_auto_retries",
         }
     )
 
@@ -91,6 +96,7 @@ class TrustDB:
                 ),
                 fix_commits_pushed=int(data.get("fix_commits_pushed", 0)),
                 fix_budget_ack_sha=data.get("fix_budget_ack_sha", ""),
+                merge_auto_retries=int(data.get("merge_auto_retries", 0)),
                 extra_fields={
                     k: v
                     for k, v in data.items()
@@ -121,6 +127,7 @@ class TrustDB:
                 "spurious_check_names": self.spurious_check_names,
                 "fix_commits_pushed": self.fix_commits_pushed,
                 "fix_budget_ack_sha": self.fix_budget_ack_sha,
+                "merge_auto_retries": self.merge_auto_retries,
             },
             indent=2,
         )
