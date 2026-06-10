@@ -16,3 +16,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mergedog"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
