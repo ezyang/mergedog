@@ -43,6 +43,12 @@ class TrustDB:
     # failures. Cleared whenever a fix commit is pushed (fresh CI
     # invalidates prior judgments).
     spurious_check_names: list[str] = field(default_factory=list)
+    # How many LLM fix commits this PR has consumed against the
+    # --max-fix-commits cap, and the human-approval SHA that budget is
+    # scoped to. Persisted so a restart can't silently grant a fresh
+    # budget; a new approval baseline (or --reassess) resets it.
+    fix_commits_pushed: int = 0
+    fix_budget_ack_sha: str = ""
     # Fields written by a newer mergedog than this one. Carried through
     # save() so that running old code against new state files doesn't
     # silently strip what the newer code persisted.
@@ -59,6 +65,8 @@ class TrustDB:
             "last_observed_failure_iso",
             "last_observed_failure_body",
             "spurious_check_names",
+            "fix_commits_pushed",
+            "fix_budget_ack_sha",
         }
     )
 
@@ -81,6 +89,8 @@ class TrustDB:
                 spurious_check_names=list(
                     data.get("spurious_check_names", [])
                 ),
+                fix_commits_pushed=int(data.get("fix_commits_pushed", 0)),
+                fix_budget_ack_sha=data.get("fix_budget_ack_sha", ""),
                 extra_fields={
                     k: v
                     for k, v in data.items()
@@ -109,6 +119,8 @@ class TrustDB:
                 "last_observed_failure_iso": self.last_observed_failure_iso,
                 "last_observed_failure_body": self.last_observed_failure_body,
                 "spurious_check_names": self.spurious_check_names,
+                "fix_commits_pushed": self.fix_commits_pushed,
+                "fix_budget_ack_sha": self.fix_budget_ack_sha,
             },
             indent=2,
         )

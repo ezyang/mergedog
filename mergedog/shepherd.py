@@ -1053,6 +1053,7 @@ def _run_operator_fix(
         return False
 
     trust.spurious_check_names = []
+    _consume_fix_budget(trust)
     if is_ghstack:
         _publish_ghstack_fix(
             pr, worktree, branch, new_sha, trust, ignore_sev=ignore_sev
@@ -1376,6 +1377,52 @@ def _merge_main_resolving_conflicts(
     return new_sha
 
 
+def _sync_fix_budget(
+    trust: TrustDB,
+    human_ack_sha: str | None,
+    *,
+    reassess: bool = False,
+    self_pr: bool = False,
+) -> int:
+    """Restore the persisted fix-commit count for the --max-fix-commits cap.
+
+    The cap is a thrash guard; an in-memory count meant every restart
+    granted a fresh budget. The count is scoped to the human approval
+    baseline: a new maintainer approval (or an explicit --reassess)
+    legitimately resets it. On self-authored PRs the "ack" is just the
+    current head -- which mergedog's own pushes move -- so there the
+    budget persists until --reassess.
+    """
+    if reassess:
+        trust.fix_budget_ack_sha = human_ack_sha or ""
+        trust.fix_commits_pushed = 0
+        trust.save()
+        return 0
+    ack = human_ack_sha or ""
+    if not self_pr and trust.fix_budget_ack_sha != ack:
+        trust.fix_budget_ack_sha = ack
+        trust.fix_commits_pushed = 0
+        trust.save()
+    elif trust.fix_commits_pushed:
+        log(
+            f"restored fix-commit count from previous run: "
+            f"{trust.fix_commits_pushed}"
+        )
+    return trust.fix_commits_pushed
+
+
+def _consume_fix_budget(trust: TrustDB) -> int:
+    """Persist one unit of fix budget.
+
+    Called *before* the push it pays for: if we're killed mid-push the
+    budget is already spent, so a restart can't turn the cap into a
+    fresh allowance (the safe failure mode for a runaway-thrash guard).
+    """
+    trust.fix_commits_pushed += 1
+    trust.save()
+    return trust.fix_commits_pushed
+
+
 def _classify_failure_body(body: str) -> str:
     if not body:
         return "none"
@@ -1568,7 +1615,9 @@ def _shepherd_body(
 
     labels.autolabel_if_needed(pr, pr_data)
 
-    fix_commits_pushed = 0
+    fix_commits_pushed = _sync_fix_budget(
+        trust, human_ack_sha, reassess=reassess, self_pr=self_pr
+    )
     max_fix_attempts_status = max_fix_commits if max_fix_commits > 0 else 0
     if max_fix_commits == 0:
         log("  fix cap:    disabled")
@@ -1687,7 +1736,7 @@ def _shepherd_body(
             sessions=sessions,
             pushed_changes=pushed_changes,
         ):
-            fix_commits_pushed += 1
+            fix_commits_pushed = trust.fix_commits_pushed
 
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
 
@@ -2370,12 +2419,11 @@ def _shepherd_body(
                         continue
                     spurious_check_names.clear()
                     trust.spurious_check_names = []
-                    trust.save()
+                    fix_commits_pushed = _consume_fix_budget(trust)
                     _publish_ghstack_fix(
                         pr, worktree, branch, new_sha, trust,
                         ignore_sev=ignore_sev,
                     )
-                    fix_commits_pushed += 1
                     last_status = None
                     continue
                 else:
@@ -2431,6 +2479,7 @@ def _shepherd_body(
                     spurious_check_names.clear()
                     trust.spurious_check_names = []
                     trust.trust(new_sha)
+                    fix_commits_pushed = _consume_fix_budget(trust)
                     # Piggyback: we're going to push and trigger fresh CI
                     # anyway, so merge origin/main while we're at it. CI
                     # then runs once on (PR + fix + main) instead of
@@ -2462,7 +2511,6 @@ def _shepherd_body(
                             merge_sha,
                             "merged main into the PR branch after the fix",
                         )
-                    fix_commits_pushed += 1
                     last_status = None
                     continue
 

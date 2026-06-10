@@ -57,5 +57,75 @@ class TestTrustDBRoundTrip(unittest.TestCase):
             self.assertEqual(reloaded.spurious_check_names, ["lint / foo"])
 
 
+class TestFixBudget(unittest.TestCase):
+    def _trust(self, tmp: Path, **kwargs) -> TrustDB:
+        with mock.patch.object(
+            state_mod, "state_file", return_value=tmp / "1.json"
+        ):
+            trust = TrustDB.load_or_create(1)
+        for k, v in kwargs.items():
+            setattr(trust, k, v)
+        return trust
+
+    def test_budget_survives_restart(self):
+        from mergedog import shepherd
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            trust = self._trust(tmp)
+            shepherd._sync_fix_budget(trust, "a" * 40)
+            shepherd._consume_fix_budget(trust)
+            shepherd._consume_fix_budget(trust)
+
+            # Simulate restart: reload from disk with the same ack SHA.
+            reloaded = self._trust(tmp)
+            count = shepherd._sync_fix_budget(reloaded, "a" * 40)
+            self.assertEqual(count, 2)
+
+    def test_new_approval_resets_budget(self):
+        from mergedog import shepherd
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            trust = self._trust(tmp)
+            shepherd._sync_fix_budget(trust, "a" * 40)
+            shepherd._consume_fix_budget(trust)
+
+            reloaded = self._trust(tmp)
+            count = shepherd._sync_fix_budget(reloaded, "b" * 40)
+            self.assertEqual(count, 0)
+
+    def test_reassess_resets_budget(self):
+        from mergedog import shepherd
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            trust = self._trust(tmp)
+            shepherd._sync_fix_budget(trust, "a" * 40)
+            shepherd._consume_fix_budget(trust)
+
+            reloaded = self._trust(tmp)
+            count = shepherd._sync_fix_budget(
+                reloaded, "a" * 40, reassess=True
+            )
+            self.assertEqual(count, 0)
+
+    def test_self_pr_keeps_budget_across_head_moves(self):
+        from mergedog import shepherd
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            trust = self._trust(tmp)
+            shepherd._sync_fix_budget(trust, "a" * 40, self_pr=True)
+            shepherd._consume_fix_budget(trust)
+
+            # Self-PR ack is the (moving) head; budget must not reset.
+            reloaded = self._trust(tmp)
+            count = shepherd._sync_fix_budget(
+                reloaded, "b" * 40, self_pr=True
+            )
+            self.assertEqual(count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
