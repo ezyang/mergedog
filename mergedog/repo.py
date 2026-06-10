@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from mergedog.log import die, log
-from mergedog.net import github_api_env_extra
+from mergedog.net import github_api_env_extra, is_transient_network_error
 from mergedog.paths import (
     REPO_DIR,
     REPO_SSH_URL,
@@ -29,21 +29,6 @@ _GIT_LOCK_TIMEOUT_SEC = 2.0
 _GIT_LOCK_MAX_BACKOFF_SEC = 0.5
 _GHSTACK_MAX_RETRIES = 3
 _GHSTACK_RETRY_DELAY_SEC = 5
-_GHSTACK_TRANSIENT_CODES = ("502", "503", "504")
-_GHSTACK_TRANSIENT_MESSAGES = (
-    "connection refused",
-    "connection reset",
-    "connection timed out",
-    "error connecting to api.github.com",
-    "failed to establish a new connection",
-    "i/o timeout",
-    "max retries exceeded",
-    "newconnectionerror",
-    "proxyerror",
-    "temporary failure",
-    "tls handshake timeout",
-    "unable to connect to proxy",
-)
 
 
 def _log_completed_process_output(proc: subprocess.CompletedProcess[str]) -> None:
@@ -58,11 +43,7 @@ def _log_completed_process_output(proc: subprocess.CompletedProcess[str]) -> Non
 def _is_transient_ghstack_failure(proc: subprocess.CompletedProcess[str]) -> bool:
     if proc.returncode == 0:
         return False
-    text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-    text_lower = text.lower()
-    return any(code in text for code in _GHSTACK_TRANSIENT_CODES) or any(
-        msg in text_lower for msg in _GHSTACK_TRANSIENT_MESSAGES
-    )
+    return is_transient_network_error(f"{proc.stdout or ''}\n{proc.stderr or ''}")
 
 
 def _run_ghstack(args: Sequence[str], *, cwd: Path) -> None:

@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from mergedog.log import log
-from mergedog.net import github_api_env_extra
+from mergedog.net import github_api_env_extra, is_transient_network_error
 from mergedog.paths import CI_LOGS_DIR, REPO_SLUG
 from mergedog.process import run
 from mergedog.project import get_project_policy
@@ -26,17 +26,6 @@ from mergedog.taint import taint, taint_dict
 REPO = REPO_SLUG
 PROJECT = get_project_policy()
 
-_GH_TRANSIENT_CODES = ("502", "504", "503")
-_GH_TRANSIENT_MESSAGES = (
-    "error connecting to api.github.com",
-    "connection reset",
-    "connection refused",
-    "connection timed out",
-    "i/o timeout",
-    "tls handshake timeout",
-    "temporary failure",
-    "unexpected eof",
-)
 _GH_STARTUP_CRASH_MESSAGES = (
     "fatal error: lfstack.push",
     "runtime: lfstack.push invalid packing",
@@ -60,11 +49,7 @@ def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
         return False
     if _is_gh_startup_crash(proc):
         return True
-    stderr = proc.stderr or ""
-    stderr_lower = stderr.lower()
-    return any(code in stderr for code in _GH_TRANSIENT_CODES) or any(
-        msg in stderr_lower for msg in _GH_TRANSIENT_MESSAGES
-    )
+    return is_transient_network_error(proc.stderr or "")
 
 
 def _candidate_gh_paths(current: str) -> list[str]:

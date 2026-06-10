@@ -6,6 +6,33 @@ import subprocess
 from functools import lru_cache
 
 
+# Output that indicates a transient network/proxy failure worth retrying.
+# Shared by the gh and ghstack retry loops so the lists can't drift.
+TRANSIENT_HTTP_CODES = ("502", "503", "504")
+TRANSIENT_MESSAGES = (
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "error connecting to api.github.com",
+    "failed to establish a new connection",
+    "i/o timeout",
+    "max retries exceeded",
+    "newconnectionerror",
+    "proxyerror",
+    "temporary failure",
+    "tls handshake timeout",
+    "unable to connect to proxy",
+    "unexpected eof",
+)
+
+
+def is_transient_network_error(text: str) -> bool:
+    lower = text.lower()
+    return any(code in text for code in TRANSIENT_HTTP_CODES) or any(
+        msg in lower for msg in TRANSIENT_MESSAGES
+    )
+
+
 _PROXY_ENV_NAMES = (
     "HTTPS_PROXY",
     "https_proxy",
