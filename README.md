@@ -81,6 +81,16 @@ overrides the clone URL; otherwise mergedog derives
 (`ci: sev`, `ciflow/trunk`, Dr. CI, autolabeling, and `pytorchmergebot`
 handoff recovery).
 
+Mux phase colors answer who can unblock a PR:
+
+| Phase | Meaning |
+|---|---|
+| 🟢 | No action from you; mergedog is working or waiting on CI/mergebot |
+| 🟡 | You can unblock easily, usually by triggering merge |
+| 🟠 | You can unblock after review/manual work, such as approving interventions |
+| 🔵 | Waiting on someone else |
+| 🔴 | HALTed or crashed; inspect the log and restart/fix manually |
+
 TUI commands (type in the input bar at the bottom):
 
 | Command | Effect |
@@ -101,6 +111,7 @@ TUI commands (type in the input bar at the bottom):
 | `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
 | `mergedog-label [on\|off]` | Toggle `mergedog` label management for future spawns |
 | `fix-cap [N\|off\|default]` | Set the fix-commit cap for future spawns (`off` disables it) |
+| `help` | Show phase colors and common commands |
 | `migrate` | Print resume instructions for moving to another host |
 | `quit` | Terminate everything |
 

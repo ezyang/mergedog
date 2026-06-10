@@ -24,6 +24,9 @@ possible." It's a status pane, not an app.
   can be Ctrl-C'd and re-fed into the mux).
 - Per-PR HALT only puts that row in error; mux + other shepherds keep
   running.
+- Phase column uses solid color emoji because they scan well. The color
+  should answer "who can unblock this?": 🟢 no action, 🟡 easy operator
+  merge, 🟠 operator review/manual work, 🔵 someone else, 🔴 halted/crashed.
 
 **How to apply:** new UI elements justify their pixels; default answer
 to "what goes here?" is "more log." No modals, confirmations, or

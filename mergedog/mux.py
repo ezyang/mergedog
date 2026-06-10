@@ -23,6 +23,7 @@ Commands typed at the bottom (enter to submit):
     cleanup | clean                   forget successful completed shepherds
     remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
+    help                              show phase meanings and commands
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
                                       every shepherd spawn
@@ -73,6 +74,7 @@ COMMAND_SUGGESTIONS = [
     "clean all",
     "fix ",
     "fix-cap ",
+    "help",
     "ignore-sev ",
     "log ",
     "mark-spurious ",
@@ -88,6 +90,12 @@ COMMAND_SUGGESTIONS = [
     "restart dead",
     "status",
 ]
+
+PHASE_NO_ACTION = "🟢"
+PHASE_YOUR_EASY_ACTION = "🟡"
+PHASE_YOUR_REVIEW_ACTION = "🟠"
+PHASE_EXTERNAL_ACTION = "🔵"
+PHASE_HALTED = "🔴"
 
 
 class HistoryInput(Input):
@@ -449,31 +457,66 @@ def _phase_label(
     stale: bool = False,
 ) -> str:
     if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
-        return "🔴"
+        return PHASE_HALTED
     if stale:
-        return "🟢"
+        return PHASE_NO_ACTION
     if structured is not None:
         category = structured.get("category")
-        if category == "blocked":
-            return "🔴"
-        if category == "ready":
-            return "🟡"
-        if category == "waiting":
-            return "🟢"
-        if category == "action":
-            return "🟢"
-        if category == "done":
-            return ""
         phase = structured.get("phase")
-        if phase == "halted":
-            return "🔴"
-        if phase == "ready":
-            return "🟡"
-        if phase == "complete":
+        if category == "done" or phase == "complete":
             return ""
+        if category == "blocked":
+            return PHASE_HALTED
+        if phase == "halted":
+            return PHASE_HALTED
+        if _has_user_action(structured):
+            if _user_action_needs_review(structured):
+                return PHASE_YOUR_REVIEW_ACTION
+            return PHASE_YOUR_EASY_ACTION
+        if _waiting_on_external_human(structured):
+            return PHASE_EXTERNAL_ACTION
+        if category == "ready":
+            return PHASE_YOUR_EASY_ACTION
+        if category == "waiting":
+            return PHASE_NO_ACTION
+        if category == "action":
+            return PHASE_NO_ACTION
+        if phase == "ready":
+            return PHASE_YOUR_EASY_ACTION
     if rc is None:
-        return "🟢"
+        return PHASE_NO_ACTION
     return ""
+
+
+def _status_text_field(structured: dict, key: str) -> str:
+    value = structured.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _status_int_field(structured: dict, key: str) -> int:
+    value = structured.get(key)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    return 0
+
+
+def _has_user_action(structured: dict) -> bool:
+    return bool(_status_text_field(structured, "user_action"))
+
+
+def _user_action_needs_review(structured: dict) -> bool:
+    if _status_text_field(structured, "waiting_on") == "approval":
+        return True
+    if structured.get("handoff_comment_ok") is False:
+        return True
+    return _status_int_field(structured, "intervention_count") > 0
+
+
+def _waiting_on_external_human(structured: dict) -> bool:
+    waiting_on = _status_text_field(structured, "waiting_on")
+    return waiting_on in {"approval", "human_merge", "reviewer", "maintainer"}
 
 
 def _read_mux_prs() -> list[int]:
@@ -682,7 +725,7 @@ class MuxApp(App):
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
                 "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | clean | "
                 "remove <pr> | log <pr> | fix-cap | mergedog-label | "
-                "migrate | quit"
+                "help | migrate | quit"
             ),
             suggester=SuggestFromList(COMMAND_SUGGESTIONS),
         )
@@ -1064,7 +1107,7 @@ class MuxApp(App):
                 structured = None
                 stale = False
                 self._pr_status.pop(job, None)
-                phase = "🟢"
+                phase = PHASE_NO_ACTION
                 status = cleanup_status.get(job, "cleanup: queued")
             else:
                 structured = read_status(pr)
@@ -1124,6 +1167,27 @@ class MuxApp(App):
     # ------------------------------------------------------------------
     # Command dispatch (shared by TUI input and IPC server)
     # ------------------------------------------------------------------
+
+    def _format_help(self) -> str:
+        lines = [
+            (
+                f"phases: {PHASE_NO_ACTION} no action; "
+                f"{PHASE_YOUR_EASY_ACTION} you can merge; "
+                f"{PHASE_YOUR_REVIEW_ACTION} review/approve first; "
+                f"{PHASE_EXTERNAL_ACTION} waiting on someone else; "
+                f"{PHASE_HALTED} halted/crashed"
+            ),
+            (
+                "commands: add <pr> | restart <pr|all|dead> | "
+                "rebase <pr|all> | reassess <pr> | "
+                "fix <pr> <trusted request>"
+            ),
+            (
+                "commands: mark-spurious <pr> | cancel <pr> | cleanup | "
+                "remove <pr> | log <pr> | status | migrate | quit"
+            ),
+        ]
+        return "\n".join(lines)
 
     def _dispatch_command(self, line: str) -> str:
         """Parse and execute a mux command.  Returns a response string."""
@@ -1230,6 +1294,8 @@ class MuxApp(App):
                 return self._do_fix_cap(rest)
             elif cmd == "status":
                 return self._format_status()
+            elif cmd in ("help", "h", "?"):
+                return self._format_help()
             elif cmd in ("quit", "q", "exit"):
                 return "use the TUI to quit the mux"
             else:
@@ -1261,7 +1327,7 @@ class MuxApp(App):
             if job in cleanup_jobs:
                 structured = None
                 stale = False
-                phase = "🟢"
+                phase = PHASE_NO_ACTION
                 status_message = cleanup_status.get(job, "cleanup: queued")
             else:
                 structured = read_status(pr)

@@ -157,6 +157,69 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "waiting for CI: 1/2 checks done")
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
 
+    def test_phase_label_marks_easy_operator_merge(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "ready",
+            "user_action": "merge when satisfied",
+            "intervention_count": 0,
+        }
+
+        phase = mux._phase_label(sidecar, rc=None)
+
+        self.assertEqual(phase, "🟡")
+
+    def test_phase_label_marks_review_required_operator_action(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "ready",
+            "user_action": "review mergedog handoff and merge when satisfied",
+            "intervention_count": 2,
+        }
+
+        phase = mux._phase_label(sidecar, rc=None)
+
+        self.assertEqual(phase, "🟠")
+
+    def test_phase_label_marks_approval_as_review_required(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "ready",
+            "waiting_on": "approval",
+            "user_action": "approve after reviewing local mergedog log",
+        }
+
+        phase = mux._phase_label(sidecar, rc=None)
+
+        self.assertEqual(phase, "🟠")
+
+    def test_phase_label_marks_external_human_when_no_user_action(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "waiting",
+            "waiting_on": "approval",
+            "message": "waiting for maintainer approval",
+        }
+
+        phase = mux._phase_label(sidecar, rc=None)
+
+        self.assertEqual(phase, "🔵")
+
+    def test_help_documents_phase_meanings(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+
+        help_text = app._dispatch_command("help")
+
+        self.assertIn("🟢 no action", help_text)
+        self.assertIn("🟡 you can merge", help_text)
+        self.assertIn("🟠 review/approve first", help_text)
+        self.assertIn("🔵 waiting on someone else", help_text)
+        self.assertIn("🔴 halted/crashed", help_text)
+
     def test_completed_not_actionable_status_is_retained(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"

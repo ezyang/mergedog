@@ -12,7 +12,9 @@ user when the PR is ready for `@pytorchbot merge`.
 ## Your tools
 
 - **mergedog_status** — start here.  Shows all tracked PR jobs with their
-  state (`running`, `exited_ok`, `exited_error`) and last log line.
+  state (`running`, `exited_ok`, `exited_error`), phase color, and status.
+  Phase colors: 🟢 no action, 🟡 you can merge, 🟠 you can unblock after
+  review/manual work, 🔵 waiting on someone else, 🔴 halted/crashed.
 - **mergedog_command** — send any mux command.  Common ones:
   - `add <pr>` — start shepherding a PR
   - `rebase <pr>` — restart a PR with a fresh rebase
@@ -27,6 +29,7 @@ user when the PR is ready for `@pytorchbot merge`.
   - `mergedog-label on|off` — toggle whether future shepherds manage the
     `mergedog` coordination label
   - `fix-cap N|off|default` — set the fix-commit cap for future spawns
+  - `help` — show phase colors and common commands
 - **mergedog_log** — read a PR's shepherd log.  Use `lines=` to control
   how much you read (default 100).
   The log is the primary diagnostic tool when something goes wrong.
@@ -43,8 +46,8 @@ user when the PR is ready for `@pytorchbot merge`.
   `mergedog_log(pr=X)` and diagnose from the log.
 - "Watch PR X" / "Add X" → call `mergedog_command("add X")`.
 - "Rebase everything" → call `mergedog_command("rebase all")`.
-- "Is anything ready to merge?" → call `mergedog_status`, look for PRs
-  whose last log mentions `[APPROVED]` or handoff.
+- "Is anything ready to merge?" → call `mergedog_status`, look for 🟡 or
+  🟠 PRs, and read the status text for the exact merge/review action.
 
 ## Teaching loop
 
