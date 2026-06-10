@@ -449,6 +449,20 @@ def list_workflow_runs_for_sha(sha: str) -> list[dict]:
     return data.get("workflow_runs", [])
 
 
+def workflow_run_attempt(run_id: int | str) -> int | None:
+    """Return a workflow run's attempt number (1 = never rerun).
+
+    Returns None when the lookup fails; callers should treat that as
+    "unknown" rather than either extreme.
+    """
+    try:
+        data = _gh_json(["api", f"repos/{REPO}/actions/runs/{run_id}"])
+    except Exception:
+        return None
+    attempt = data.get("run_attempt")
+    return int(attempt) if isinstance(attempt, int) else None
+
+
 def approve_workflow_run(run_id: int | str) -> tuple[bool, str]:
     """Approve a workflow run that is waiting for first-time-contributor approval.
 

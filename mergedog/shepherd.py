@@ -284,10 +284,11 @@ def _try_interventions(
     Iterates over ``failed`` (the trimmed log excerpts the shepherd would
     otherwise pass to claude), matches each against
     :data:`mergedog.interventions.INTERVENTIONS`, and on a hit calls
-    ``gh run rerun --failed`` for the underlying workflow run. Records
-    the run id in ``intervened_run_ids`` so we don't repeatedly rerun
-    the same run -- if the failure persists past one rerun, claude
-    takes over.
+    ``gh run rerun --failed`` for the underlying workflow run. Bounded to
+    one rerun per run: ``intervened_run_ids`` catches repeats within this
+    process, and GitHub's ``run_attempt`` catches reruns from a previous
+    (restarted) shepherd -- if the failure persists past one rerun,
+    claude takes over.
 
     Returns True if at least one rerun was successfully kicked off, so
     the caller can reset its status cache and resume polling instead of
@@ -310,6 +311,16 @@ def _try_interventions(
                 f"(run {run_id}); already retried this run, falling "
                 f"through to claude"
             )
+            continue
+        attempt = github.workflow_run_attempt(run_id)
+        if attempt is not None and attempt > 1:
+            log(
+                f"intervention {itv.name!r} matched on {name!r} "
+                f"(run {run_id}), but the run is already on attempt "
+                f"{attempt} (rerun before this shepherd started); "
+                f"falling through to claude"
+            )
+            intervened_run_ids.add(run_id)
             continue
         log(
             f"intervention {itv.name!r} matched on {name!r}; "
