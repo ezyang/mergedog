@@ -405,8 +405,105 @@ class TestActionableLintFailureNames(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestRecoverPendingGhstackPublish(unittest.TestCase):
+    def _trust(self, **kwargs):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1, **kwargs)
+        trust.save = mock.Mock()
+        return trust
+
+    def test_noop_without_pending_record(self):
+        trust = self._trust()
+        with mock.patch.object(shepherd.repo, "fetch_ghstack_orig") as fetch:
+            shepherd._recover_pending_ghstack_publish(
+                trust, {"headRefOid": "a" * 40}, "gh/u/1/head"
+            )
+        fetch.assert_not_called()
+        trust.save.assert_not_called()
+
+    def test_trusts_head_when_orig_patch_id_matches(self):
+        trust = self._trust(pending_publish_orig_sha="b" * 40)
+        with mock.patch.object(
+            shepherd.repo, "fetch_ghstack_orig", return_value="c" * 40
+        ), mock.patch.object(
+            shepherd.repo, "patch_id_matches_any", return_value=True
+        ) as match:
+            shepherd._recover_pending_ghstack_publish(
+                trust, {"headRefOid": "a" * 40}, "gh/u/1/head"
+            )
+        match.assert_called_once_with("c" * 40, ["b" * 40])
+        self.assertIn("a" * 40, trust.trusted_shas)
+        self.assertEqual(trust.pending_publish_orig_sha, "")
+
+    def test_leaves_head_untrusted_on_mismatch(self):
+        trust = self._trust(pending_publish_orig_sha="b" * 40)
+        with mock.patch.object(
+            shepherd.repo, "fetch_ghstack_orig", return_value="c" * 40
+        ), mock.patch.object(
+            shepherd.repo, "patch_id_matches_any", return_value=False
+        ):
+            shepherd._recover_pending_ghstack_publish(
+                trust, {"headRefOid": "a" * 40}, "gh/u/1/head"
+            )
+        self.assertNotIn("a" * 40, trust.trusted_shas)
+        # Record is cleared either way: it described a publish that no
+        # longer matches reality.
+        self.assertEqual(trust.pending_publish_orig_sha, "")
+
+    def test_clears_record_when_head_already_trusted(self):
+        trust = self._trust(
+            pending_publish_orig_sha="b" * 40,
+            trusted_shas=["a" * 40],
+        )
+        with mock.patch.object(shepherd.repo, "fetch_ghstack_orig") as fetch:
+            shepherd._recover_pending_ghstack_publish(
+                trust, {"headRefOid": "a" * 40}, "gh/u/1/head"
+            )
+        fetch.assert_not_called()
+        self.assertEqual(trust.pending_publish_orig_sha, "")
+
+    def test_keeps_record_when_orig_fetch_fails(self):
+        trust = self._trust(pending_publish_orig_sha="b" * 40)
+        with mock.patch.object(
+            shepherd.repo,
+            "fetch_ghstack_orig",
+            side_effect=RuntimeError("network down"),
+        ):
+            shepherd._recover_pending_ghstack_publish(
+                trust, {"headRefOid": "a" * 40}, "gh/u/1/head"
+            )
+        self.assertEqual(trust.pending_publish_orig_sha, "b" * 40)
+        trust.save.assert_not_called()
+
+
+class TestGhstackSubmitTrusted(unittest.TestCase):
+    def test_records_orig_before_submit_and_clears_after(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+        recorded_at_submit: list[str] = []
+
+        def fake_submit(worktree, message):
+            recorded_at_submit.append(trust.pending_publish_orig_sha)
+
+        with mock.patch.object(
+            shepherd.repo, "head_sha", return_value="b" * 40
+        ), mock.patch.object(
+            shepherd.repo, "ghstack_submit", side_effect=fake_submit
+        ), mock.patch.object(
+            shepherd.repo, "fetch_ghstack_head", return_value="a" * 40
+        ):
+            new_head = shepherd._ghstack_submit_trusted(
+                Path("/tmp/wt"), "gh/u/1/head", trust, "msg"
+            )
+
+        self.assertEqual(new_head, "a" * 40)
+        # The pending record must be on disk before ghstack pushes.
+        self.assertEqual(recorded_at_submit, ["b" * 40])
+        self.assertEqual(trust.pending_publish_orig_sha, "")
+        self.assertIn("a" * 40, trust.trusted_shas)
 
 
 class TestLogRestoredState(unittest.TestCase):
@@ -453,3 +550,7 @@ class TestClassifyFailureBody(unittest.TestCase):
             shepherd._classify_failure_body("something else"),
             "unclassified",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -819,9 +819,12 @@ def _publish_ghstack_parent_rebase(
                 f"{_llm_label()} aborted the cherry-pick; halting for "
                 "human intervention"
             )
-    repo.ghstack_submit(worktree, "Propagate parent update downstream")
-    new_head_sha = repo.fetch_ghstack_head(dep.child_head_ref)
-    trust.trust(new_head_sha)
+    new_head_sha = _ghstack_submit_trusted(
+        worktree,
+        dep.child_head_ref,
+        trust,
+        "Propagate parent update downstream",
+    )
     trust.spurious_check_names = []
     trust.save()
     log(f"ghstack submitted; new {dep.child_head_ref} = {new_head_sha[:12]}")
@@ -976,6 +979,70 @@ def _safe_push(
     _wait_for_pr_head(pr, new_sha)
 
 
+def _ghstack_submit_trusted(
+    worktree: Path, head_ref: str, trust: TrustDB, message: str
+) -> str:
+    """``ghstack submit`` and trust the resulting /head, restart-safely.
+
+    We can't know the synthetic /head SHA until after ghstack pushes, so
+    unlike regular pushes the new head can't be trusted up front. Record
+    the local /orig commit first: a kill inside the push->fetch->trust
+    window would otherwise leave the PR head permanently untrusted (the
+    next run halts with "head moved to untrusted commit"). On restart,
+    ``_recover_pending_ghstack_publish`` re-trusts a head whose /orig
+    patch-id matches this record.
+    """
+    trust.pending_publish_orig_sha = repo.head_sha(worktree)
+    trust.save()
+    repo.ghstack_submit(worktree, message)
+    new_head_sha = repo.fetch_ghstack_head(head_ref)
+    trust.pending_publish_orig_sha = ""
+    trust.trust(new_head_sha)
+    trust.save()
+    return new_head_sha
+
+
+def _recover_pending_ghstack_publish(
+    trust: TrustDB, pr_data: dict, head_ref: str
+) -> None:
+    """Re-trust a PR head left dangling by an interrupted ghstack submit.
+
+    ghstack may rewrite the /orig commit on submit (source-id metadata),
+    so the recovery matches by patch-id rather than SHA: if origin's
+    current /orig carries the same diff we recorded before pushing, the
+    publish was ours and the synthetic /head it produced is trusted.
+    """
+    pending = trust.pending_publish_orig_sha
+    if not pending:
+        return
+    head_sha = str(pr_data.get("headRefOid") or "")
+    if head_sha and not trust.is_trusted(head_sha):
+        try:
+            orig_sha = repo.fetch_ghstack_orig(head_ref)
+        except Exception as e:
+            # Leave the record in place: trust verification will halt
+            # below anyway, and a later restart can still recover.
+            log(
+                f"WARNING: could not fetch /orig to verify interrupted "
+                f"ghstack publish: {e}"
+            )
+            return
+        if repo.patch_id_matches_any(orig_sha, [pending]):
+            trust.trust(head_sha)
+            log(
+                f"recovered interrupted ghstack publish: /orig "
+                f"{orig_sha[:12]} matches the commit recorded before the "
+                f"submit; trusting head {head_sha[:12]}"
+            )
+        else:
+            log(
+                "interrupted ghstack publish record does not match "
+                "origin's current /orig; leaving head untrusted"
+            )
+    trust.pending_publish_orig_sha = ""
+    trust.save()
+
+
 def _publish_ghstack_fix(
     pr: int,
     worktree: Path,
@@ -999,9 +1066,9 @@ def _publish_ghstack_fix(
     _wait_for_no_active_sev(
         "re-publishing via ghstack submit", ignore_sev=ignore_sev
     )
-    repo.ghstack_submit(worktree, fix_message)
-    new_head_sha = repo.fetch_ghstack_head(head_ref)
-    trust.trust(new_head_sha)
+    new_head_sha = _ghstack_submit_trusted(
+        worktree, head_ref, trust, fix_message
+    )
     log(
         f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}"
     )
@@ -1180,9 +1247,9 @@ def _rebase_ghstack_onto_main(
     _wait_for_no_active_sev(
         "re-publishing rebased /orig via ghstack submit", ignore_sev=ignore_sev
     )
-    repo.ghstack_submit(worktree, "Rebase onto origin/main")
-    new_head_sha = repo.fetch_ghstack_head(head_ref)
-    trust.trust(new_head_sha)
+    new_head_sha = _ghstack_submit_trusted(
+        worktree, head_ref, trust, "Rebase onto origin/main"
+    )
     log(f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}")
     _wait_for_pr_head(pr, new_head_sha)
 
@@ -1516,6 +1583,16 @@ def _log_restored_state(trust: TrustDB) -> None:
             f"{trust.last_observed_failure_iso} ({kind}); older mergebot "
             f"comments will not re-trigger recovery"
         )
+    if trust.merge_auto_retries:
+        restored.append(
+            f"  merge auto-retries used: {trust.merge_auto_retries}"
+        )
+    if trust.pending_publish_orig_sha:
+        restored.append(
+            f"  interrupted ghstack publish of /orig "
+            f"{trust.pending_publish_orig_sha[:12]} (will verify and "
+            f"re-trust)"
+        )
     if restored:
         log("restored state from previous run:")
         for line in restored:
@@ -1621,6 +1698,11 @@ def _shepherd_body(
     if not is_ghstack:
         assert fork_remote is not None and fork_url is not None
         repo.add_fork_remote(fork_remote, fork_url)
+    elif trust.pending_publish_orig_sha:
+        # A previous run died between ``ghstack submit`` and trusting the
+        # resulting /head. Re-establish trust before the approval seeding
+        # and head-trust checks below, which would otherwise halt.
+        _recover_pending_ghstack_publish(trust, pr_data, branch)
 
     viewer = github.viewer_login()
     self_pr = github.is_self_pr(pr_data, viewer)

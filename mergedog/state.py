@@ -53,6 +53,12 @@ class TrustDB:
     # failures. Persisted so restarts can't grant a fresh budget and
     # spam the merge command during an outage. Reset by --reassess.
     merge_auto_retries: int = 0
+    # The /orig commit a ghstack submit is about to publish. Between
+    # ghstack's push and trusting the resulting /head SHA there is a
+    # window where a kill leaves the PR head untrusted (and the next run
+    # halting); a restart re-establishes trust when origin's /orig
+    # patch-id matches this record. Cleared once the publish is trusted.
+    pending_publish_orig_sha: str = ""
     # Fields written by a newer mergedog than this one. Carried through
     # save() so that running old code against new state files doesn't
     # silently strip what the newer code persisted.
@@ -72,6 +78,7 @@ class TrustDB:
             "fix_commits_pushed",
             "fix_budget_ack_sha",
             "merge_auto_retries",
+            "pending_publish_orig_sha",
         }
     )
 
@@ -97,6 +104,9 @@ class TrustDB:
                 fix_commits_pushed=int(data.get("fix_commits_pushed", 0)),
                 fix_budget_ack_sha=data.get("fix_budget_ack_sha", ""),
                 merge_auto_retries=int(data.get("merge_auto_retries", 0)),
+                pending_publish_orig_sha=data.get(
+                    "pending_publish_orig_sha", ""
+                ),
                 extra_fields={
                     k: v
                     for k, v in data.items()
@@ -128,6 +138,7 @@ class TrustDB:
                 "fix_commits_pushed": self.fix_commits_pushed,
                 "fix_budget_ack_sha": self.fix_budget_ack_sha,
                 "merge_auto_retries": self.merge_auto_retries,
+                "pending_publish_orig_sha": self.pending_publish_orig_sha,
             },
             indent=2,
         )

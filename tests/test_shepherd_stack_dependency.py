@@ -14,6 +14,7 @@ class _Trust:
         self.trusted_shas = []
         self.head_branch = None
         self.head_repo_clone_url = None
+        self.pending_publish_orig_sha = ""
 
     def is_trusted(self, sha):
         return self.trusted or sha in self.trusted_shas
@@ -329,6 +330,8 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         ) as set_worktree, mock.patch.object(
             shepherd.repo, "ghstack_cherry_pick"
         ) as cherry_pick, mock.patch.object(
+            shepherd.repo, "head_sha", return_value="C_NEW_ORIG"
+        ), mock.patch.object(
             shepherd.repo, "ghstack_submit"
         ) as submit, mock.patch.object(
             shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
@@ -352,6 +355,7 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         )
         self.assertEqual(trust.trusted_shas, ["C_NEW_HEAD"])
         self.assertEqual(trust.spurious_check_names, [])
+        self.assertEqual(trust.pending_publish_orig_sha, "")
         wait_head.assert_called_once_with(101, "C_NEW_HEAD")
 
     def test_landed_parent_replay_uses_merge_commit_base(self):
@@ -384,6 +388,8 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
             shepherd.repo, "set_worktree_to_sha"
         ) as set_worktree, mock.patch.object(
             shepherd.repo, "ghstack_cherry_pick"
+        ), mock.patch.object(
+            shepherd.repo, "head_sha", return_value="C_NEW_ORIG"
         ), mock.patch.object(
             shepherd.repo, "ghstack_submit"
         ), mock.patch.object(
