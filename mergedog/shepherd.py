@@ -21,6 +21,7 @@ from mergedog.config import get_llm_config
 from mergedog.handoff import (
     ClaudeSession,
     PushedChange,
+    is_cla_merge_failure,
     is_merge_conflict_failure,
     is_retryable_merge_failure,
     latest_mergebot_event,
@@ -1505,6 +1506,8 @@ def _consume_fix_budget(trust: TrustDB) -> int:
 def _classify_failure_body(body: str) -> str:
     if not body:
         return "none"
+    if is_cla_merge_failure(body):
+        return "CLA"
     if is_merge_conflict_failure(body):
         return "merge conflict"
     if is_retryable_merge_failure(body):
@@ -2752,6 +2755,7 @@ def _shepherd_body(
             log("ALL CI GREEN.")
             ready_for_merge = last_approved is not False
             approval_actionable = not self_pr
+            cla_blocked = is_cla_merge_failure(trust.last_observed_failure_body)
             if suppressed_failed_count:
                 plural = "" if suppressed_failed_count == 1 else "s"
                 ci_green_phrase = (
@@ -2760,29 +2764,34 @@ def _shepherd_body(
                 )
             else:
                 ci_green_phrase = "CI is green"
-            ready_message = (
-                f"ready for human merge: {ci_green_phrase}"
-                if ready_for_merge
-                else f"waiting for maintainer approval: {ci_green_phrase}"
-            )
-            ready_user_action = (
-                "review mergedog handoff and merge when satisfied"
-                if ready_for_merge
-                else (
+            if cla_blocked:
+                ready_message = f"waiting for contributor CLA: {ci_green_phrase}"
+                ready_user_action = None
+                ready_category = "waiting"
+                ready_waiting_on = "contributor"
+            elif ready_for_merge:
+                ready_message = f"ready for human merge: {ci_green_phrase}"
+                ready_user_action = (
+                    "review mergedog handoff and merge when satisfied"
+                )
+                ready_category = "ready"
+                ready_waiting_on = None
+            else:
+                ready_message = (
+                    f"waiting for maintainer approval: {ci_green_phrase}"
+                )
+                ready_user_action = (
                     "approve the PR after reviewing mergedog interventions"
                     if approval_actionable
                     else None
                 )
-            )
+                ready_category = "ready" if approval_actionable else "waiting"
+                ready_waiting_on = "approval"
             _write_status_best_effort(
                 pr,
                 phase="ready",
-                category=(
-                    "ready"
-                    if ready_for_merge or approval_actionable
-                    else "waiting"
-                ),
-                waiting_on=None if ready_for_merge else "approval",
+                category=ready_category,
+                waiting_on=ready_waiting_on,
                 user_action=ready_user_action,
                 message=_status_with_interventions(
                     ready_message, intervention_count
@@ -2836,11 +2845,23 @@ def _shepherd_body(
             if PROJECT.merge_command
             else "merge "
         )
-        log(
-            "Hand off to a human reviewer; have them "
-            f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}."
-        )
-        if last_approved is False:
+        cla_blocked = is_cla_merge_failure(trust.last_observed_failure_body)
+        if cla_blocked:
+            log(
+                "Hand off to a human reviewer after the contributor CLA is "
+                f"complete: {pr_data.get('url', f'PR #{pr}')}."
+            )
+        else:
+            log(
+                "Hand off to a human reviewer; have them "
+                f"{merge_instruction}{pr_data.get('url', f'PR #{pr}')}."
+            )
+        if cla_blocked:
+            handoff_category = "waiting"
+            handoff_waiting_on = "contributor"
+            handoff_user_action = None
+            handoff_message = "waiting for contributor CLA"
+        elif last_approved is False:
             approval_actionable = not self_pr
             handoff_category = "ready" if approval_actionable else "waiting"
             handoff_waiting_on = "approval"
@@ -2900,6 +2921,7 @@ def _shepherd_body(
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
             approval_actionable=not self_pr,
+            cla_blocked=cla_blocked,
         )
         if result == "closed":
             complete(

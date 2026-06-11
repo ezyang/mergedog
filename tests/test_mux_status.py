@@ -209,6 +209,19 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         self.assertEqual(phase, "🔵")
 
+    def test_phase_label_marks_contributor_wait_as_external(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "waiting",
+            "waiting_on": "contributor",
+            "message": "waiting for contributor CLA",
+        }
+
+        phase = mux._phase_label(sidecar, rc=None)
+
+        self.assertEqual(phase, "🔵")
+
     def test_help_documents_phase_meanings(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
 

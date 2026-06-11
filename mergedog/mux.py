@@ -516,7 +516,13 @@ def _user_action_needs_review(structured: dict) -> bool:
 
 def _waiting_on_external_human(structured: dict) -> bool:
     waiting_on = _status_text_field(structured, "waiting_on")
-    return waiting_on in {"approval", "human_merge", "reviewer", "maintainer"}
+    return waiting_on in {
+        "approval",
+        "contributor",
+        "human_merge",
+        "reviewer",
+        "maintainer",
+    }
 
 
 def _read_mux_prs() -> list[int]:

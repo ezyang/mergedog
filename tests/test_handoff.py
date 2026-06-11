@@ -197,6 +197,16 @@ class TestHandoffComments(unittest.TestCase):
             "2026-05-08T15:00:00Z",
         )
 
+    def test_detects_easycla_merge_failure(self):
+        body = (
+            "## Merge failed\n"
+            "**Reason**: 1 mandatory check(s) are pending/not yet run. "
+            "The first few are:\n"
+            "- EasyCLA\n"
+        )
+
+        self.assertTrue(handoff.is_cla_merge_failure(body))
+
     def test_handoff_status_waits_for_approval_when_not_approved(self):
         with mock.patch.object(handoff, "write_status") as write_status:
             handoff._write_handoff_status(
@@ -461,6 +471,63 @@ class TestWatchStackPostHandoff(unittest.TestCase):
             kwargs["suppression_warning"],
             "suppression list differs from Dr. CI",
         )
+
+    def test_handoff_status_marks_cla_as_contributor_wait(self):
+        with mock.patch.object(handoff, "write_status") as write_status:
+            handoff._write_handoff_status(
+                101,
+                approved=True,
+                merging=False,
+                intervention_count=0,
+                cla_blocked=True,
+            )
+
+        kwargs = write_status.call_args.kwargs
+        self.assertEqual(kwargs["category"], "waiting")
+        self.assertEqual(kwargs["waiting_on"], "contributor")
+        self.assertIsNone(kwargs["user_action"])
+        self.assertIn("waiting for contributor CLA", kwargs["message"])
+
+    def test_watch_post_handoff_reports_cla_wait_instead_of_ready(self):
+        pr_states = [
+            {
+                "number": 101,
+                "state": "OPEN",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "CLEAN",
+            },
+            {
+                "number": 101,
+                "state": "CLOSED",
+                "reviewDecision": "APPROVED",
+                "labels": [],
+                "mergeStateStatus": "CLEAN",
+            },
+        ]
+
+        with (
+            mock.patch.object(handoff.github, "get_pr", side_effect=pr_states),
+            mock.patch.object(handoff.github, "get_pr_comments", return_value=[]),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                return_value=[{"name": "test", "bucket": "pass"}],
+            ),
+            mock.patch.object(handoff, "write_status") as write_status,
+            mock.patch.object(handoff.time, "sleep"),
+        ):
+            result = handoff.watch_post_handoff(
+                101, "2026-05-08T13:00:00Z", cla_blocked=True
+            )
+
+        self.assertEqual(result, ("closed", None, None))
+        first = write_status.call_args_list[0].kwargs
+        self.assertEqual(first["phase"], "ready")
+        self.assertEqual(first["category"], "waiting")
+        self.assertEqual(first["waiting_on"], "contributor")
+        self.assertIsNone(first["user_action"])
+        self.assertIn("waiting for contributor CLA", first["message"])
 
     def test_watch_post_handoff_reports_pending_ci_instead_of_ready(self):
         pr_states = [

@@ -407,6 +407,11 @@ _RETRYABLE_FAILURE_PATTERNS = [
 ]
 
 
+def is_cla_merge_failure(body: str) -> bool:
+    """True when pytorchmergebot failed because EasyCLA is not satisfied."""
+    return "EasyCLA" in body
+
+
 def is_retryable_merge_failure(body: str) -> bool:
     """True when a pytorchmergebot "Merge failed" is an infra flake."""
     return any(pat in body for pat in _RETRYABLE_FAILURE_PATTERNS)
@@ -646,12 +651,18 @@ def _write_handoff_status(
     handoff_comment_ok: bool | None = None,
     suppression_warning: str | None = None,
     approval_actionable: bool = True,
+    cla_blocked: bool = False,
 ) -> None:
     if merging:
         category = "waiting"
         waiting_on = "mergebot"
         user_action = None
         message = "mergebot picked up the merge; waiting for outcome"
+    elif cla_blocked:
+        category = "waiting"
+        waiting_on = "contributor"
+        user_action = None
+        message = "waiting for contributor CLA"
     elif approved:
         category = "ready"
         waiting_on = None
@@ -735,6 +746,7 @@ def watch_post_handoff(
     handoff_comment_ok: bool | None = None,
     suppression_warning: str | None = None,
     approval_actionable: bool = True,
+    cla_blocked: bool = False,
 ) -> tuple[str, str | None, str | None]:
     """Block after handoff, returning when there's something to react to.
 
@@ -782,6 +794,7 @@ def watch_post_handoff(
                 handoff_comment_ok=handoff_comment_ok,
                 suppression_warning=suppression_warning,
                 approval_actionable=approval_actionable,
+                cla_blocked=cla_blocked,
             )
             msg = _merging_progress_line(pr)
             if msg != last_merging_msg:
@@ -829,6 +842,7 @@ def watch_post_handoff(
                 handoff_comment_ok=handoff_comment_ok,
                 suppression_warning=suppression_warning,
                 approval_actionable=approval_actionable,
+                cla_blocked=cla_blocked,
             )
             last_merging_msg = None
             if kind == "started":
@@ -845,11 +859,19 @@ def watch_post_handoff(
                     )
                 elif new_state == "awaiting_merge":
                     if PROJECT.has_pytorch_merge_bot:
-                        log(
-                            f"handed off; awaiting `{PROJECT.merge_command}`. "
-                            "Will recover on a Merge failed reply, or "
-                            "exit completed on close/merge."
-                        )
+                        if cla_blocked:
+                            log(
+                                "handed off; waiting for contributor CLA "
+                                f"before `{PROJECT.merge_command}`. "
+                                "Will recover on a Merge failed reply, or "
+                                "exit completed on close/merge."
+                            )
+                        else:
+                            log(
+                                f"handed off; awaiting `{PROJECT.merge_command}`. "
+                                "Will recover on a Merge failed reply, or "
+                                "exit completed on close/merge."
+                            )
                     else:
                         log("handed off; awaiting human merge.")
                 else:
