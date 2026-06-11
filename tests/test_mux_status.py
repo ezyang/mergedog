@@ -1328,6 +1328,198 @@ class TestMuxJobPersistence(unittest.TestCase):
         self.assertEqual(parked, {})
         self.assertEqual(skipped, [])
 
+    def test_resolve_initial_jobs_resumes_signal_killed_jobs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps(
+                    [
+                        {"kind": "pr", "pr": 123, "rc": -15},
+                        {"kind": "pr", "pr": 456, "rc": 143},
+                    ]
+                )
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                jobs, parked, skipped = mux._resolve_initial_jobs(
+                    [], resume_known=True
+                )
+
+        self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
+        self.assertEqual(parked, {})
+        self.assertEqual(skipped, [])
+
+    def test_refresh_records_halt_exit_code_eagerly(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            log_path = root / "123.log"
+            log_path.write_text("[12:00:00] HALT: manual intervention\n")
+            job = mux._pr_job(123)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(1), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=None),
+            ):
+                mux._write_mux_jobs([job])
+                app._refresh()
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123, "rc": 1}])
+
+    def test_refresh_clears_stale_halt_record_for_running_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
+            )
+            log_path = root / "123.log"
+            log_path.write_text("[12:00:00] starting\n")
+            job = mux._pr_job(123)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(None), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=None),
+            ):
+                app._refresh()
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+
+    def test_refresh_does_not_resurrect_forgotten_jobs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            log_path = root / "123.log"
+            log_path.write_text("[12:00:00] HALT: manual intervention\n")
+            job = mux._pr_job(123)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(1), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+            app._pr_status = {}
+            table = _FakeTable()
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=None),
+            ):
+                mux._write_mux_jobs([])
+                app._refresh()
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [])
+
+    def test_bulk_restart_clears_persisted_exit_code(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
+            )
+            job = mux._pr_job(123)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {}
+            app._parked_jobs = {job: 1}
+            app._unresumable_jobs = set()
+            app._pr_titles = {}
+            app.ignore_sev = False
+            app.manage_mergedog_label = False
+            app.gchat_to = None
+            app.repo_slug = None
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_spawn") as spawn,
+                mock.patch.object(app, "notify"),
+            ):
+                spawn.return_value = (
+                    _FakeProc(None),
+                    object(),
+                    Path("123.log"),
+                )
+                app._restart_jobs([job], [], "restarting", "none")
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+        self.assertEqual(app._parked_jobs, {})
+
+    def test_on_unmount_does_not_park_signal_killed_jobs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            job = mux._pr_job(123)
+
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(-9), mock.Mock(), Path("123.log"))}
+            app._unresumable_jobs = set()
+            app._ipc_server = None
+            app._lock_fd = -1
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group"),
+                mock.patch.object(mux.os, "killpg"),
+            ):
+                mux._write_mux_jobs([job])
+                app.on_unmount()
+                jobs_data = json.loads(jobs_file.read_text())
+
+        self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
+
     def test_respawn_clears_persisted_exit_code(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

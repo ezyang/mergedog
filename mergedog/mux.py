@@ -1057,8 +1057,8 @@ def _read_mux_job_records() -> dict[JobKey, dict]:
 
     ``mux-prs.json`` remains as the backwards-compatible regular-PR list
     for older tools. Newer mux instances persist jobs here. Each record
-    may carry ``rc``: the exit code the shepherd had when the previous
-    mux shut down, so a restart can tell halted jobs from running ones.
+    may carry ``rc``: the exit code recorded when the mux observed the
+    shepherd halt, so a restart can tell halted jobs from running ones.
     """
     if not MUX_JOBS_FILE.exists():
         return {_pr_job(pr): {} for pr in _read_mux_prs()}
@@ -1144,6 +1144,50 @@ def _remove_mux_job(job: JobKey) -> None:
     _write_mux_job_records(records)
 
 
+def _is_halt_rc(rc: int | None) -> bool:
+    """True for exit codes that mean the shepherd halted deterministically.
+
+    Signal-style exits (negative, or 128+signum from the shepherd's own
+    SIGTERM handler) mean the operator or mux killed the process --
+    re-running such a job resumes work rather than repeating a halt, so
+    it must not be parked.
+    """
+    if rc is None or rc in (0, EXIT_PR_NOT_ACTIONABLE):
+        return False
+    return 0 < rc < 128
+
+
+def _reconcile_halt_records(
+    halted: dict[JobKey, int], running: set[JobKey]
+) -> None:
+    """Sync observed shepherd exits into the persisted job records.
+
+    ``on_unmount`` also records exit codes, but only runs on a clean mux
+    exit. Recording eagerly means a mux killed outright (SIGKILL, OOM,
+    terminal hangup) still parks already-halted jobs on its next start
+    instead of re-running them and re-firing their halt notifications.
+    The reverse direction matters equally: a job observed running sheds
+    any recorded exit code (a halt noted here can linger after a bulk
+    ``restart`` respawn), so a resume never parks a job the operator
+    revived. Jobs absent from the records (cancelled/removed) are not
+    resurrected.
+    """
+    records = _read_mux_job_records()
+    changed = False
+    for job, rc in halted.items():
+        record = records.get(job)
+        if record is not None and record.get("rc") != rc:
+            record["rc"] = rc
+            changed = True
+    for job in running:
+        record = records.get(job)
+        if record is not None and "rc" in record:
+            del record["rc"]
+            changed = True
+    if changed:
+        _write_mux_job_records(records)
+
+
 def _resolve_initial_jobs(
     raw_prs: list[str],
     *,
@@ -1167,7 +1211,7 @@ def _resolve_initial_jobs(
     if resume_known:
         for job, record in sorted(_read_mux_job_records().items()):
             rc = record.get("rc")
-            if isinstance(rc, int):
+            if isinstance(rc, int) and _is_halt_rc(rc):
                 parked[job] = rc
             else:
                 initial.append(job)
@@ -1563,6 +1607,10 @@ class MuxApp(App):
                         old_entry[1].close()  # type: ignore[attr-defined]
                     except Exception:
                         pass
+                # Match _do_add_job: a respawned job is live again, so it
+                # sheds any recorded halt code and cancelled status.
+                self._unresumable_jobs.discard(job)
+                _add_mux_job(job)
             self._pr_titles.pop(job, None)
         self.notify(f"{action} {len(jobs)} job(s)")
 
@@ -2110,10 +2158,16 @@ class MuxApp(App):
             if parent_pr is not None:
                 parent_hints[job] = _pr_job(parent_pr)
         jobs, depths = _stack_display_layout(list(procs), parent_hints)
+        halted: dict[JobKey, int] = {}
+        running: set[JobKey] = set()
         for job in jobs:
             _, pr = job
             p, _, log_path = procs[job]
             rc = p.poll()
+            if rc is None:
+                running.add(job)
+            elif _is_halt_rc(rc):
+                halted[job] = rc
             last = _last_log_line(log_path)
             structured, _, phase, status = self._job_display_status(
                 job, rc=rc, log_path=log_path, last=last
@@ -2137,6 +2191,7 @@ class MuxApp(App):
                 _suppressed_cell(structured),
                 status,
             )
+        _reconcile_halt_records(halted, running)
         for job in sorted(getattr(self, "_parked_jobs", {})):
             if job in self.procs:
                 continue
@@ -2582,10 +2637,10 @@ class MuxApp(App):
                 continue
             if job in unresumable_jobs:
                 continue
-            # Live jobs resume on the next mux start; jobs that halted
-            # carry their exit code so the next mux parks them instead
-            # of re-running (and re-notifying) a deterministic halt.
-            record = {} if rc is None else {"rc": rc}
+            # Live (and signal-killed) jobs resume on the next mux start;
+            # jobs that halted carry their exit code so the next mux parks
+            # them instead of re-running (and re-notifying) the halt.
+            record = {"rc": rc} if _is_halt_rc(rc) else {}
             if job in scheduled_lands:
                 record[SCHEDULED_LAND_KEY] = scheduled_lands[job].to_record()
             records[job] = record
