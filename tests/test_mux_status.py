@@ -222,6 +222,30 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         self.assertEqual(phase, "🔵")
 
+    def test_phase_label_marks_prior_cla_failure_as_external(self):
+        sidecar = {
+            "schema_version": 1,
+            "phase": "ready",
+            "category": "ready",
+            "user_action": "merge when satisfied",
+            "message": "ready for human merge; 2 suppressed failures",
+        }
+        body = "## Merge failed\n- EasyCLA\n"
+
+        with mock.patch.object(
+            mux, "_read_last_observed_failure_body", return_value=body
+        ):
+            cla_blocked = mux._status_has_cla_blocker(123, sidecar)
+
+        phase = mux._phase_label(sidecar, rc=None, cla_blocked=cla_blocked)
+        status = mux._cla_blocked_status_message(sidecar["message"])
+
+        self.assertTrue(cla_blocked)
+        self.assertEqual(phase, "🔵")
+        self.assertEqual(
+            status, "waiting for contributor CLA; 2 suppressed failures"
+        )
+
     def test_help_documents_phase_meanings(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
 

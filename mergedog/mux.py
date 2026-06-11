@@ -139,6 +139,7 @@ class HistoryInput(Input):
 
 from mergedog import github  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
+from mergedog.handoff import is_cla_merge_failure  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
     MUX_JOBS_FILE,
@@ -455,6 +456,7 @@ def _phase_label(
     *,
     rc: int | None,
     stale: bool = False,
+    cla_blocked: bool = False,
 ) -> str:
     if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
         return PHASE_HALTED
@@ -469,6 +471,8 @@ def _phase_label(
             return PHASE_HALTED
         if phase == "halted":
             return PHASE_HALTED
+        if cla_blocked:
+            return PHASE_EXTERNAL_ACTION
         if _has_user_action(structured):
             if _user_action_needs_review(structured):
                 return PHASE_YOUR_REVIEW_ACTION
@@ -523,6 +527,37 @@ def _waiting_on_external_human(structured: dict) -> bool:
         "reviewer",
         "maintainer",
     }
+
+
+def _read_last_observed_failure_body(pr: int) -> str:
+    try:
+        data = json.loads(state_file(pr).read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    body = data.get("last_observed_failure_body")
+    return body if isinstance(body, str) else ""
+
+
+def _status_has_cla_blocker(pr: int, structured: dict | None) -> bool:
+    if structured is None or structured.get("merging") is True:
+        return False
+    phase = _status_text_field(structured, "phase")
+    category = _status_text_field(structured, "category")
+    waiting_on = _status_text_field(structured, "waiting_on")
+    if waiting_on == "contributor":
+        return True
+    if phase not in {"ready", "watching_merge"}:
+        return False
+    if category not in {"ready", "waiting"}:
+        return False
+    return is_cla_merge_failure(_read_last_observed_failure_body(pr))
+
+
+def _cla_blocked_status_message(status: str) -> str:
+    prefix = "ready for human merge"
+    if status.startswith(prefix):
+        return "waiting for contributor CLA" + status[len(prefix):]
+    return status or "waiting for contributor CLA"
 
 
 def _read_mux_prs() -> list[int]:
@@ -1190,10 +1225,17 @@ class MuxApp(App):
                     self._pr_status.pop(job, None)
                 else:
                     self._pr_status[job] = structured
-                phase = _phase_label(structured, rc=rc, stale=stale)
+                cla_blocked = (
+                    not stale and _status_has_cla_blocker(pr, structured)
+                )
+                phase = _phase_label(
+                    structured, rc=rc, stale=stale, cla_blocked=cla_blocked
+                )
                 status = _status_message(
                     structured, rc=rc, last_log=last, stale=stale
                 )
+                if cla_blocked:
+                    status = _cla_blocked_status_message(status)
             title = self._pr_titles.get(job, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -1435,10 +1477,19 @@ class MuxApp(App):
                 stale = _status_is_stale(
                     structured, started_at=started_at, rc=rc
                 )
-                phase = _phase_label(structured, rc=rc, stale=stale)
+                cla_blocked = (
+                    not stale and _status_has_cla_blocker(pr, structured)
+                )
+                phase = _phase_label(
+                    structured, rc=rc, stale=stale, cla_blocked=cla_blocked
+                )
                 status_message = _status_message(
                     structured, rc=rc, last_log=last, stale=stale
                 )
+                if cla_blocked:
+                    status_message = _cla_blocked_status_message(
+                        status_message
+                    )
             rows.append({
                 "kind": kind,
                 "pr": pr,
