@@ -82,8 +82,7 @@ def _build_llm_invocation(
         ]
         if model:
             cmd.extend(["--model", model])
-        cmd.append(prompt)
-        return _LLMInvocation(config.provider, cmd, "codex")
+        return _LLMInvocation(config.provider, cmd, "codex", stdin_input=prompt)
     if config.provider == "metacode":
         cmd = [
             "metacode",
@@ -257,30 +256,37 @@ def _run_llm_streaming(
     if nul_count:
         log(f"WARNING: replacing {nul_count} embedded NUL byte(s) in LLM prompt")
     invocation = _build_llm_invocation(prompt, cwd, config)
-    # Quote everything except the prompt itself, which is huge and would
-    # bury the rest of the line.
-    redacted = [
-        (
-            "<prompt>"
-            if invocation.provider in ("codex", "metacode")
+    # Quote everything except argv-passed prompts, which are huge and would
+    # bury the rest of the line. Stdin prompts are noted explicitly.
+    redacted = []
+    for i, c in enumerate(invocation.cmd):
+        if (
+            invocation.provider == "metacode"
+            and invocation.stdin_input is None
             and i == len(invocation.cmd) - 1
-            else c
-        )
-        for i, c in enumerate(invocation.cmd)
-    ]
-    log("$ " + " ".join(shlex.quote(c) for c in redacted))
+        ):
+            redacted.append("<prompt>")
+        else:
+            redacted.append(c)
+    suffix = " < <prompt>" if invocation.stdin_input is not None else ""
+    log("$ " + " ".join(shlex.quote(c) for c in redacted) + suffix)
     env = os.environ.copy()
     env.update({k: _escape_embedded_nuls(v) for k, v in env_extra.items()})
-    proc = subprocess.Popen(
-        invocation.cmd,
-        cwd=str(cwd),
-        env=env,
-        stdin=subprocess.PIPE if invocation.stdin_input else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    try:
+        proc = subprocess.Popen(
+            invocation.cmd,
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.PIPE if invocation.stdin_input else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as e:
+        summary = f"{invocation.event_label} failed to start: {e}"
+        log(summary)
+        return 127, [summary]
     assert proc.stdout is not None
     if invocation.stdin_input:
         assert proc.stdin is not None
@@ -531,8 +537,12 @@ def _invoke(
         config=llm_config,
     )
     if rc != 0:
-        reason = f"exited with code {rc}"
-        log(f"{agent} {reason}")
+        start_prefix = f"{agent} failed to start: "
+        if transcript and transcript[-1].startswith(start_prefix):
+            reason = transcript[-1][len(f"{agent} ") :]
+        else:
+            reason = f"exited with code {rc}"
+            log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
     if expect_merge_commit and repo_mod.is_merge_in_progress(worktree):

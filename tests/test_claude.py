@@ -8,6 +8,73 @@ from mergedog.config import LLMConfig
 
 
 class TestInvoke(unittest.TestCase):
+    def test_codex_prompt_is_passed_on_stdin(self):
+        with tempfile.TemporaryDirectory() as d:
+            prompt = "x" * 200_000
+
+            invocation = claude._build_llm_invocation(
+                prompt, Path(d), LLMConfig("codex")
+            )
+
+        self.assertEqual(invocation.provider, "codex")
+        self.assertEqual(invocation.stdin_input, prompt)
+        self.assertNotIn(prompt, invocation.cmd)
+
+    def test_llm_start_failure_is_returned_without_traceback(self):
+        err = OSError(7, "Argument list too long", "codex")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+            claude.subprocess, "Popen", side_effect=err
+        ):
+            rc, transcript = claude._run_llm_streaming(
+                "prompt", Path(d), {}, LLMConfig("codex")
+            )
+
+        self.assertEqual(rc, 127)
+        self.assertEqual(
+            transcript,
+            ["codex failed to start: [Errno 7] Argument list too long: 'codex'"],
+        )
+
+    def test_start_failure_uses_specific_halt_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+
+            with (
+                mock.patch.object(claude, "head_sha", return_value="a" * 40),
+                mock.patch.object(
+                    claude.repo_mod,
+                    "get_mergedog_identity",
+                    return_value=("mergedog", "mergedog@example.com"),
+                ),
+                mock.patch.object(claude.repo_mod, "author_env", return_value={}),
+                mock.patch.object(
+                    claude, "get_llm_config", return_value=LLMConfig("codex")
+                ),
+                mock.patch.object(
+                    claude,
+                    "_run_llm_streaming",
+                    return_value=(
+                        127,
+                        [
+                            "codex failed to start: [Errno 7] "
+                            "Argument list too long: 'codex'"
+                        ],
+                    ),
+                ),
+            ):
+                result = claude._invoke(
+                    worktree,
+                    "prompt",
+                    mode="fix-CI",
+                    expect_merge_commit=False,
+                )
+
+        self.assertFalse(result.ran_cleanly)
+        self.assertEqual(
+            result.halt_reason,
+            "failed to start: [Errno 7] Argument list too long: 'codex'",
+        )
+
     def test_fix_ci_no_commit_without_spurious_marker_is_contract_violation(self):
         with tempfile.TemporaryDirectory() as d:
             worktree = Path(d)

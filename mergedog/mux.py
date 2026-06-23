@@ -359,6 +359,26 @@ def _last_log_line(path: Path) -> str:
     return tail.rstrip()
 
 
+def _crash_summary_from_log(path: Path) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fp:
+            lines = [line.rstrip() for line in fp.readlines()[-200:]]
+    except OSError:
+        return ""
+    traceback_start = None
+    for i, line in enumerate(lines):
+        if line == "Traceback (most recent call last):":
+            traceback_start = i
+    if traceback_start is None:
+        return ""
+    for line in reversed(lines[traceback_start + 1 :]):
+        line = line.strip()
+        if not line:
+            continue
+        return line[:300]
+    return ""
+
+
 def _status_updated_ts(structured: dict | None) -> float | None:
     if structured is None:
         return None
@@ -421,10 +441,15 @@ def _status_message(
     *,
     rc: int | None,
     last_log: str,
+    crash_summary: str = "",
     stale: bool = False,
 ) -> str:
     if stale:
         if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
+            if crash_summary:
+                return f"HALT: shepherd crashed: {crash_summary}"
+            if last_log:
+                return f"HALT: shepherd exited: {last_log}"
             return "HALT: shepherd exited; ignoring stale status"
         return "starting; ignoring stale status from previous shepherd"
     if structured is not None:
@@ -1232,7 +1257,13 @@ class MuxApp(App):
                     structured, rc=rc, stale=stale, cla_blocked=cla_blocked
                 )
                 status = _status_message(
-                    structured, rc=rc, last_log=last, stale=stale
+                    structured,
+                    rc=rc,
+                    last_log=last,
+                    crash_summary=_crash_summary_from_log(log_path)
+                    if stale and rc is not None
+                    else "",
+                    stale=stale,
                 )
                 if cla_blocked:
                     status = _cla_blocked_status_message(status)
@@ -1484,7 +1515,13 @@ class MuxApp(App):
                     structured, rc=rc, stale=stale, cla_blocked=cla_blocked
                 )
                 status_message = _status_message(
-                    structured, rc=rc, last_log=last, stale=stale
+                    structured,
+                    rc=rc,
+                    last_log=last,
+                    crash_summary=_crash_summary_from_log(log_path)
+                    if stale and rc is not None
+                    else "",
+                    stale=stale,
                 )
                 if cla_blocked:
                     status_message = _cla_blocked_status_message(

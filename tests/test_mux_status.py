@@ -500,10 +500,45 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(rows[0]["phase"], "🔴")
         self.assertEqual(
             rows[0]["status"],
-            "HALT: shepherd exited; ignoring stale status",
+            "HALT: shepherd exited: subprocess.CalledProcessError: "
+            "gh pr view failed",
         )
         self.assertTrue(rows[0]["shepherd_status_stale"])
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
+
+    def test_format_status_summarizes_crash_traceback_after_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text(
+                "[12:00:00] invoking codex (fix-CI mode)...\n"
+                "Traceback (most recent call last):\n"
+                "  File \"mergedog/claude.py\", line 274, in _run_llm_streaming\n"
+                "    proc = subprocess.Popen(...)\n"
+                "OSError: [Errno 7] Argument list too long: 'codex'\n"
+            )
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(1), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+
+            sidecar = {
+                "schema_version": 1,
+                "updated_at": "2026-05-31T00:51:20+00:00",
+                "phase": "fixing_ci",
+                "category": "action",
+                "message": "fixing CI",
+            }
+            with mock.patch.object(mux, "read_status", return_value=sidecar):
+                rows = json.loads(app._format_status())
+
+        self.assertEqual(rows[0]["state"], "exited_error")
+        self.assertEqual(rows[0]["phase"], "🔴")
+        self.assertEqual(
+            rows[0]["status"],
+            "HALT: shepherd crashed: "
+            "OSError: [Errno 7] Argument list too long: 'codex'",
+        )
+        self.assertTrue(rows[0]["shepherd_status_stale"])
 
     def test_format_status_keeps_halted_sidecar_after_error(self):
         with tempfile.TemporaryDirectory() as d:

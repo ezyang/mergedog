@@ -58,13 +58,14 @@ class TestLLMInvocation(unittest.TestCase):
         self.assertIn("--json", inv.cmd)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", inv.cmd)
         self.assertEqual(inv.cmd[inv.cmd.index("-C") + 1], "/tmp/wt")
-        self.assertEqual(inv.cmd[-1], "fix it")
+        self.assertEqual(inv.stdin_input, "fix it")
+        self.assertNotIn("fix it", inv.cmd)
 
-    def test_escapes_embedded_nuls_in_codex_prompt_arg(self):
+    def test_escapes_embedded_nuls_in_codex_stdin_prompt(self):
         inv = _build_llm_invocation("fix\x00it", Path("/tmp/wt"), LLMConfig("codex"))
 
-        self.assertEqual(inv.cmd[-1], "fix\\x00it")
-        self.assertNotIn("\x00", inv.cmd[-1])
+        self.assertEqual(inv.stdin_input, "fix\\x00it")
+        self.assertNotIn("\x00", inv.stdin_input)
 
     def test_escapes_embedded_nuls_in_stdin_prompt(self):
         inv = _build_llm_invocation("fix\x00it", Path("/tmp/wt"), LLMConfig("claude"))
