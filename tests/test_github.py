@@ -350,6 +350,36 @@ class TestPrMergeCommit(unittest.TestCase):
             self.assertIsNone(github.get_pr_merge_commit_sha(1))
 
 
+class TestPrPollFields(unittest.TestCase):
+    def test_combines_status_and_head_fields(self):
+        with mock.patch.object(
+            github,
+            "_gh_json",
+            return_value={
+                "labels": [{"name": "ciflow/trunk"}],
+                "reviewDecision": "APPROVED",
+                "headRefOid": "abc",
+            },
+        ) as gh_json:
+            self.assertEqual(
+                github.get_pr_poll_fields(123),
+                (["ciflow/trunk"], "APPROVED", "abc"),
+            )
+
+        self.assertEqual(
+            gh_json.call_args.args[0],
+            [
+                "pr",
+                "view",
+                "123",
+                "--repo",
+                github.REPO,
+                "--json",
+                "labels,reviewDecision,headRefOid",
+            ],
+        )
+
+
 class TestPrChecksFallback(unittest.TestCase):
     def test_uses_gh_pr_checks_when_present(self):
         checks = [{"name": "pull", "bucket": "pass"}]
@@ -450,6 +480,17 @@ class TestPrChecksFallback(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_fallback_reuses_supplied_head_sha(self):
+        with (
+            mock.patch.object(github, "_gh_pr_checks_json", return_value=[]),
+            mock.patch.object(github, "get_pr_head_sha") as head,
+            mock.patch.object(github, "list_check_runs_for_sha", return_value=[]),
+            mock.patch.object(github, "list_workflow_runs_for_sha", return_value=[]),
+        ):
+            self.assertEqual(github.get_pr_checks_all(123, head_sha="abc"), [])
+
+        head.assert_not_called()
 
 
 if __name__ == "__main__":

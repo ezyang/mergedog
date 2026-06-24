@@ -343,6 +343,63 @@ class TestWatchStackPostHandoff(unittest.TestCase):
                 ("passed", 2, 2, 0, 1),
             )
 
+    def test_post_handoff_ci_status_cache_reuses_unchanged_pending_result(self):
+        cache = handoff._PostHandoffCiCache()
+        with (
+            mock.patch.object(
+                handoff.github,
+                "list_workflow_runs_for_sha",
+                return_value=[{"id": 1, "status": "in_progress", "conclusion": None}],
+            ),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                return_value=[{"name": "lint", "bucket": "pending"}],
+            ) as checks,
+            mock.patch.object(handoff.time, "time", side_effect=[100.0, 120.0]),
+        ):
+            first = handoff._post_handoff_ci_status_cached(
+                101, head_sha="abc", cache=cache
+            )
+            second = handoff._post_handoff_ci_status_cached(
+                101, head_sha="abc", cache=cache
+            )
+
+        self.assertEqual(first, ("pending", 0, 1, 0, 0))
+        self.assertEqual(second, first)
+        checks.assert_called_once_with(101, head_sha="abc")
+
+    def test_post_handoff_ci_status_cache_refetches_on_workflow_change(self):
+        cache = handoff._PostHandoffCiCache()
+        with (
+            mock.patch.object(
+                handoff.github,
+                "list_workflow_runs_for_sha",
+                side_effect=[
+                    [{"id": 1, "status": "in_progress", "conclusion": None}],
+                    [{"id": 1, "status": "completed", "conclusion": "failure"}],
+                ],
+            ),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                side_effect=[
+                    [{"name": "lint", "bucket": "pending"}],
+                    [{"name": "lint", "bucket": "fail"}],
+                ],
+            ) as checks,
+            mock.patch.object(handoff.time, "time", side_effect=[100.0, 120.0]),
+        ):
+            handoff._post_handoff_ci_status_cached(
+                101, head_sha="abc", cache=cache
+            )
+            second = handoff._post_handoff_ci_status_cached(
+                101, head_sha="abc", cache=cache
+            )
+
+        self.assertEqual(second, ("failed", 1, 1, 1, 0))
+        self.assertEqual(checks.call_count, 2)
+
     def test_watch_post_handoff_returns_conflict_from_github_merge_state(self):
         with mock.patch.object(
             handoff.github,

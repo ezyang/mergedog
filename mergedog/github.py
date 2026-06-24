@@ -698,6 +698,28 @@ def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
     return labels, data.get("reviewDecision") or None
 
 
+def get_pr_poll_fields(pr: int) -> tuple[list[str], str | None, str | None]:
+    """Return ``(labels, reviewDecision, headRefOid)`` for a poll iteration."""
+    data = _gh_json(
+        [
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            REPO,
+            "--json",
+            "labels,reviewDecision,headRefOid",
+        ]
+    )
+    labels = [lb.get("name", "") for lb in data.get("labels", []) or []]
+    head = data.get("headRefOid")
+    return (
+        labels,
+        data.get("reviewDecision") or None,
+        head if isinstance(head, str) else None,
+    )
+
+
 def list_workflow_runs_for_sha(sha: str) -> list[dict]:
     data = _gh_json(
         [
@@ -783,7 +805,7 @@ def run_id_for_check(check: dict) -> int | None:
     return run_id
 
 
-def get_pr_checks_all(pr: int) -> list[dict]:
+def get_pr_checks_all(pr: int, *, head_sha: str | None = None) -> list[dict]:
     """Return the latest-commit checks for a PR.
 
     ``gh pr checks --json`` already filters to the head commit.
@@ -805,7 +827,7 @@ def get_pr_checks_all(pr: int) -> list[dict]:
     # On the migrated host, ``gh pr checks`` can report "no checks" even
     # though Actions workflow runs exist for the same head SHA. Fall back to
     # lower-level GitHub APIs so the shepherd does not wait forever at 0/0.
-    sha = get_pr_head_sha(pr)
+    sha = head_sha or get_pr_head_sha(pr)
     check_runs = list_check_runs_for_sha(sha)
     if check_runs:
         log(

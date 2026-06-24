@@ -9,6 +9,8 @@ from mergedog.claude import LLMResult
 from mergedog import shepherd
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
+    FULL_CHECK_REFRESH_SEC,
+    _CiCheckPollCache,
     _actionable_lint_failure_names,
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
@@ -23,6 +25,7 @@ from mergedog.shepherd import (
     _count_mergedog_interventions_since_ack,
     _sparse_green_needs_base_refresh,
     _spurious_check_names_from_checks,
+    _workflow_state_fingerprint,
     describe_log_state,
 )
 
@@ -445,6 +448,75 @@ class TestSparseGreenDetection(unittest.TestCase):
             _sparse_green_needs_base_refresh(
                 "passed", checks, {1: ("in_progress", None)}
             )
+        )
+
+
+class TestCiCheckPollCache(unittest.TestCase):
+    def test_reuses_unchanged_pending_checks_until_refresh_window(self):
+        cache = _CiCheckPollCache()
+        fingerprint = ((1, "in_progress", ""),)
+        checks = [{"name": "lint", "bucket": "pending"}]
+        cache.update(
+            head_sha="abc",
+            workflow_fingerprint=fingerprint,
+            checks=checks,
+            status="pending",
+            fetched_at=100.0,
+        )
+
+        self.assertFalse(
+            cache.should_fetch(
+                head_sha="abc", workflow_fingerprint=fingerprint, now=120.0
+            )
+        )
+        self.assertTrue(
+            cache.should_fetch(
+                head_sha="abc",
+                workflow_fingerprint=fingerprint,
+                now=100.0 + FULL_CHECK_REFRESH_SEC,
+            )
+        )
+
+    def test_fetches_when_head_workflows_or_status_change(self):
+        cache = _CiCheckPollCache()
+        fingerprint = ((1, "in_progress", ""),)
+        cache.update(
+            head_sha="abc",
+            workflow_fingerprint=fingerprint,
+            checks=[{"name": "lint", "bucket": "pending"}],
+            status="pending",
+            fetched_at=100.0,
+        )
+
+        self.assertTrue(
+            cache.should_fetch(
+                head_sha="def", workflow_fingerprint=fingerprint, now=120.0
+            )
+        )
+        self.assertTrue(
+            cache.should_fetch(
+                head_sha="abc",
+                workflow_fingerprint=((1, "completed", "success"),),
+                now=120.0,
+            )
+        )
+
+        cache.status = "failed"
+        self.assertTrue(
+            cache.should_fetch(
+                head_sha="abc", workflow_fingerprint=fingerprint, now=120.0
+            )
+        )
+
+    def test_workflow_fingerprint_is_stable(self):
+        self.assertEqual(
+            _workflow_state_fingerprint(
+                {
+                    2: ("completed", "success"),
+                    1: ("in_progress", None),
+                }
+            ),
+            ((1, "in_progress", ""), (2, "completed", "success")),
         )
 
 

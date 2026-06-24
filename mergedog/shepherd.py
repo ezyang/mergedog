@@ -115,6 +115,8 @@ def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> bool:
 
 POLL_INTERVAL_SEC = 60
 APPROVAL_SETTLE_SEC = 15
+FULL_CHECK_REFRESH_SEC = 5 * 60
+APPROVAL_REFRESH_INTERVAL_SEC = 10 * 60
 PUSH_VISIBILITY_TIMEOUT_SEC = 90
 # Distinct exit code shepherds use when the PR is no longer actionable
 # (closed, merged, etc.). The mux keeps these completed sessions visible
@@ -179,6 +181,73 @@ class _GhstackParentStatus:
     child_parent_sha: str
     reason: str
     replay_base_sha: str | None = None
+
+
+WorkflowFingerprint = tuple[tuple[int, str, str], ...]
+
+
+@dataclass
+class _CiCheckPollCache:
+    """Cached full check list used only for unchanged pending CI."""
+
+    head_sha: str | None = None
+    workflow_fingerprint: WorkflowFingerprint | None = None
+    checks: list[dict] | None = None
+    status: str | None = None
+    fetched_at: float = 0.0
+
+    def invalidate(self) -> None:
+        self.head_sha = None
+        self.workflow_fingerprint = None
+        self.checks = None
+        self.status = None
+        self.fetched_at = 0.0
+
+    def should_fetch(
+        self,
+        *,
+        head_sha: str,
+        workflow_fingerprint: WorkflowFingerprint,
+        now: float,
+    ) -> bool:
+        if self.checks is None or not self.checks:
+            return True
+        if self.head_sha != head_sha:
+            return True
+        if self.status != "pending":
+            return True
+        if self.workflow_fingerprint != workflow_fingerprint:
+            return True
+        return now - self.fetched_at >= FULL_CHECK_REFRESH_SEC
+
+    def update(
+        self,
+        *,
+        head_sha: str,
+        workflow_fingerprint: WorkflowFingerprint,
+        checks: list[dict],
+        status: str,
+        fetched_at: float,
+    ) -> None:
+        if not checks:
+            self.invalidate()
+            return
+        self.head_sha = head_sha
+        self.workflow_fingerprint = workflow_fingerprint
+        self.checks = checks
+        self.status = status
+        self.fetched_at = fetched_at
+
+
+def _workflow_state_fingerprint(
+    run_state_cache: dict[int, tuple[str | None, str | None]],
+) -> WorkflowFingerprint:
+    return tuple(
+        sorted(
+            (run_id, status or "", conclusion or "")
+            for run_id, (status, conclusion) in run_state_cache.items()
+        )
+    )
 
 
 def _llm_label() -> str:
@@ -578,7 +647,7 @@ def _count_mergedog_interventions_since_ack(
         return 0
 
 
-def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None]:
+def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None, str | None]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
     Called once per main-poll iteration. The prefix is the only signal
@@ -591,14 +660,14 @@ def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None]:
     over a UI nicety.
     """
     try:
-        labels, decision = github.get_pr_status_fields(pr)
+        labels, decision, head_sha = github.get_pr_poll_fields(pr)
     except Exception:
-        return None, None
+        return None, None, None
     merging = github.MERGING_LABEL in labels
     approved = (decision or "").upper() == "APPROVED"
     set_merging(merging)
     set_approved(approved)
-    return approved, merging
+    return approved, merging, head_sha
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -698,10 +767,9 @@ def _refresh_ghstack_parent_status(
     child_parent_tree = repo.tree_sha(child_parent_sha)
     stale = child_parent_tree != parent_orig_tree
 
-    checks = github.get_pr_checks_all(dep.parent_pr)
-    parent_trust = _check_trusted_ghstack_parent(
-        dep, github.get_pr_head_sha(dep.parent_pr)
-    )
+    parent_head_sha = github.get_pr_head_sha(dep.parent_pr)
+    checks = github.get_pr_checks_all(dep.parent_pr, head_sha=parent_head_sha)
+    parent_trust = _check_trusted_ghstack_parent(dep, parent_head_sha)
     if parent_trust:
         effective_checks = _apply_spurious_overrides(
             checks, set(TrustDB.load_or_create(dep.parent_pr).spurious_check_names)
@@ -2042,6 +2110,7 @@ def _shepherd_body(
             fix_commits_pushed = trust.fix_commits_pushed
 
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
+    last_approval_refresh_at = time.time()
 
     # Outer recovery loop: each iteration is one CI-inspect / claude-fix /
     # handoff / watch cycle. We re-enter when pytorchmergebot replies
@@ -2083,31 +2152,43 @@ def _shepherd_body(
         # run_id so a persistent (non-transient) failure that happens to
         # match an intervention pattern still falls through to claude.
         intervened_run_ids: set[int] = set()
+        check_poll_cache = _CiCheckPollCache()
 
         # Poll CI, fix or judge spurious until ready for handoff. Breaks
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            approved, merging = _refresh_status_prefix(pr)
+            approved, merging, current = _refresh_status_prefix(pr)
             if approved is not None:
                 last_approved = approved
-                if approved:
-                    try:
-                        refreshed_ack_sha = _latest_trusted_approval_sha(pr)
-                    except Exception as e:
-                        log(f"WARNING: could not refresh approval baseline: {e}")
-                    else:
-                        if refreshed_ack_sha:
-                            human_ack_sha = refreshed_ack_sha
             if merging is not None:
                 last_merging = merging
             # 1. Verify the PR head is still trusted.
-            current = github.get_pr_head_sha(pr)
+            if current is None:
+                current = github.get_pr_head_sha(pr)
             if self_pr:
                 # On a self-authored PR, every push is implicitly approved
                 # by the operator -- roll the trust forward instead of
                 # halting.
                 trust.trust(current)
+            if (
+                approved
+                and not self_pr
+                and (
+                    not trust.is_trusted(current)
+                    or time.time() - last_approval_refresh_at
+                    >= APPROVAL_REFRESH_INTERVAL_SEC
+                )
+            ):
+                try:
+                    refreshed_ack_sha = _latest_trusted_approval_sha(pr)
+                except Exception as e:
+                    log(f"WARNING: could not refresh approval baseline: {e}")
+                else:
+                    last_approval_refresh_at = time.time()
+                    if refreshed_ack_sha:
+                        trust.trust(refreshed_ack_sha)
+                        human_ack_sha = refreshed_ack_sha
             if not trust.is_trusted(current):
                 trust_mergebot_rebase_if_equivalent(
                     trust,
@@ -2131,6 +2212,7 @@ def _shepherd_body(
             if approved:
                 empty_log_defers = 0
                 stable_observation = None  # newly-approved runs invalidate stability
+                check_poll_cache.invalidate()
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
 
@@ -2138,7 +2220,17 @@ def _shepherd_body(
             # spurious are flipped to "skipping" so we don't re-judge
             # them, and so the overall verdict reflects what's still
             # genuinely outstanding.
-            checks = github.get_pr_checks_all(pr)
+            workflow_fingerprint = _workflow_state_fingerprint(run_state_cache)
+            check_poll_now = time.time()
+            fetched_full_checks = check_poll_cache.should_fetch(
+                head_sha=current,
+                workflow_fingerprint=workflow_fingerprint,
+                now=check_poll_now,
+            )
+            if fetched_full_checks:
+                checks = github.get_pr_checks_all(pr, head_sha=current)
+            else:
+                checks = list(check_poll_cache.checks or [])
             effective_checks = _apply_spurious_overrides(
                 checks, spurious_check_names
             )
@@ -2192,6 +2284,14 @@ def _shepherd_body(
                 and workflow_gate_for_more_checks
             ):
                 status = "pending"
+            if fetched_full_checks:
+                check_poll_cache.update(
+                    head_sha=current,
+                    workflow_fingerprint=workflow_fingerprint,
+                    checks=checks,
+                    status=status,
+                    fetched_at=check_poll_now,
+                )
 
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}

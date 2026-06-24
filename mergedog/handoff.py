@@ -509,6 +509,70 @@ def mergebot_ignored_check_names(
 
 
 _POLL_INTERVAL_SEC = 60
+_FULL_CHECK_REFRESH_SEC = 5 * 60
+
+_WorkflowFingerprint = tuple[tuple[str, str, str], ...]
+_CiStatus = tuple[str, int, int, int, int]
+
+
+@dataclass
+class _PostHandoffCiCache:
+    head_sha: str | None = None
+    workflow_fingerprint: _WorkflowFingerprint | None = None
+    result: _CiStatus | None = None
+    fetched_at: float = 0.0
+
+    def should_fetch(
+        self,
+        *,
+        head_sha: str | None,
+        workflow_fingerprint: _WorkflowFingerprint | None,
+        now: float,
+    ) -> bool:
+        if head_sha is None or workflow_fingerprint is None:
+            return True
+        if self.result is None:
+            return True
+        if self.head_sha != head_sha:
+            return True
+        if self.workflow_fingerprint != workflow_fingerprint:
+            return True
+        return now - self.fetched_at >= _FULL_CHECK_REFRESH_SEC
+
+    def update(
+        self,
+        *,
+        head_sha: str | None,
+        workflow_fingerprint: _WorkflowFingerprint | None,
+        result: _CiStatus,
+        fetched_at: float,
+    ) -> None:
+        if head_sha is None or workflow_fingerprint is None or result[2] == 0:
+            self.result = None
+            return
+        self.head_sha = head_sha
+        self.workflow_fingerprint = workflow_fingerprint
+        self.result = result
+        self.fetched_at = fetched_at
+
+
+def _workflow_fingerprint_for_sha(head_sha: str | None) -> _WorkflowFingerprint | None:
+    if head_sha is None:
+        return None
+    try:
+        runs = github.list_workflow_runs_for_sha(head_sha)
+    except Exception:
+        return None
+    return tuple(
+        sorted(
+            (
+                str(run.get("id") or ""),
+                str(run.get("status") or ""),
+                str(run.get("conclusion") or ""),
+            )
+            for run in runs
+        )
+    )
 
 
 def _intervention_suffix(intervention_count: int | None) -> str:
@@ -569,10 +633,13 @@ def _apply_suppressed_overrides(
 
 
 def _post_handoff_ci_status(
-    pr: int, *, suppressed_check_names: set[str] | None = None
-) -> tuple[str, int, int, int, int] | None:
+    pr: int,
+    *,
+    head_sha: str | None = None,
+    suppressed_check_names: set[str] | None = None,
+) -> _CiStatus | None:
     try:
-        checks = github.get_pr_checks_all(pr)
+        checks = github.get_pr_checks_all(pr, head_sha=head_sha)
     except Exception:
         return None
     effective_checks = _apply_suppressed_overrides(
@@ -590,6 +657,34 @@ def _post_handoff_ci_status(
         and c.get("bucket") in {"fail", "cancel"}
     )
     return github.evaluate_checks(effective_checks), done, total, failed, suppressed
+
+
+def _post_handoff_ci_status_cached(
+    pr: int,
+    *,
+    head_sha: str | None,
+    cache: _PostHandoffCiCache,
+    suppressed_check_names: set[str] | None = None,
+) -> _CiStatus | None:
+    workflow_fingerprint = _workflow_fingerprint_for_sha(head_sha)
+    now = time.time()
+    if not cache.should_fetch(
+        head_sha=head_sha,
+        workflow_fingerprint=workflow_fingerprint,
+        now=now,
+    ):
+        return cache.result
+    result = _post_handoff_ci_status(
+        pr, head_sha=head_sha, suppressed_check_names=suppressed_check_names
+    )
+    if result is not None:
+        cache.update(
+            head_sha=head_sha,
+            workflow_fingerprint=workflow_fingerprint,
+            result=result,
+            fetched_at=now,
+        )
+    return result
 
 
 def _write_post_handoff_ci_status(
@@ -720,7 +815,12 @@ def _write_handoff_status(
         pass
 
 
-def _merging_progress_line(pr: int) -> str:
+def _merging_progress_line(
+    pr: int,
+    *,
+    head_sha: str | None = None,
+    cache: _PostHandoffCiCache | None = None,
+) -> str:
     """Build the body of a [MERGING]-phase log line: CI progress + failures.
 
     Replaces the verbose "handed off; awaiting @pytorchbot merge" message
@@ -729,15 +829,21 @@ def _merging_progress_line(pr: int) -> str:
     much of pytorchmergebot's rebased CI is done and how many checks it's
     waving past as failed (== "ignoring").
     """
-    try:
-        checks = github.get_pr_checks_all(pr)
-    except Exception:
+    if cache is not None:
+        ci = _post_handoff_ci_status_cached(
+            pr, head_sha=head_sha, cache=cache
+        )
+        if ci is None:
+            return "waiting for merge"
+        _, done, total, failed, _ = ci
+        body = f"waiting for merge; CI {done}/{total} done"
+        if failed:
+            body += f", {failed} failed"
+        return body
+    ci = _post_handoff_ci_status(pr, head_sha=head_sha)
+    if ci is None:
         return "waiting for merge"
-    total = len(checks)
-    done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
-    failed = sum(
-        1 for c in checks if c.get("bucket") in {"fail", "cancel"}
-    )
+    _, done, total, failed, _ = ci
     body = f"waiting for merge; CI {done}/{total} done"
     if failed:
         body += f", {failed} failed"
@@ -776,8 +882,10 @@ def watch_post_handoff(
     """
     last_state: str | None = None
     last_merging_msg: str | None = None
+    ci_cache = _PostHandoffCiCache()
     while True:
         pr_data = github.get_pr(pr, log_context="watching post-handoff")
+        head_sha = pr_data.get("headRefOid") or None
         merging = github.has_label(pr_data, github.MERGING_LABEL)
         approved = (pr_data.get("reviewDecision") or "").upper() == "APPROVED"
         set_merging(merging)
@@ -804,7 +912,7 @@ def watch_post_handoff(
                 approval_actionable=approval_actionable,
                 cla_blocked=cla_blocked,
             )
-            msg = _merging_progress_line(pr)
+            msg = _merging_progress_line(pr, head_sha=head_sha, cache=ci_cache)
             if msg != last_merging_msg:
                 log(msg)
                 last_merging_msg = msg
@@ -812,8 +920,11 @@ def watch_post_handoff(
             # later (shouldn't happen in normal flow, but cheap to handle).
             last_state = "merging"
         else:
-            ci = _post_handoff_ci_status(
-                pr, suppressed_check_names=suppressed_check_names
+            ci = _post_handoff_ci_status_cached(
+                pr,
+                head_sha=head_sha,
+                cache=ci_cache,
+                suppressed_check_names=suppressed_check_names,
             )
             if ci is not None:
                 ci_status, done, total, failed, suppressed = ci
@@ -911,13 +1022,16 @@ def watch_stack_post_handoff(
     last_state: str | None = None
     last_merging_msg: str | None = None
     prs = sorted(prs_since_iso)
+    ci_caches = {pr: _PostHandoffCiCache() for pr in prs}
     while True:
         any_merging = False
         any_approved = False
         started_prs: list[int] = []
         merging_prs: list[int] = []
+        head_shas: dict[int, str | None] = {}
         for pr in prs:
             pr_data = github.get_pr(pr, log_context="watching post-handoff stack")
+            head_shas[pr] = pr_data.get("headRefOid") or None
             if pr_data.get("state") != "OPEN":
                 set_merging(False)
                 set_approved(False)
@@ -954,7 +1068,13 @@ def watch_stack_post_handoff(
                 f"PR #{pr}" for pr in merging_prs
             )
             if len(merging_prs) == 1:
-                msg += f"; {_merging_progress_line(merging_prs[0])}"
+                merging_pr = merging_prs[0]
+                progress = _merging_progress_line(
+                    merging_pr,
+                    head_sha=head_shas.get(merging_pr),
+                    cache=ci_caches[merging_pr],
+                )
+                msg += f"; {progress}"
             if msg != last_merging_msg:
                 log(msg)
                 last_merging_msg = msg
