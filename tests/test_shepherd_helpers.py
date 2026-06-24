@@ -12,6 +12,8 @@ from mergedog.shepherd import (
     _actionable_lint_failure_names,
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
+    _green_check_count_is_sparse,
+    _has_workflow_gate_for_more_checks,
     _inconclusive_refresh_target,
     _is_ghstack_mergeability_failure,
     _llm_halt_message,
@@ -19,6 +21,7 @@ from mergedog.shepherd import (
     _llm_signalled_inconclusive,
     _latest_completed_at,
     _count_mergedog_interventions_since_ack,
+    _sparse_green_needs_base_refresh,
     _spurious_check_names_from_checks,
     describe_log_state,
 )
@@ -399,6 +402,53 @@ class TestLatestCompletedAt(unittest.TestCase):
     def test_unparseable_returns_none(self):
         self.assertIsNone(
             _latest_completed_at([{"completedAt": "not-a-date"}])
+        )
+
+
+class TestSparseGreenDetection(unittest.TestCase):
+    def test_workflow_gate_detects_active_runs(self):
+        self.assertTrue(
+            _has_workflow_gate_for_more_checks({1: ("queued", None)})
+        )
+        self.assertTrue(
+            _has_workflow_gate_for_more_checks(
+                {1: ("completed", "action_required")}
+            )
+        )
+        self.assertFalse(
+            _has_workflow_gate_for_more_checks({1: ("completed", "success")})
+        )
+
+    def test_two_passed_checks_is_sparse(self):
+        checks = [
+            {"name": "a", "bucket": "pass"},
+            {"name": "b", "bucket": "pass"},
+        ]
+
+        self.assertTrue(_green_check_count_is_sparse("passed", checks))
+        self.assertTrue(
+            _sparse_green_needs_base_refresh("passed", checks, {})
+        )
+
+    def test_three_passed_checks_is_enough(self):
+        checks = [
+            {"name": "a", "bucket": "pass"},
+            {"name": "b", "bucket": "pass"},
+            {"name": "c", "bucket": "pass"},
+        ]
+
+        self.assertFalse(_green_check_count_is_sparse("passed", checks))
+        self.assertFalse(
+            _sparse_green_needs_base_refresh("passed", checks, {})
+        )
+
+    def test_sparse_green_waits_when_workflow_gate_exists(self):
+        checks = [{"name": "a", "bucket": "pass"}]
+
+        self.assertFalse(
+            _sparse_green_needs_base_refresh(
+                "passed", checks, {1: ("in_progress", None)}
+            )
         )
 
 

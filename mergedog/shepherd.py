@@ -126,6 +126,11 @@ EXIT_PR_NOT_ACTIONABLE = 42
 # before the other 10+ required workflows even exist, and slap the trunk
 # label on prematurely.
 CI_STABILITY_WINDOW_SEC = 60
+# PyTorch PR CI should surface many checks before the trunk label is applied.
+# A "green" verdict with only one or two checks usually means GitHub never
+# created the pull-CI workflow runs for this head; refresh the base to trigger
+# a real CI wave instead of treating the sparse result as green.
+MIN_GREEN_CHECKS_TO_TRUST = 3
 PROJECT = get_project_policy()
 TRUNK_LABEL = PROJECT.trunk_label
 # Marker label so humans can see at a glance which PRs already have a live
@@ -257,6 +262,51 @@ def _latest_completed_at(checks: list[dict]) -> float | None:
             return None
         timestamps.append(dt.timestamp())
     return max(timestamps) if timestamps else None
+
+
+_WORKFLOW_STATUSES_WAITING_FOR_MORE_CHECKS = {
+    "action_required",
+    "waiting",
+    "requested",
+    "queued",
+    "pending",
+    "in_progress",
+}
+
+
+def _has_workflow_gate_for_more_checks(
+    run_state_cache: dict[int, tuple[str | None, str | None]],
+) -> bool:
+    """True when workflow-run state says more CI can still appear.
+
+    ``gh pr checks`` and the workflow-run API can momentarily disagree. If a
+    workflow is queued/in progress/action_required, a tiny passed check set is
+    not wedged; we should keep waiting or approving rather than push a rebase.
+    """
+    for status, conclusion in run_state_cache.values():
+        if status in _WORKFLOW_STATUSES_WAITING_FOR_MORE_CHECKS:
+            return True
+        if status == "completed" and conclusion == "action_required":
+            return True
+    return False
+
+
+def _green_check_count_is_sparse(status: str, checks: list[dict]) -> bool:
+    return (
+        status == "passed"
+        and TRUNK_LABEL is not None
+        and len(checks) < MIN_GREEN_CHECKS_TO_TRUST
+    )
+
+
+def _sparse_green_needs_base_refresh(
+    status: str,
+    checks: list[dict],
+    run_state_cache: dict[int, tuple[str | None, str | None]],
+) -> bool:
+    return _green_check_count_is_sparse(
+        status, checks
+    ) and not _has_workflow_gate_for_more_checks(run_state_cache)
 
 
 def describe_log_state(
@@ -2106,6 +2156,9 @@ def _shepherd_body(
                 checks, spurious_check_names
             )
             status = github.evaluate_checks(effective_checks)
+            workflow_gate_for_more_checks = _has_workflow_gate_for_more_checks(
+                run_state_cache
+            )
 
             # Cross-check: gh pr checks (check-run API) can disagree
             # with the workflow-run API.  When a failed job is re-run
@@ -2146,6 +2199,12 @@ def _shepherd_body(
                         f"treating as failed"
                     )
                     status = "failed"
+
+            if (
+                _green_check_count_is_sparse(status, checks)
+                and workflow_gate_for_more_checks
+            ):
+                status = "pending"
 
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}
@@ -2826,6 +2885,97 @@ def _shepherd_body(
                         f"(no new checks should appear)"
                     )
                     time.sleep(min(POLL_INTERVAL_SEC, remaining))
+                    continue
+
+                if (
+                    _sparse_green_needs_base_refresh(
+                        status, checks, run_state_cache
+                    )
+                ):
+                    log(
+                        f"CI reported only {len(checks)} passed check"
+                        f"{'' if len(checks) == 1 else 's'} and no pending "
+                        "workflow gate; refreshing base to trigger CI"
+                    )
+                    _write_status_best_effort(
+                        pr,
+                        phase="refreshing_base",
+                        category="action",
+                        action="rebasing",
+                        message=_status_with_interventions(
+                            (
+                                f"refreshing base to trigger CI: only "
+                                f"{len(checks)} check"
+                                f"{'' if len(checks) == 1 else 's'} reported"
+                            ),
+                            intervention_count,
+                        ),
+                        intervention_count=intervention_count,
+                        human_ack_sha=human_ack_sha,
+                        approved=last_approved,
+                        merging=last_merging,
+                        ci_done=done,
+                        ci_total=len(checks),
+                        ci_failed=0,
+                        fix_attempts=fix_commits_pushed,
+                        max_fix_attempts=max_fix_attempts_status,
+                    )
+                    # Deliberately bypass the ci:sev gate for this recovery:
+                    # the problem is that no real CI wave exists to wait on.
+                    repo.fetch_origin()
+                    if is_ghstack:
+                        _rebase_ghstack_onto_main(
+                            pr,
+                            worktree,
+                            branch,
+                            trust,
+                            ignore_sev=True,
+                            pr_data=pr_data,
+                            sessions=sessions,
+                        )
+                    else:
+                        assert fork_remote is not None
+                        refresh_sha = _merge_main_resolving_conflicts(
+                            worktree,
+                            trust,
+                            branch,
+                            pr_data,
+                            sessions,
+                            ignore_sev=True,
+                            trusted_pr=trusted_pr,
+                        )
+                        if refresh_sha is None:
+                            die(
+                                f"CI reported only {len(checks)} passed check"
+                                f"{'' if len(checks) == 1 else 's'} and no "
+                                "pending workflow gate, but refreshing the "
+                                "base produced no new commit; halting for "
+                                "human intervention"
+                            )
+                        log(
+                            f"pushing refreshed base {refresh_sha[:12]} "
+                            f"to {fork_remote}/{branch}"
+                        )
+                        _safe_push(
+                            pr,
+                            worktree,
+                            fork_remote,
+                            branch,
+                            refresh_sha,
+                            reason="pushing base refresh to trigger missing CI",
+                            ignore_sev=True,
+                        )
+                        _record_pushed_change(
+                            pushed_changes,
+                            worktree,
+                            refresh_sha,
+                            "merged main into the PR branch to trigger missing CI",
+                        )
+                    spurious_check_names.clear()
+                    trust.spurious_check_names = []
+                    trust.save()
+                    last_status = None
+                    stable_observation = None
                     continue
 
             # Either CI passed (and is stable), or claude said "spurious".
