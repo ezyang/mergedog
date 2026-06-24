@@ -276,6 +276,69 @@ class TestInterventionCount(unittest.TestCase):
             )
 
 
+class TestInlineHunkComments(unittest.TestCase):
+    def test_posts_missing_inline_hunk_marker(self):
+        sha = "a" * 40
+        head_sha = "b" * 40
+        target = shepherd.repo.DiffHunkCommentTarget("foo.py", "RIGHT", 10)
+
+        with (
+            mock.patch.object(
+                shepherd.repo,
+                "diff_hunk_comment_targets",
+                return_value=[target],
+            ),
+            mock.patch.object(
+                shepherd.github,
+                "get_pr_review_comments",
+                return_value=[],
+            ),
+            mock.patch.object(
+                shepherd.github, "post_pr_review_comment"
+            ) as post_comment,
+            mock.patch.object(shepherd, "log"),
+        ):
+            shepherd._post_llm_hunk_comments(
+                123, Path("/tmp/wt"), sha, commit_id=head_sha
+            )
+
+        post_comment.assert_called_once()
+        self.assertEqual(post_comment.call_args.kwargs["commit_id"], head_sha)
+        self.assertEqual(post_comment.call_args.kwargs["path"], "foo.py")
+        self.assertEqual(post_comment.call_args.kwargs["line"], 10)
+        self.assertEqual(post_comment.call_args.kwargs["side"], "RIGHT")
+        self.assertIn(
+            f"https://github.com/{shepherd.REPO_SLUG}/commit/{sha}",
+            post_comment.call_args.kwargs["body"],
+        )
+
+    def test_skips_existing_inline_hunk_marker(self):
+        sha = "a" * 40
+        target = shepherd.repo.DiffHunkCommentTarget("foo.py", "RIGHT", 10)
+        key = shepherd._inline_hunk_key(sha, target)
+
+        with (
+            mock.patch.object(
+                shepherd.repo,
+                "diff_hunk_comment_targets",
+                return_value=[target],
+            ),
+            mock.patch.object(
+                shepherd.github,
+                "get_pr_review_comments",
+                return_value=[
+                    {"body": shepherd._inline_hunk_comment_body(sha, key)}
+                ],
+            ),
+            mock.patch.object(
+                shepherd.github, "post_pr_review_comment"
+            ) as post_comment,
+        ):
+            shepherd._post_llm_hunk_comments(123, Path("/tmp/wt"), sha)
+
+        post_comment.assert_not_called()
+
+
 class TestDescribeLogState(unittest.TestCase):
     def test_empty_failed_list_calls_out_status_only_checks(self):
         self.assertIn(

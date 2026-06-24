@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator, Sequence
 
@@ -122,6 +123,18 @@ def _git_write_with_retry(
 
 
 _AUTHOR_SUFFIX = " via mergedog"
+
+
+@dataclass(frozen=True)
+class DiffHunkCommentTarget:
+    path: str
+    side: str
+    line: int
+
+
+_DIFF_HUNK_RE = re.compile(
+    r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@"
+)
 
 
 def get_mergedog_identity() -> tuple[str, str]:
@@ -536,6 +549,76 @@ def commit_message(worktree: Path, ref: str = "HEAD") -> str:
     return run(
         ["git", "log", "-1", "--pretty=%B", ref], cwd=worktree
     ).stdout.rstrip("\n")
+
+
+def _diff_path(path: str) -> str:
+    if path == "/dev/null":
+        return path
+    return path.strip()
+
+
+def diff_hunk_comment_targets(
+    worktree: Path, sha: str
+) -> list[DiffHunkCommentTarget]:
+    """Return the top changed line of each hunk in ``sha``'s patch."""
+    diff = run(
+        [
+            "git",
+            "show",
+            "--format=",
+            "--no-ext-diff",
+            "--unified=0",
+            "--src-prefix=",
+            "--dst-prefix=",
+            sha,
+        ],
+        cwd=worktree,
+    ).stdout
+
+    targets: list[DiffHunkCommentTarget] = []
+    old_path = ""
+    new_path = ""
+    old_line = 0
+    new_line = 0
+    in_hunk = False
+    hunk_marked = False
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            old_path = ""
+            new_path = ""
+            in_hunk = False
+            continue
+        if not in_hunk and line.startswith("--- "):
+            old_path = _diff_path(line[4:])
+            continue
+        if not in_hunk and line.startswith("+++ "):
+            new_path = _diff_path(line[4:])
+            continue
+        match = _DIFF_HUNK_RE.match(line)
+        if match is not None:
+            old_line = int(match.group("old"))
+            new_line = int(match.group("new"))
+            in_hunk = True
+            hunk_marked = False
+            continue
+        if not in_hunk or hunk_marked:
+            continue
+        if line.startswith("+"):
+            path = new_path if new_path != "/dev/null" else old_path
+            if path and path != "/dev/null":
+                targets.append(DiffHunkCommentTarget(path, "RIGHT", new_line))
+            hunk_marked = True
+        elif line.startswith("-"):
+            path = old_path if old_path != "/dev/null" else new_path
+            if path and path != "/dev/null":
+                targets.append(DiffHunkCommentTarget(path, "LEFT", old_line))
+            hunk_marked = True
+        elif line.startswith(" "):
+            old_line += 1
+            new_line += 1
+
+    return targets
 
 
 VIABLE_STRICT_REF = "origin/viable/strict"

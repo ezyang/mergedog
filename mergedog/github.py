@@ -596,6 +596,57 @@ def post_pr_comment(pr: int, body: str) -> None:
     )
 
 
+def get_pr_review_comments(pr: int, per_page: int = 100) -> list[dict]:
+    """Return inline PR review comments, oldest first."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        data = _gh_json(
+            [
+                "api",
+                f"repos/{REPO}/pulls/{pr}/comments"
+                f"?per_page={per_page}&page={page}",
+            ]
+        )
+        for c in data or []:
+            out.append(
+                {
+                    "body": c.get("body") or "",
+                    "commit_id": c.get("commit_id") or "",
+                    "path": c.get("path") or "",
+                    "line": c.get("line"),
+                    "side": c.get("side") or "",
+                }
+            )
+        if len(data or []) < per_page:
+            return out
+        page += 1
+
+
+def post_pr_review_comment(
+    pr: int,
+    *,
+    body: str,
+    commit_id: str,
+    path: str,
+    line: int,
+    side: str,
+) -> None:
+    """Post an inline comment on the PR diff."""
+    payload = {
+        "body": sanitize_untrusted_text(body),
+        "commit_id": commit_id,
+        "path": sanitize_untrusted_text(path),
+        "line": line,
+        "side": side,
+    }
+    _gh(
+        ["api", "-X", "POST", f"repos/{REPO}/pulls/{pr}/comments", "--input", "-"],
+        input_text=json.dumps(payload),
+        log_context="posting PR review comment",
+    )
+
+
 def has_label(pr_data: dict, label: str | None) -> bool:
     if label is None:
         return False

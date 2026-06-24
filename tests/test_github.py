@@ -1,3 +1,4 @@
+import json
 import subprocess
 import unittest
 from unittest import mock
@@ -171,6 +172,81 @@ class TestGhRetries(unittest.TestCase):
             input_text="body text",
             log_context="posting PR comment",
         )
+
+    def test_get_pr_review_comments_uses_rest_endpoint(self):
+        with mock.patch.object(
+            github,
+            "_gh_json",
+            side_effect=[
+                [
+                    {
+                        "body": "marker",
+                        "commit_id": "abc",
+                        "path": "foo.py",
+                        "line": 7,
+                        "side": "RIGHT",
+                    }
+                ],
+                [],
+            ],
+        ) as gh_json:
+            comments = github.get_pr_review_comments(123, per_page=1)
+
+        self.assertEqual(
+            comments,
+            [
+                {
+                    "body": "marker",
+                    "commit_id": "abc",
+                    "path": "foo.py",
+                    "line": 7,
+                    "side": "RIGHT",
+                }
+            ],
+        )
+        self.assertEqual(
+            gh_json.call_args_list[0].args[0],
+            [
+                "api",
+                f"repos/{github.REPO}/pulls/123/comments?per_page=1&page=1",
+            ],
+        )
+
+    def test_post_pr_review_comment_uses_rest_endpoint(self):
+        with mock.patch.object(github, "_gh") as gh:
+            github.post_pr_review_comment(
+                123,
+                body="body text",
+                commit_id="abc",
+                path="foo.py",
+                line=7,
+                side="RIGHT",
+            )
+
+        gh.assert_called_once()
+        args, kwargs = gh.call_args
+        self.assertEqual(
+            args[0],
+            [
+                "api",
+                "-X",
+                "POST",
+                f"repos/{github.REPO}/pulls/123/comments",
+                "--input",
+                "-",
+            ],
+        )
+        self.assertEqual(
+            json.loads(kwargs["input_text"]),
+            {
+                "body": "body text",
+                "commit_id": "abc",
+                "path": "foo.py",
+                "line": 7,
+                "side": "RIGHT",
+            },
+        )
+        self.assertEqual(kwargs["log_context"], "posting PR review comment")
 
     def test_add_label_uses_rest_issue_endpoint(self):
         with mock.patch.object(github, "_gh") as gh:
