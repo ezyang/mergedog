@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from mergedog import github
 from mergedog.log import log, set_approved, set_merging
+from mergedog.paths import REPO_SLUG
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_text, strip_html_comments
 from mergedog.status import write_status
@@ -56,6 +57,7 @@ _DRCI_UNRELATED_HEADINGS = {
     "UNRELATED FAILURE",
     "UNRELATED FAILURES",
 }
+_GIT_SHA_RE = re.compile(r"\A[0-9a-fA-F]{7,40}\Z")
 
 
 @dataclass(frozen=True)
@@ -349,7 +351,13 @@ def _format_pushed_change_lines(changes: list[PushedChange]) -> list[str]:
     lines: list[str] = []
     for change in changes:
         sha = change.sha[:12]
-        line = f"- `{sha}` — {sanitize_untrusted_text(change.summary)}"
+        sha_text = f"`{sha}`"
+        if _GIT_SHA_RE.fullmatch(change.sha):
+            sha_text = (
+                f"[`{sha}`](https://github.com/{REPO_SLUG}/commit/"
+                f"{change.sha})"
+            )
+        line = f"- {sha_text} — {sanitize_untrusted_text(change.summary)}"
         if change.subject:
             line += f": {sanitize_untrusted_text(change.subject)}"
         if change.source:

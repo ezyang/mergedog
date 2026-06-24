@@ -48,12 +48,14 @@ class TestHandoffComments(unittest.TestCase):
         sessions_idx = body.index("### Session 1")
         self.assertLess(pushed_idx, sessions_idx)
         self.assertIn(
-            "- `dddddddddddd` — merged main into the PR branch: "
+            "- [`dddddddddddd`](https://github.com/pytorch/pytorch/commit/"
+            f"{'d' * 40}) — merged main into the PR branch: "
             "[MERGEDOG] Merge main into PR branch",
             body,
         )
         self.assertIn(
-            "- `cccccccccccc` — pushed fix commit cccccccccccc "
+            "- [`cccccccccccc`](https://github.com/pytorch/pytorch/commit/"
+            f"{'c' * 40}) — pushed fix commit cccccccccccc "
             "(fix-CI (2026-05-08T13:00:00+00:00))",
             body,
         )
