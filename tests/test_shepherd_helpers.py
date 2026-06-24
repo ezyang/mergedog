@@ -569,6 +569,70 @@ class TestGhstackSubmitTrusted(unittest.TestCase):
         self.assertIn("a" * 40, trust.trusted_shas)
 
 
+class TestPublishGhstackFix(unittest.TestCase):
+    def test_pushes_audit_commit_before_fixup_and_returns_head(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1)
+        worktree = Path("/tmp/wt")
+        fix_sha = "b" * 40
+        head_sha = "a" * 40
+        events: list[str] = []
+
+        with (
+            mock.patch.object(
+                shepherd.repo, "commit_message", return_value="[MERGEDOG] fix"
+            ) as commit_message,
+            mock.patch.object(shepherd, "_wait_for_no_active_sev") as wait_sev,
+            mock.patch.object(
+                shepherd.repo,
+                "push_ref",
+                side_effect=lambda *args: events.append("push"),
+            ) as push_ref,
+            mock.patch.object(
+                shepherd.repo,
+                "fixup_into_parent",
+                side_effect=lambda *args: events.append("fixup"),
+            ) as fixup,
+            mock.patch.object(
+                shepherd, "_ghstack_submit_trusted", return_value=head_sha
+            ) as submit,
+            mock.patch.object(shepherd, "_wait_for_pr_head") as wait_head,
+            mock.patch.object(shepherd, "log"),
+        ):
+            result = shepherd._publish_ghstack_fix(
+                123,
+                worktree,
+                "gh/u/1/head",
+                fix_sha,
+                trust,
+                ignore_sev=False,
+            )
+
+        self.assertEqual(result, head_sha)
+        commit_message.assert_called_once_with(worktree, fix_sha)
+        wait_sev.assert_has_calls(
+            [
+                mock.call(
+                    "pushing ghstack LLM audit commit", ignore_sev=False
+                ),
+                mock.call("re-publishing via ghstack submit", ignore_sev=False),
+            ]
+        )
+        push_ref.assert_called_once_with(
+            worktree,
+            "origin",
+            fix_sha,
+            f"refs/heads/mergedog/123/{fix_sha}",
+        )
+        fixup.assert_called_once_with(worktree)
+        self.assertEqual(events, ["push", "fixup"])
+        submit.assert_called_once_with(
+            worktree, "gh/u/1/head", trust, "[MERGEDOG] fix"
+        )
+        wait_head.assert_called_once_with(123, head_sha)
+
+
 class TestLogRestoredState(unittest.TestCase):
     def _logged_lines(self, trust):
         with mock.patch.object(shepherd, "log") as logged:

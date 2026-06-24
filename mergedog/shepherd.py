@@ -1056,7 +1056,7 @@ def _publish_ghstack_fix(
     trust: TrustDB,
     *,
     ignore_sev: bool,
-) -> None:
+) -> str:
     """Fold claude's [MERGEDOG] commit into /orig and re-publish via ghstack.
 
     Fixup (not squash): claude's commit message is dropped from the resulting
@@ -1067,6 +1067,15 @@ def _publish_ghstack_fix(
     """
     # Capture claude's full [MERGEDOG] message before fixup discards it.
     fix_message = repo.commit_message(worktree, fix_sha)
+    audit_ref = f"refs/heads/mergedog/{pr}/{fix_sha}"
+    _wait_for_no_active_sev(
+        "pushing ghstack LLM audit commit", ignore_sev=ignore_sev
+    )
+    repo.push_ref(worktree, "origin", fix_sha, audit_ref)
+    log(
+        f"pushed ghstack LLM audit commit {fix_sha[:12]} to "
+        f"origin/{audit_ref.removeprefix('refs/heads/')}"
+    )
     repo.fixup_into_parent(worktree)
     _wait_for_no_active_sev(
         "re-publishing via ghstack submit", ignore_sev=ignore_sev
@@ -1078,6 +1087,7 @@ def _publish_ghstack_fix(
         f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}"
     )
     _wait_for_pr_head(pr, new_head_sha)
+    return new_head_sha
 
 
 def _run_operator_fix(
@@ -1139,9 +1149,10 @@ def _run_operator_fix(
     trust.spurious_check_names = []
     _consume_fix_budget(trust)
     if is_ghstack:
-        _publish_ghstack_fix(
+        new_head_sha = _publish_ghstack_fix(
             pr, worktree, branch, new_sha, trust, ignore_sev=ignore_sev
         )
+        _post_llm_hunk_comments(pr, worktree, new_sha, commit_id=new_head_sha)
     else:
         assert fork_remote is not None
         trust.trust(new_sha)
@@ -2675,9 +2686,12 @@ def _shepherd_body(
                     spurious_check_names.clear()
                     trust.spurious_check_names = []
                     fix_commits_pushed = _consume_fix_budget(trust)
-                    _publish_ghstack_fix(
+                    new_head_sha = _publish_ghstack_fix(
                         pr, worktree, branch, new_sha, trust,
                         ignore_sev=ignore_sev,
+                    )
+                    _post_llm_hunk_comments(
+                        pr, worktree, new_sha, commit_id=new_head_sha
                     )
                     last_status = None
                     continue

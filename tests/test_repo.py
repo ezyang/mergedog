@@ -111,7 +111,7 @@ class TestDiffHunkCommentTargets(unittest.TestCase):
             self.assertEqual(
                 repo.diff_hunk_comment_targets(root, sha),
                 [
-                    repo.DiffHunkCommentTarget("file.txt", "LEFT", 2),
+                    repo.DiffHunkCommentTarget("file.txt", "RIGHT", 2),
                     repo.DiffHunkCommentTarget("file.txt", "RIGHT", 4),
                     repo.DiffHunkCommentTarget("new.txt", "RIGHT", 1),
                 ],

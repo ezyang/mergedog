@@ -536,6 +536,16 @@ def push_to_fork(worktree: Path, remote: str | None = None, branch: str | None =
         run(["git", "push"], cwd=worktree, capture=False, loud=True)
 
 
+def push_ref(worktree: Path, remote: str, sha: str, ref: str) -> None:
+    """Push ``sha`` to an explicit remote ref."""
+    run(
+        ["git", "push", remote, f"{sha}:{ref}"],
+        cwd=worktree,
+        capture=False,
+        loud=True,
+    )
+
+
 def head_sha(worktree: Path) -> str:
     return run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
 
@@ -580,11 +590,21 @@ def diff_hunk_comment_targets(
     new_path = ""
     old_line = 0
     new_line = 0
+    first_left: DiffHunkCommentTarget | None = None
+    first_right: DiffHunkCommentTarget | None = None
     in_hunk = False
-    hunk_marked = False
+
+    def flush_hunk() -> None:
+        nonlocal first_left, first_right
+        target = first_right or first_left
+        if target is not None:
+            targets.append(target)
+        first_left = None
+        first_right = None
 
     for line in diff.splitlines():
         if line.startswith("diff --git "):
+            flush_hunk()
             old_path = ""
             new_path = ""
             in_hunk = False
@@ -597,27 +617,28 @@ def diff_hunk_comment_targets(
             continue
         match = _DIFF_HUNK_RE.match(line)
         if match is not None:
+            flush_hunk()
             old_line = int(match.group("old"))
             new_line = int(match.group("new"))
             in_hunk = True
-            hunk_marked = False
             continue
-        if not in_hunk or hunk_marked:
+        if not in_hunk:
             continue
         if line.startswith("+"):
             path = new_path if new_path != "/dev/null" else old_path
-            if path and path != "/dev/null":
-                targets.append(DiffHunkCommentTarget(path, "RIGHT", new_line))
-            hunk_marked = True
+            if first_right is None and path and path != "/dev/null":
+                first_right = DiffHunkCommentTarget(path, "RIGHT", new_line)
+            new_line += 1
         elif line.startswith("-"):
             path = old_path if old_path != "/dev/null" else new_path
-            if path and path != "/dev/null":
-                targets.append(DiffHunkCommentTarget(path, "LEFT", old_line))
-            hunk_marked = True
+            if first_left is None and path and path != "/dev/null":
+                first_left = DiffHunkCommentTarget(path, "LEFT", old_line)
+            old_line += 1
         elif line.startswith(" "):
             old_line += 1
             new_line += 1
 
+    flush_hunk()
     return targets
 
 
