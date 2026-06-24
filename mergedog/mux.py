@@ -62,7 +62,7 @@ from rich.text import Text  # noqa: E402
 from textual import work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.suggester import SuggestFromList  # noqa: E402
-from textual.widgets import DataTable, Input  # noqa: E402
+from textual.widgets import DataTable, Input, Static  # noqa: E402
 
 
 COMMAND_SUGGESTIONS = [
@@ -96,6 +96,7 @@ PHASE_YOUR_EASY_ACTION = "🟡"
 PHASE_YOUR_REVIEW_ACTION = "🟠"
 PHASE_EXTERNAL_ACTION = "🔵"
 PHASE_HALTED = "🔴"
+CLEANUP_HINT = "Run 'cleanup' to remove finished mergedogs"
 
 
 class HistoryInput(Input):
@@ -793,6 +794,11 @@ def _terminate_group(p: subprocess.Popen, *, grace: float = 5.0) -> None:
 class MuxApp(App):
     CSS = """
     DataTable { height: 1fr; }
+    #cleanup-hint {
+        display: none;
+        padding: 0 1;
+        color: $text-muted;
+    }
     Input { dock: bottom; }
     """
 
@@ -834,6 +840,7 @@ class MuxApp(App):
 
     def compose(self) -> ComposeResult:
         yield DataTable()
+        yield Static("", id="cleanup-hint")
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
@@ -939,6 +946,12 @@ class MuxApp(App):
             for job, (p, _, _) in self.procs.items()
             if job not in cleanup_jobs and p.poll() in (0, EXIT_PR_NOT_ACTIONABLE)
         )
+
+    def _refresh_cleanup_hint(self) -> None:
+        hint = self.query_one("#cleanup-hint", Static)
+        completed = bool(self._completed_jobs())
+        hint.update(CLEANUP_HINT if completed else "")
+        hint.display = completed
 
     def _restart_jobs(
         self,
@@ -1223,6 +1236,7 @@ class MuxApp(App):
     def _refresh(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
+        self._refresh_cleanup_hint()
         parent_hints: dict[JobKey, JobKey] = {}
         for job, (_, _, log_path) in self.procs.items():
             parent_pr = _read_stack_parent_pr_from_log(log_path)

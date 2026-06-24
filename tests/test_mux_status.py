@@ -28,6 +28,28 @@ class _FakeTable:
         self.rows.append(cells)
 
 
+class _FakeHint:
+    def __init__(self):
+        self.content = ""
+        self.display = False
+
+    def update(self, content):
+        self.content = content
+
+
+def _query_one_for(table, hint=None):
+    hint = hint or _FakeHint()
+
+    def query_one(selector, *args):
+        if selector is mux.DataTable:
+            return table
+        if selector == "#cleanup-hint":
+            return hint
+        raise AssertionError(f"unexpected query_one selector: {selector!r}")
+
+    return query_one
+
+
 class TestMuxInput(unittest.TestCase):
     def test_command_suggester_completes_cleanup_prefix(self):
         suggester = mux.SuggestFromList(mux.COMMAND_SUGGESTIONS)
@@ -119,7 +141,9 @@ class TestMuxStructuredStatus(unittest.TestCase):
             table = _FakeTable()
 
             with (
-                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -296,9 +320,14 @@ class TestMuxStructuredStatus(unittest.TestCase):
             app._pr_titles = {mux._pr_job(123): "Test PR"}
             app._pr_status = {}
             table = _FakeTable()
+            hint = _FakeHint()
 
             with (
-                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_query_one_for(table, hint),
+                ),
                 mock.patch.object(app, "_prune_job") as prune_job,
                 mock.patch.object(mux, "read_status", return_value=None),
             ):
@@ -307,6 +336,8 @@ class TestMuxStructuredStatus(unittest.TestCase):
         prune_job.assert_not_called()
         self.assertEqual(len(table.rows), 1)
         self.assertEqual(table.rows[0][2], "")
+        self.assertEqual(hint.content, mux.CLEANUP_HINT)
+        self.assertTrue(hint.display)
 
     def test_refresh_shows_cleanup_progress(self):
         with tempfile.TemporaryDirectory() as d:
@@ -330,9 +361,14 @@ class TestMuxStructuredStatus(unittest.TestCase):
             app._pr_titles = {job: "Test PR"}
             app._pr_status = {}
             table = _FakeTable()
+            hint = _FakeHint()
 
             with (
-                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_query_one_for(table, hint),
+                ),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -348,6 +384,8 @@ class TestMuxStructuredStatus(unittest.TestCase):
             table.rows[0][3],
             "cleanup: removing worktree for [123] (1/1)",
         )
+        self.assertEqual(hint.content, "")
+        self.assertFalse(hint.display)
 
     def test_refresh_uses_sidecar_message_instead_of_log_tail(self):
         with tempfile.TemporaryDirectory() as d:
@@ -366,7 +404,9 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "message": "waiting for CI: 4/9 checks done",
             }
             with (
-                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -399,7 +439,9 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "message": "ready for human merge",
             }
             with (
-                mock.patch.object(app, "query_one", return_value=table),
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
