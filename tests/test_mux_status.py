@@ -640,7 +640,6 @@ class TestMuxCommands(unittest.TestCase):
     def test_shepherd_args_applies_disabled_fix_cap_default(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.ignore_sev = False
-        app.manage_mergedog_label = False
         app.max_fix_commits = 0
         app.gchat_to = None
         app.repo_slug = None
@@ -653,7 +652,6 @@ class TestMuxCommands(unittest.TestCase):
     def test_shepherd_args_preserves_explicit_fix_cap(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.ignore_sev = False
-        app.manage_mergedog_label = False
         app.max_fix_commits = 0
         app.gchat_to = None
         app.repo_slug = None
@@ -743,7 +741,6 @@ class TestMuxCommands(unittest.TestCase):
             app._unresumable_jobs = set()
             app._pr_titles = {}
             app.ignore_sev = False
-            app.manage_mergedog_label = False
             app.gchat_to = None
             app.repo_slug = None
 
@@ -885,7 +882,6 @@ class TestMuxCommands(unittest.TestCase):
             app._unresumable_jobs = set()
             app._pr_titles = {}
             app.ignore_sev = False
-            app.manage_mergedog_label = False
             app.gchat_to = None
             app.repo_slug = None
 
@@ -1123,6 +1119,11 @@ class TestMuxJobPersistence(unittest.TestCase):
             root = Path(d)
             prs_file = root / "mux-prs.json"
             jobs_file = root / "mux-jobs.json"
+            # A parked job is still a tracked mux member, so it already has
+            # the ``mergedog`` label. Persist it accordingly.
+            jobs_file.write_text(
+                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
+            )
 
             app = mux.MuxApp.__new__(mux.MuxApp)
             parked = mux._pr_job(123)
@@ -1131,7 +1132,6 @@ class TestMuxJobPersistence(unittest.TestCase):
             app._unresumable_jobs = set()
             app._pr_titles = {}
             app.ignore_sev = False
-            app.manage_mergedog_label = False
             app.gchat_to = None
             app.repo_slug = None
 
@@ -1139,6 +1139,7 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
                 mock.patch.object(mux, "_spawn") as spawn,
+                mock.patch.object(mux.github, "add_label") as add_label,
             ):
                 spawn.return_value = (
                     _FakeProc(None),
@@ -1149,6 +1150,98 @@ class TestMuxJobPersistence(unittest.TestCase):
 
         self.assertEqual(result, "[123] started")
         self.assertEqual(app._parked_jobs, {})
+        # Un-parking a job that was already tracked must not re-stamp the
+        # label -- it only joins the mux once.
+        add_label.assert_not_called()
+
+
+class TestMergedogMuxLabel(unittest.TestCase):
+    """The ``mergedog`` label tracks mux membership, not shepherd lifecycle."""
+
+    def _bare_app(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {}
+        app._parked_jobs = {}
+        app._cleanup_jobs = set()
+        app._unresumable_jobs = set()
+        app._pr_titles = {}
+        app.ignore_sev = False
+        app.gchat_to = None
+        app.repo_slug = None
+        return app
+
+    def test_add_mux_job_reports_first_join_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                self.assertTrue(mux._add_mux_job(mux._pr_job(123)))
+                self.assertFalse(mux._add_mux_job(mux._pr_job(123)))
+                jobs_file.write_text(
+                    json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
+                )
+                # Re-adding a parked (still-tracked) job is not a fresh join.
+                self.assertFalse(mux._add_mux_job(mux._pr_job(123)))
+
+    def test_add_stamps_label_on_first_join(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            app = self._bare_app()
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_spawn") as spawn,
+                mock.patch.object(mux.github, "add_label") as add_label,
+            ):
+                spawn.return_value = (_FakeProc(None), object(), Path("123.log"))
+                app._dispatch_command("add 123")
+                # A second add of the now-running job must not re-stamp.
+                app.procs[mux._pr_job(123)] = (
+                    _FakeProc(0),
+                    object(),
+                    Path("123.log"),
+                )
+                app._dispatch_command("add 123")
+
+        add_label.assert_called_once_with(123, mux.MERGEDOG_LABEL, loud=False)
+
+    def test_remove_strips_label(self):
+        app = self._bare_app()
+        job = mux._pr_job(123)
+        app.procs = {job: (_FakeProc(0), object(), Path("123.log"))}
+        with (
+            mock.patch.object(app, "_prune_job"),
+            mock.patch.object(mux.github, "remove_label") as remove_label,
+        ):
+            result = app._do_remove(123)
+        self.assertEqual(result, "[123] removed")
+        remove_label.assert_called_once_with(123, mux.MERGEDOG_LABEL)
+
+    def test_cancel_keeps_label(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            app = self._bare_app()
+            job = mux._pr_job(123)
+            app.procs = {job: (_FakeProc(None), object(), Path("123.log"))}
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+                mock.patch.object(mux, "_terminate_group"),
+                mock.patch.object(mux.github, "remove_label") as remove_label,
+            ):
+                result = app._do_cancel(123)
+        self.assertEqual(result, "[123] terminated")
+        # Cancel only drops the job from the resume list; the label stays so a
+        # completed/cancelled PR keeps its mux marker until explicit removal.
+        remove_label.assert_not_called()
 
     def test_parked_jobs_count_as_dead(self):
         app = mux.MuxApp.__new__(mux.MuxApp)

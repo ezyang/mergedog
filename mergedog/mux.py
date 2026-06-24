@@ -27,9 +27,6 @@ Commands typed at the bottom (enter to submit):
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
                                       every shepherd spawn
-    mergedog-label [on|off]           toggle (or show) the mux-wide
-                                      ``--manage-mergedog-label`` default
-                                      applied to every shepherd spawn
     fix-cap [N|off|default]           set/show the mux-wide
                                       ``--max-fix-commits`` default. ``off``
                                       disables the cap for future spawns
@@ -78,7 +75,6 @@ COMMAND_SUGGESTIONS = [
     "ignore-sev ",
     "log ",
     "mark-spurious ",
-    "mergedog-label ",
     "migrate",
     "quit",
     "reassess ",
@@ -154,7 +150,11 @@ from mergedog.paths import (  # noqa: E402
     status_file,
     worktree_dir,
 )
-from mergedog.shepherd import EXIT_PR_NOT_ACTIONABLE, MAX_FIX_COMMITS  # noqa: E402
+from mergedog.shepherd import (  # noqa: E402
+    EXIT_PR_NOT_ACTIONABLE,
+    MAX_FIX_COMMITS,
+    MERGEDOG_LABEL,
+)
 from mergedog.status import read_status  # noqa: E402
 from mergedog.state import TrustDB  # noqa: E402
 
@@ -672,14 +672,23 @@ def _write_mux_jobs(jobs: list[JobKey]) -> None:
     _write_mux_job_records({job: {} for job in jobs})
 
 
-def _add_mux_job(job: JobKey) -> None:
+def _add_mux_job(job: JobKey) -> bool:
+    """Persist ``job`` as a tracked mux member.
+
+    Returns ``True`` only when the job was not previously tracked at all --
+    i.e. it is genuinely joining the mux. Re-adding an already-tracked job
+    (restart/rebase/reassess) or un-parking a halted one returns ``False``,
+    so callers can apply the ``mergedog`` join label exactly once.
+    """
     records = _read_mux_job_records()
+    newly_joined = job not in records
     # Always rewrite the record: a (re)spawned job sheds any recorded
     # exit code, so a later resume treats it as live rather than parked.
     if records.get(job) == {}:
-        return
+        return False
     records[job] = {}
     _write_mux_job_records(records)
+    return newly_joined
 
 
 def _remove_mux_job(job: JobKey) -> None:
@@ -810,7 +819,6 @@ class MuxApp(App):
         *,
         parked: dict[JobKey, int] | None = None,
         ignore_sev: bool = False,
-        manage_mergedog_label: bool = False,
         max_fix_commits: int = MAX_FIX_COMMITS,
         gchat_to: str | None = None,
         repo_slug: str = REPO_SLUG,
@@ -830,7 +838,6 @@ class MuxApp(App):
         self._parked_jobs: dict[JobKey, int] = dict(parked or {})
         self._initial = [_coerce_job(job) for job in initial]
         self.ignore_sev = ignore_sev
-        self.manage_mergedog_label = manage_mergedog_label
         self.max_fix_commits = max_fix_commits
         self.gchat_to = gchat_to
         self.repo_slug = repo_slug
@@ -845,7 +852,7 @@ class MuxApp(App):
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
                 "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | clean | "
-                "remove <pr> | log <pr> | fix-cap | mergedog-label | "
+                "remove <pr> | log <pr> | fix-cap | "
                 "help | migrate | quit"
             ),
             suggester=SuggestFromList(COMMAND_SUGGESTIONS),
@@ -866,11 +873,6 @@ class MuxApp(App):
         out = list(extra)
         if self.ignore_sev and "--ignore-sev" not in out:
             out = ["--ignore-sev", *out]
-        if (
-            self.manage_mergedog_label
-            and "--manage-mergedog-label" not in out
-        ):
-            out = ["--manage-mergedog-label", *out]
         max_fix_commits = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
         if max_fix_commits != MAX_FIX_COMMITS and not any(
             a == "--max-fix-commits" or a.startswith("--max-fix-commits=")
@@ -912,8 +914,33 @@ class MuxApp(App):
         self._unresumable_jobs.discard(job)
         if alias_job is not None and alias_job != job:
             _remove_mux_job(alias_job)
-        _add_mux_job(job)
+        if _add_mux_job(job):
+            # First time this PR joins the mux: stamp the ``mergedog`` label
+            # so it is visible on GitHub as long-term tracked. Restarts and
+            # rebases re-enter _do_add_job but _add_mux_job returns False for
+            # an already-tracked job, so we don't re-hit the API each time.
+            self._set_mergedog_label(job, present=True)
         return f"[{label}] started"
+
+    def _set_mergedog_label(self, job: JobKey | int, *, present: bool) -> None:
+        """Best-effort add/remove of the ``mergedog`` mux-membership label.
+
+        The label tracks mux membership only: added when a PR joins, removed
+        only on an explicit ``remove``. A failure here never blocks the
+        command -- it is surfaced as a notification and otherwise ignored.
+        """
+        _, pr = _coerce_job(job)
+        try:
+            if present:
+                github.add_label(pr, MERGEDOG_LABEL, loud=False)
+            else:
+                github.remove_label(pr, MERGEDOG_LABEL)
+        except Exception as e:
+            self.notify(
+                f"[{pr}] mergedog label {'add' if present else 'remove'} "
+                f"failed: {e}",
+                severity="warning",
+            )
 
     def _do_add(self, pr: int, extra: list[str]) -> str:
         return self._do_add_job(_pr_job(pr), extra)
@@ -1061,26 +1088,6 @@ class MuxApp(App):
             f"use `rebase all` to apply to running PRs)"
         )
 
-    def _do_mergedog_label(self, rest: list[str]) -> str:
-        if not rest:
-            state = "on" if self.manage_mergedog_label else "off"
-            return f"mergedog-label is {state}"
-        arg = rest[0].lower()
-        if arg in ("on", "true", "1", "yes"):
-            new = True
-        elif arg in ("off", "false", "0", "no"):
-            new = False
-        elif arg == "toggle":
-            new = not self.manage_mergedog_label
-        else:
-            return "usage: mergedog-label [on|off|toggle]"
-        self.manage_mergedog_label = new
-        state = "on" if new else "off"
-        return (
-            f"mergedog-label {state} (applies to future spawns; "
-            f"use `rebase all` to apply to running PRs)"
-        )
-
     def _do_fix_cap(self, rest: list[str]) -> str:
         current = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
         if not rest:
@@ -1138,11 +1145,17 @@ class MuxApp(App):
         if entry is None:
             if getattr(self, "_parked_jobs", {}).pop(job, None) is not None:
                 self._prune_job(job)
+                # Explicit removal from mux is the only thing that strips the
+                # ``mergedog`` label -- completion and crashes leave it on.
+                self._set_mergedog_label(job, present=False)
                 return f"[{label}] removed"
             return f"[{label}] unknown"
         if entry[0].poll() is None:
             _terminate_group(entry[0])
         self._prune_job(job)
+        # Explicit removal from mux is the only thing that strips the
+        # ``mergedog`` label -- completion and crashes leave it on.
+        self._set_mergedog_label(job, present=False)
         return f"[{label}] removed"
 
     def _do_remove(self, pr: int) -> str:
@@ -1475,8 +1488,6 @@ class MuxApp(App):
                 return self._format_migrate()
             elif cmd in ("ignore-sev", "ignore_sev"):
                 return self._do_ignore_sev(rest)
-            elif cmd in ("mergedog-label", "mergedog_label"):
-                return self._do_mergedog_label(rest)
             elif cmd in ("fix-cap", "fix_cap"):
                 return self._do_fix_cap(rest)
             elif cmd == "status":
@@ -1737,16 +1748,6 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--manage-mergedog-label",
-        action="store_true",
-        help=(
-            "Mux-wide default: pass --manage-mergedog-label to every spawned "
-            "shepherd so it adds the ``mergedog`` label at startup and "
-            "removes it on exit. Toggle at runtime with the "
-            "``mergedog-label on|off`` command."
-        ),
-    )
-    parser.add_argument(
         "--max-fix-commits",
         type=int,
         default=MAX_FIX_COMMITS,
@@ -1815,7 +1816,6 @@ def main() -> int:
         initial,
         parked=parked,
         ignore_sev=args.ignore_sev,
-        manage_mergedog_label=args.manage_mergedog_label,
         max_fix_commits=args.max_fix_commits,
         gchat_to=args.gchat_to,
         repo_slug=args.repo,

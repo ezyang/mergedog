@@ -1745,11 +1745,11 @@ def _log_restored_state(trust: TrustDB) -> None:
 
 
 def _sigterm_to_systemexit(signum, frame) -> None:  # type: ignore[no-untyped-def]
-    """Turn SIGTERM into SystemExit so the label-cleanup ``finally`` runs.
+    """Turn SIGTERM into SystemExit so ``finally`` blocks run on shutdown.
 
     ``mux cancel`` sends SIGTERM to the shepherd's process group; without a
-    handler Python exits abruptly and the ``mergedog`` label sticks on the
-    PR forever. Raising SystemExit lets the wrapper in ``shepherd`` clean up.
+    handler Python exits abruptly and in-flight cleanup (status writes,
+    worktree locks) is skipped. Raising SystemExit lets normal unwinding run.
     """
     sys.exit(128 + signum)
 
@@ -1763,7 +1763,6 @@ def shepherd(
     max_fix_commits: int | None = None,
     extra_context: str | None = None,
     operator_fix_context: str | None = None,
-    manage_mergedog_label: bool = False,
 ) -> None:
     configure_status_pr(pr)
     if max_fix_commits is None:
@@ -1777,36 +1776,24 @@ def shepherd(
     pr_data = github.get_pr(pr)
     _validate_pr(pr_data)
 
-    # Optional coordination signal. Keep best-effort semantics so a transient
-    # GitHub label failure does not abort the actual shepherding work.
-    labelled = False
-    if manage_mergedog_label:
-        try:
-            github.add_label(pr, MERGEDOG_LABEL)
-            labelled = True
-        except Exception as e:
-            log(f"WARNING: failed to add {MERGEDOG_LABEL} label: {e}")
+    # The ``mergedog`` label is owned by the mux: it marks a PR as tracked
+    # long-term and is added/removed only as the PR joins or leaves mux. The
+    # shepherd deliberately never touches it, so finishing -- or crashing --
+    # leaves the label exactly as the mux set it.
     signal.signal(signal.SIGTERM, _sigterm_to_systemexit)
     faulthandler.enable()
     faulthandler.register(signal.SIGUSR1)
-    try:
-        _shepherd_body(
-            pr,
-            pr_data,
-            rebase,
-            accept_divergence,
-            ignore_sev,
-            reassess,
-            max_fix_commits,
-            extra_context,
-            operator_fix_context,
-        )
-    finally:
-        if labelled:
-            try:
-                github.remove_label(pr, MERGEDOG_LABEL)
-            except Exception as e:
-                log(f"WARNING: failed to remove {MERGEDOG_LABEL} label: {e}")
+    _shepherd_body(
+        pr,
+        pr_data,
+        rebase,
+        accept_divergence,
+        ignore_sev,
+        reassess,
+        max_fix_commits,
+        extra_context,
+        operator_fix_context,
+    )
 
 
 def _shepherd_body(

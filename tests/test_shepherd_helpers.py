@@ -52,17 +52,13 @@ class TestMergedogLabelManagement(unittest.TestCase):
             shepherd.shepherd(123, **kwargs)
         return add_label, remove_label
 
-    def test_default_does_not_touch_mergedog_label(self):
+    def test_shepherd_never_touches_mergedog_label(self):
+        # The label is owned by the mux (added on join, removed on explicit
+        # ``remove``). The shepherd must never add or remove it, so finishing
+        # or crashing leaves the label exactly as the mux set it.
         add_label, remove_label = self._run_shepherd_wrapper()
         add_label.assert_not_called()
         remove_label.assert_not_called()
-
-    def test_explicit_flag_adds_and_removes_mergedog_label(self):
-        add_label, remove_label = self._run_shepherd_wrapper(
-            manage_mergedog_label=True
-        )
-        add_label.assert_called_once_with(123, shepherd.MERGEDOG_LABEL)
-        remove_label.assert_called_once_with(123, shepherd.MERGEDOG_LABEL)
 
     def test_max_fix_commits_passes_through_to_body(self):
         pr_data = {"number": 123, "labels": [], "isDraft": False, "state": "OPEN"}

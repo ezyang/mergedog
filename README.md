@@ -54,7 +54,7 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--manage-mergedog-label] [--max-fix-commits N] [--root DIR]
+python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--max-fix-commits N] [--root DIR]
 ```
 
 - With no PR arguments, the mux restarts every job in the resume list
@@ -63,9 +63,6 @@ python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume
 - `--no-resume-known` starts only the PRs provided on the command line, or no
   jobs if none are provided.
 - `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
-- `--manage-mergedog-label` tells all spawned shepherds to add the `mergedog`
-  label at startup and remove it on exit. By default, shepherds do not mutate
-  this label.
 - `--max-fix-commits N` changes the fix-commit safety cap for all spawned
   shepherds. The default is 5; use 0 to disable the cap.
 - `--root DIR` redirects all on-disk state to a different directory (also
@@ -95,13 +92,13 @@ TUI commands (type in the input bar at the bottom):
 
 | Command | Effect |
 |---|---|
-| `add <pr>` or just `<pr>` | Start shepherding a PR |
+| `add <pr>` or just `<pr>` | Start shepherding a PR (stamps the `mergedog` label the first time it joins the mux) |
 | `fix <pr> <trusted request>` | Restart a PR with a trusted operator request for a one-shot `[MERGEDOG]` follow-up commit |
 | `cancel <pr>` | SIGTERM the shepherd; keep state but do not resume it next mux start |
 | `restart <pr>` | Kill and re-spawn |
 | `restart all` | Kill all current session shepherds and respawn |
 | `restart dead` | Re-spawn only crashed shepherds |
-| `remove <pr>` | SIGTERM + wipe worktree, state, context |
+| `remove <pr>` | SIGTERM + wipe worktree, state, context, and strip the `mergedog` label |
 | `rebase <pr>` | Start or restart a shepherd with `--rebase` |
 | `rebase all` | Kill all current session shepherds and respawn with `--rebase` |
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
@@ -109,7 +106,6 @@ TUI commands (type in the input bar at the bottom):
 | `cleanup` or `clean` | Forget successful completed shepherds |
 | `log <pr>` | Print the log file path |
 | `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
-| `mergedog-label [on\|off]` | Toggle `mergedog` label management for future spawns |
 | `fix-cap [N\|off\|default]` | Set the fix-commit cap for future spawns (`off` disables it) |
 | `help` | Show phase colors and common commands |
 | `migrate` | Print resume instructions for moving to another host |
@@ -167,7 +163,6 @@ These work on the PR shepherd entry point:
 | `--accept-divergence` | Proceed even if PR head differs from the approval commit |
 | `--ignore-sev` | Don't park on open `ci: sev` issues |
 | `--reassess` | Re-invoke Claude for failures previously judged spurious |
-| `--manage-mergedog-label` | Add the `mergedog` label at startup and remove it on exit |
 | `--max-fix-commits N` | Halt after N `[MERGEDOG]` fix commits; 0 disables the cap |
 | `--extra-context TEXT` | Operator hint injected into Claude's fix prompt (trusted) |
 | `--extra-context-file PATH` | Same, but reads from a file (mutually exclusive with above) |
