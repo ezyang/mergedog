@@ -23,6 +23,11 @@ class TestRageReport(unittest.TestCase):
                 "2026-01-01T00:00:00  fix     PR#123  abc  subject\n"
                 "2026-01-01T00:00:00  fix     PR#456  def  other\n"
             )
+            (root / "gh-api-calls.jsonl").write_text(
+                '{"operation": "pr:view", "pr": 123}\n'
+                '{"operation": "pr:view", "pr": 456}\n'
+                '{"operation": "api:check-runs", "process_pr": 123}\n'
+            )
 
             report = rage.build_report(123, root=root)
 
@@ -32,6 +37,8 @@ class TestRageReport(unittest.TestCase):
         self.assertIn("[123, 456]", report)
         self.assertIn("PR#123", report)
         self.assertNotIn("PR#456", report)
+        self.assertIn('"operation": "api:check-runs"', report)
+        self.assertNotIn('"pr": 456', report)
 
     def test_build_report_redacts_credentials(self):
         with tempfile.TemporaryDirectory() as td:

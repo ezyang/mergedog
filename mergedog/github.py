@@ -11,13 +11,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from mergedog.log import log
 from mergedog.net import github_api_env_extra, is_transient_network_error
-from mergedog.paths import CI_LOGS_DIR, REPO_SLUG
+from mergedog.paths import CI_LOGS_DIR, GH_API_CALLS_LOG, REPO_SLUG
 from mergedog.process import run
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_text
@@ -34,6 +35,244 @@ _GH_FALLBACK_PATHS = ("/usr/local/bin/gh",)
 _GH_MAX_RETRIES = 3
 _GH_RETRY_DELAY = 5  # seconds
 _GH_COMMAND = ["gh"]
+
+
+def _safe_gh_args(args: list[str]) -> list[str]:
+    """Return argv suitable for persistent diagnostics.
+
+    ``gh api graphql`` carries its query in argv. The query is fixed
+    mergedog code today, but it is large and not useful for quota
+    attribution; logging the operation plus variables is enough.
+    """
+    safe: list[str] = []
+    for arg in args:
+        if arg.startswith("query="):
+            safe.append("query=<redacted>")
+        else:
+            safe.append(arg)
+    return safe
+
+
+def _maybe_int(value: object) -> int | None:
+    if value is None:
+        return None
+    text = str(value)
+    return int(text) if text.isdigit() else None
+
+
+def _first_query_value(query: dict[str, list[str]], key: str) -> str | None:
+    values = query.get(key)
+    if not values:
+        return None
+    return values[0]
+
+
+def _current_process_pr() -> int | None:
+    env_pr = _maybe_int(os.environ.get("MERGEDOG_PR"))
+    if env_pr is not None:
+        return env_pr
+    for arg in sys.argv[1:]:
+        if arg.isdigit():
+            return int(arg)
+        if "/pull/" in arg:
+            tail = arg.rsplit("/pull/", 1)[-1]
+            head = tail.split("/", 1)[0].split("#", 1)[0]
+            parsed = _maybe_int(head)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_api_endpoint(args: list[str]) -> tuple[str | None, str, int | None]:
+    """Return ``(endpoint, method, graphql_pr)`` for ``gh api`` argv."""
+    method = "GET"
+    endpoint: str | None = None
+    graphql_pr: int | None = None
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg in {"-X", "--method"} and i + 1 < len(args):
+            method = args[i + 1]
+            i += 2
+            continue
+        if arg in {"-F", "-f", "--field", "--raw-field"} and i + 1 < len(args):
+            value = args[i + 1]
+            if value.startswith("pr="):
+                graphql_pr = _maybe_int(value.split("=", 1)[1])
+            i += 2
+            continue
+        if arg in {"--jq", "--input"} and i + 1 < len(args):
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        if endpoint is None:
+            endpoint = arg
+        i += 1
+    return endpoint, method, graphql_pr
+
+
+def _classify_gh_args(args: list[str]) -> dict[str, object]:
+    """Extract stable attribution fields from a ``gh`` argv tail."""
+    fields: dict[str, object] = {
+        "args": _safe_gh_args(args),
+        "operation": " ".join(args[:2]) if len(args) >= 2 else " ".join(args),
+    }
+    if not args:
+        return fields
+
+    if args[0] == "pr" and len(args) >= 2:
+        fields["operation"] = f"pr:{args[1]}"
+        if len(args) >= 3:
+            pr = _maybe_int(args[2])
+            if pr is not None:
+                fields["pr"] = pr
+        return fields
+
+    if args[0] == "issue" and len(args) >= 2:
+        fields["operation"] = f"issue:{args[1]}"
+        return fields
+
+    if args[0] != "api":
+        return fields
+
+    endpoint, method, graphql_pr = _extract_api_endpoint(args)
+    fields["method"] = method
+    if endpoint is None:
+        fields["operation"] = "api"
+        return fields
+    fields["endpoint"] = endpoint
+    if endpoint == "graphql":
+        fields["operation"] = "api:graphql"
+        if graphql_pr is not None:
+            fields["pr"] = graphql_pr
+        return fields
+
+    path, _, query_text = endpoint.partition("?")
+    query = parse_qs(query_text)
+    repo_prefix = f"repos/{REPO}/"
+    rel = path[len(repo_prefix):] if path.startswith(repo_prefix) else path
+    parts = rel.split("/")
+
+    if rel == "labels":
+        fields["operation"] = "api:repo-labels"
+    elif len(parts) >= 3 and parts[0] == "commits" and parts[2] == "check-runs":
+        fields["operation"] = "api:check-runs"
+        fields["sha"] = parts[1]
+        page = _maybe_int(_first_query_value(query, "page"))
+        if page is not None:
+            fields["page"] = page
+    elif len(parts) >= 2 and parts[0] == "commits":
+        fields["operation"] = "api:commit"
+        fields["sha"] = parts[1]
+    elif len(parts) >= 2 and parts[0] == "actions" and parts[1] == "runs":
+        if len(parts) >= 4 and parts[3] == "approve":
+            fields["operation"] = "api:workflow-run-approve"
+            fields["run_id"] = parts[2]
+        elif len(parts) >= 3:
+            fields["operation"] = "api:workflow-run"
+            fields["run_id"] = parts[2]
+        else:
+            fields["operation"] = "api:workflow-runs-for-sha"
+            head_sha = _first_query_value(query, "head_sha")
+            if head_sha:
+                fields["sha"] = head_sha
+    elif len(parts) >= 3 and parts[0] == "issues" and parts[2] == "labels":
+        fields["operation"] = "api:issue-labels"
+        pr = _maybe_int(parts[1])
+        if pr is not None:
+            fields["pr"] = pr
+    elif len(parts) >= 3 and parts[0] == "pulls" and parts[2] == "comments":
+        fields["operation"] = "api:pull-comments"
+        pr = _maybe_int(parts[1])
+        if pr is not None:
+            fields["pr"] = pr
+    elif endpoint == "user":
+        fields["operation"] = "api:user"
+    else:
+        fields["operation"] = f"api:{parts[0]}" if parts else "api"
+    return fields
+
+
+def _gh_callsite() -> tuple[str | None, str | None]:
+    """Return ``(github_wrapper, external_caller)`` for attribution."""
+    this_file = os.path.abspath(__file__)
+    internal = {
+        "_gh",
+        "_gh_json",
+        "_gh_json_lenient",
+        "_gh_pr_checks_json",
+        "_record_gh_attempt",
+        "_gh_callsite",
+    }
+    wrapper: str | None = None
+    caller: str | None = None
+    frame = sys._getframe(2)
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        func = frame.f_code.co_name
+        module = frame.f_globals.get("__name__", "")
+        if filename == this_file:
+            if func not in internal and wrapper is None:
+                wrapper = func
+        else:
+            caller = f"{module}.{func}:{frame.f_lineno}"
+            break
+        frame = frame.f_back
+    return wrapper, caller
+
+
+def _record_gh_attempt(
+    args: list[str],
+    *,
+    attempt: int,
+    proc: subprocess.CompletedProcess[str],
+    duration_sec: float,
+    check: bool,
+    loud: bool,
+    log_context: str | None,
+) -> None:
+    """Append one machine-readable gh attempt record.
+
+    This is best-effort diagnostics only; failures here must never affect
+    shepherd behavior.
+    """
+    try:
+        github_function, caller = _gh_callsite()
+        payload = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "pid": os.getpid(),
+            "process_pr": _current_process_pr(),
+            "repo": REPO,
+            "gh_executable": _GH_COMMAND[0],
+            "attempt": attempt,
+            "max_attempts": _GH_MAX_RETRIES,
+            "exit_code": proc.returncode,
+            "duration_ms": int(duration_sec * 1000),
+            "stdout_bytes": len(proc.stdout or ""),
+            "stderr_bytes": len(proc.stderr or ""),
+            "check": check,
+            "loud": loud,
+            "transient": _is_transient_gh_failure(proc),
+            "log_context": log_context,
+            "github_function": github_function,
+            "caller": caller,
+        }
+        payload.update(_classify_gh_args(args))
+        data = (json.dumps(payload, sort_keys=True) + "\n").encode()
+        GH_API_CALLS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            GH_API_CALLS_LOG,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o644,
+        )
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
 
 
 def _is_gh_startup_crash(proc: subprocess.CompletedProcess[str]) -> bool:
@@ -123,7 +362,17 @@ def _gh(
             run_kwargs["env_extra"] = env_extra
         if input_text is not None:
             run_kwargs["input_text"] = input_text
+        started = time.monotonic()
         proc = run([*_GH_COMMAND, *args], **run_kwargs)
+        _record_gh_attempt(
+            args,
+            attempt=attempt + 1,
+            proc=proc,
+            duration_sec=time.monotonic() - started,
+            check=check,
+            loud=bool(run_kwargs["loud"]),
+            log_context=log_context,
+        )
         if _is_gh_startup_crash(proc):
             replacement = _find_working_gh_executable(_GH_COMMAND[0])
             if replacement is not None:
@@ -141,7 +390,17 @@ def _gh(
                     run_kwargs["env_extra"] = env_extra
                 if input_text is not None:
                     run_kwargs["input_text"] = input_text
+                started = time.monotonic()
                 proc = run([*_GH_COMMAND, *args], **run_kwargs)
+                _record_gh_attempt(
+                    args,
+                    attempt=attempt + 1,
+                    proc=proc,
+                    duration_sec=time.monotonic() - started,
+                    check=check,
+                    loud=bool(run_kwargs["loud"]),
+                    log_context=log_context,
+                )
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
             if attempt > 0 and proc.returncode == 0:
                 suffix = f" while {log_context}" if log_context else ""

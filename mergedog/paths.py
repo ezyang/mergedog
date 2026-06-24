@@ -29,6 +29,7 @@ CONTEXTS_DIR = ROOT / "contexts"
 CI_LOGS_DIR = ROOT / "ci-logs"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
 PUSHED_COMMITS_LOG = ROOT / "pushed-commits.log"
+GH_API_CALLS_LOG = ROOT / "gh-api-calls.jsonl"
 CONFIG_FILE = ROOT / "config.json"
 # Curated list of regular PRs the mux should resume. Distinct from STATE_DIR --
 # the latter is per-PR shepherd state authored by the shepherd itself, and

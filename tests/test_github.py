@@ -1,6 +1,8 @@
 import json
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from mergedog import github
@@ -8,6 +10,14 @@ from mergedog import github
 
 class TestGhRetries(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.api_log = Path(self.tmp.name) / "gh-api-calls.jsonl"
+        self.api_log_patcher = mock.patch.object(
+            github, "GH_API_CALLS_LOG", self.api_log
+        )
+        self.api_log_patcher.start()
+        self.addCleanup(self.api_log_patcher.stop)
         self.proxy_patcher = mock.patch.object(
             github, "github_api_env_extra", return_value=None
         )
@@ -162,6 +172,48 @@ class TestGhRetries(unittest.TestCase):
             env_extra=env_extra,
             loud=False,
         )
+
+    def test_records_gh_attempt_attribution(self):
+        with mock.patch.object(
+            github,
+            "run",
+            return_value=subprocess.CompletedProcess(["gh"], 0, "{}", ""),
+        ):
+            github._gh(
+                [
+                    "api",
+                    f"repos/{github.REPO}/commits/abc/check-runs"
+                    "?per_page=100&page=2",
+                ]
+            )
+
+        rows = [json.loads(line) for line in self.api_log.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["operation"], "api:check-runs")
+        self.assertEqual(row["repo"], github.REPO)
+        self.assertEqual(row["sha"], "abc")
+        self.assertEqual(row["page"], 2)
+        self.assertEqual(row["attempt"], 1)
+        self.assertEqual(row["exit_code"], 0)
+        self.assertIsNone(row["github_function"])
+        self.assertIn("tests.test_github", row["caller"])
+
+    def test_classifies_graphql_without_logging_query_body(self):
+        fields = github._classify_gh_args(
+            [
+                "api",
+                "graphql",
+                "-f",
+                "query=query($pr:Int!){ viewer { login } }",
+                "-F",
+                "pr=123",
+            ]
+        )
+
+        self.assertEqual(fields["operation"], "api:graphql")
+        self.assertEqual(fields["pr"], 123)
+        self.assertIn("query=<redacted>", fields["args"])
 
     def test_post_pr_comment_uses_retrying_gh_wrapper_with_stdin(self):
         with mock.patch.object(github, "_gh") as gh:

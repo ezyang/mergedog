@@ -149,9 +149,17 @@ mergedog rage <pr_number_or_url> [--root DIR]
 
 Creates a private markdown paste with redacted diagnostics for the PR.  The
 bundle includes the mux/shepherd log, persisted trust/state JSON, context
-sidecar, mux tracking list, pushed-commit records for that PR, and local
-worktree branch/HEAD/status summaries.  Before upload, mergedog applies a
-best-effort credential scrub over the entire bundle.
+sidecar, mux tracking list, pushed-commit records for that PR, GitHub API call
+attribution, and local worktree branch/HEAD/status summaries.  Before upload,
+mergedog applies a best-effort credential scrub over the entire bundle.
+
+### GitHub API attribution
+
+Every `gh` subprocess attempt appends a JSON line to
+`~/.mergedog/gh-api-calls.jsonl` (or the active `MERGEDOG_ROOT`). Entries
+include the operation, inferred PR/run/SHA, shepherd process PR, caller,
+duration, exit code, and retry attempt so quota spikes can be attributed
+without reconstructing them from prose logs.
 
 ### Common flags
 

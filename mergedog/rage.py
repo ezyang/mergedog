@@ -125,6 +125,34 @@ def _pushed_commits_for(prs: list[int], pushed_commits_path: Path) -> str | None
     )
 
 
+def _github_api_calls_for(
+    pr: int, github_calls_path: Path, *, max_lines: int = 500
+) -> str | None:
+    if not github_calls_path.exists():
+        return None
+    matches: list[str] = []
+    omitted = 0
+    with github_calls_path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("pr") != pr and row.get("process_pr") != pr:
+                continue
+            matches.append(json.dumps(row, sort_keys=True))
+            if len(matches) > max_lines:
+                matches.pop(0)
+                omitted += 1
+    if not matches:
+        return None
+    if omitted:
+        return f"... omitted {omitted} older matching call(s) ...\n" + "\n".join(
+            matches
+        )
+    return "\n".join(matches)
+
+
 def build_report(pr: int, *, root: Path = ROOT) -> str:
     """Build a redacted markdown diagnostics bundle for ``pr``."""
     root = root.expanduser().resolve()
@@ -133,8 +161,10 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
     context_path = root / "contexts" / f"{pr}.md"
     mux_prs_path = root / "mux-prs.json"
     pushed_commits_path = root / "pushed-commits.log"
+    github_calls_path = root / "gh-api-calls.jsonl"
     worktree_path = root / "worktrees" / str(pr)
     pushed_commits = _pushed_commits_for([pr], pushed_commits_path)
+    github_calls = _github_api_calls_for(pr, github_calls_path)
 
     parts = [
         f"# mergedog rage PR #{pr}",
@@ -148,6 +178,7 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
         _section("context sidecar", context_path, _read_text(context_path)),
         _section("mux tracked PRs", mux_prs_path, _read_text(mux_prs_path)),
         _section("pushed commits for PR", pushed_commits_path, pushed_commits),
+        _section("GitHub API calls for PR", github_calls_path, github_calls),
         _section(
             "worktree git summary",
             worktree_path,
