@@ -679,6 +679,51 @@ class TestMuxCommands(unittest.TestCase):
         )
         self.assertEqual(app.max_fix_commits, mux.MAX_FIX_COMMITS)
 
+    def test_ignore_sev_command_shows_mux_and_persistent_state(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = False
+        cfg = mock.Mock(ignored_numbers=(187193,))
+
+        with mock.patch.object(mux, "get_ci_sev_config", return_value=cfg):
+            result = app._dispatch_command("ignore-sev")
+
+        self.assertEqual(
+            result,
+            "ignore-sev is off; ignored ci: sev: #187193",
+        )
+
+    def test_ignore_sev_command_adds_persistent_issue(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = False
+        cfg = mock.Mock(ignored_numbers=(187193,))
+
+        with mock.patch.object(
+            mux, "add_ignored_ci_sev", return_value=cfg
+        ) as add:
+            result = app._dispatch_command("ignore-sev add #187193")
+
+        self.assertEqual(
+            result,
+            "ignored ci: sev #187193 (persistent; ignored ci: sev: #187193)",
+        )
+        add.assert_called_once_with(187193)
+
+    def test_ignore_sev_command_removes_persistent_issue(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = False
+        cfg = mock.Mock(ignored_numbers=())
+
+        with mock.patch.object(
+            mux, "remove_ignored_ci_sev", return_value=cfg
+        ) as remove:
+            result = app._dispatch_command("ignore-sev remove 187193")
+
+        self.assertEqual(
+            result,
+            "respecting ci: sev #187193 (persistent; ignored ci: sev: none)",
+        )
+        remove.assert_called_once_with(187193)
+
     def test_restart_dead_dispatches_only_when_dead_jobs_exist(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
         app.procs = {

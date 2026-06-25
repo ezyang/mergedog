@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,11 @@ class LLMConfig:
         return None
 
 
+@dataclass(frozen=True)
+class CiSevConfig:
+    ignored_numbers: tuple[int, ...] = ()
+
+
 def _read_config_file(path: Path = CONFIG_FILE) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -41,7 +47,96 @@ def _read_config_file(path: Path = CONFIG_FILE) -> dict[str, Any]:
 
 def _write_config_file(data: dict[str, Any], path: Path = CONFIG_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def parse_ci_sev_number(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("ci: sev issue number must be a positive integer")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("#"):
+            raw = raw[1:]
+        if not raw.isdigit():
+            raise ValueError("ci: sev issue number must be a positive integer")
+        number = int(raw)
+    else:
+        raise ValueError("ci: sev issue number must be a positive integer")
+    if number <= 0:
+        raise ValueError("ci: sev issue number must be a positive integer")
+    return number
+
+
+def get_ci_sev_config(path: Path = CONFIG_FILE) -> CiSevConfig:
+    data = _read_config_file(path)
+    raw_ci_sev = data.get("ci_sev", {})
+    if raw_ci_sev is None:
+        raw_ci_sev = {}
+    if not isinstance(raw_ci_sev, dict):
+        raise ValueError(f"{path}: ci_sev must be an object")
+    raw_ignored = raw_ci_sev.get("ignored", [])
+    if raw_ignored is None:
+        raw_ignored = []
+    if not isinstance(raw_ignored, list):
+        raise ValueError(f"{path}: ci_sev.ignored must be a list")
+    try:
+        ignored = tuple(sorted({parse_ci_sev_number(v) for v in raw_ignored}))
+    except ValueError as e:
+        raise ValueError(
+            f"{path}: ci_sev.ignored contains invalid issue: {e}"
+        ) from e
+    return CiSevConfig(ignored_numbers=ignored)
+
+
+def get_ignored_ci_sev_numbers(path: Path = CONFIG_FILE) -> set[int]:
+    return set(get_ci_sev_config(path).ignored_numbers)
+
+
+def set_ignored_ci_sev_numbers(
+    numbers: list[int] | tuple[int, ...] | set[int],
+    *,
+    path: Path = CONFIG_FILE,
+) -> CiSevConfig:
+    ignored = sorted({parse_ci_sev_number(n) for n in numbers})
+    data = _read_config_file(path)
+    ci_sev = data.get("ci_sev", {})
+    if not isinstance(ci_sev, dict):
+        ci_sev = {}
+    ci_sev["ignored"] = ignored
+    data["ci_sev"] = ci_sev
+    _write_config_file(data, path)
+    return get_ci_sev_config(path)
+
+
+def add_ignored_ci_sev(number: int, *, path: Path = CONFIG_FILE) -> CiSevConfig:
+    ignored = get_ignored_ci_sev_numbers(path)
+    ignored.add(parse_ci_sev_number(number))
+    return set_ignored_ci_sev_numbers(ignored, path=path)
+
+
+def remove_ignored_ci_sev(
+    number: int, *, path: Path = CONFIG_FILE
+) -> CiSevConfig:
+    ignored = get_ignored_ci_sev_numbers(path)
+    ignored.discard(parse_ci_sev_number(number))
+    return set_ignored_ci_sev_numbers(ignored, path=path)
+
+
+def clear_ignored_ci_sevs(*, path: Path = CONFIG_FILE) -> CiSevConfig:
+    return set_ignored_ci_sev_numbers(set(), path=path)
+
+
+def format_ci_sev_ignored_numbers(
+    numbers: tuple[int, ...] | list[int] | set[int],
+) -> str:
+    ordered = sorted(numbers)
+    if not ordered:
+        return "none"
+    return ", ".join(f"#{n}" for n in ordered)
 
 
 def get_llm_config(path: Path = CONFIG_FILE) -> LLMConfig:

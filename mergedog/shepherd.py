@@ -18,7 +18,11 @@ from pathlib import Path
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
 from mergedog import github, interventions, labels, repo
-from mergedog.config import get_llm_config
+from mergedog.config import (
+    format_ci_sev_ignored_numbers,
+    get_ignored_ci_sev_numbers,
+    get_llm_config,
+)
 from mergedog.handoff import (
     ClaudeSession,
     PushedChange,
@@ -56,6 +60,7 @@ from mergedog.trust_seed import seed_trust_from_reviews
 
 
 SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
+SEV_CONFIG_POLL_INTERVAL_SEC = 15
 
 
 def _fetch_current_pr_head_for_trust(
@@ -89,6 +94,60 @@ def _write_ci_sev_status(pr: int, message: str) -> None:
         pass
 
 
+def _ci_sev_number(sev: dict) -> int | None:
+    raw = sev.get("number")
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _split_configured_ignored_ci_sevs(
+    sevs: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    if not sevs:
+        return [], []
+    try:
+        ignored_numbers = get_ignored_ci_sev_numbers()
+    except ValueError as e:
+        log(
+            f"WARNING: could not read ci: sev ignore config: {e}; "
+            "respecting all active ci: sev issues"
+        )
+        return sevs, []
+
+    active: list[dict] = []
+    ignored: list[dict] = []
+    for sev in sevs:
+        number = _ci_sev_number(sev)
+        if number is not None and number in ignored_numbers:
+            ignored.append(sev)
+        else:
+            active.append(sev)
+    return active, ignored
+
+
+def _ci_sev_refs(sevs: list[dict]) -> str:
+    return format_ci_sev_ignored_numbers(
+        {n for sev in sevs if (n := _ci_sev_number(sev)) is not None}
+    )
+
+
+def _sleep_until_next_sev_poll_or_config_ignore(active_sevs: list[dict]) -> bool:
+    """Sleep until the next GitHub poll, unless local config unblocks us."""
+    remaining = SEV_POLL_INTERVAL_SEC
+    while remaining > 0:
+        delay = min(SEV_CONFIG_POLL_INTERVAL_SEC, remaining)
+        time.sleep(delay)
+        remaining -= delay
+        still_active, ignored = _split_configured_ignored_ci_sevs(active_sevs)
+        if not still_active and ignored:
+            return True
+    return False
+
+
 def _wait_for_no_active_sev(
     reason: str,
     *,
@@ -100,27 +159,49 @@ def _wait_for_no_active_sev(
     A CI SEV here is any open issue on pytorch/pytorch tagged
     ``ci: sev`` -- dev-infra's signal that trunk is degraded. Default
     behavior is to wait it out so we don't stampede broken CI with
-    new pushes; ``ignore_sev`` (operator override via ``--ignore-sev``)
-    skips the wait. Called only at "would trigger CI" critical spots,
-    not in the inner poll, to keep the GH API call rate low.
+    new pushes. ``ignore_sev`` (operator override via ``--ignore-sev``)
+    skips the wait entirely. The persistent ci_sev.ignored config
+    suppresses individual SEV issue numbers and is re-read while parked
+    so already-parked shepherds can resume after the mux updates it.
 
-    Returns True if it actually had to wait (i.e. a SEV was open at entry
-    and has now cleared) -- callers can use this to discard work prepared
-    against a stale view of trunk.
+    Returns True if it actually had to wait and then resumed (because the
+    SEV cleared or became configured-ignored) -- callers can use this to
+    discard work prepared against a stale view of trunk.
     """
     if ignore_sev:
         return False
     last_ids: tuple[int, ...] | None = None
     while True:
         sevs = github.list_active_ci_sevs()
-        if not sevs:
+        active_sevs, ignored_sevs = _split_configured_ignored_ci_sevs(sevs)
+        if not active_sevs:
+            if ignored_sevs:
+                refs = _ci_sev_refs(ignored_sevs)
+                if last_ids is not None:
+                    log(f"ci: sev {refs} is configured ignored; resuming")
+                    return True
+                log(
+                    f"ci: sev {refs} is configured ignored; "
+                    f"continuing before {reason}"
+                )
+                return False
             if last_ids is not None:
                 log("CI SEV cleared; resuming")
                 return True
             return False
-        ids = tuple(sorted(s.get("number") for s in sevs if s.get("number")))
-        head = sevs[0]
-        others = f" (+{len(sevs) - 1} more)" if len(sevs) > 1 else ""
+        ids = tuple(
+            sorted(
+                n
+                for sev in active_sevs
+                if (n := _ci_sev_number(sev)) is not None
+            )
+        )
+        head = active_sevs[0]
+        others = (
+            f" (+{len(active_sevs) - 1} more)"
+            if len(active_sevs) > 1
+            else ""
+        )
         message = (
             f"parked on ci: sev #{head.get('number')} "
             f"{head.get('title', '?')!r}{others}; "
@@ -131,7 +212,10 @@ def _wait_for_no_active_sev(
         if ids != last_ids:
             log(message)
             last_ids = ids
-        time.sleep(SEV_POLL_INTERVAL_SEC)
+        if _sleep_until_next_sev_poll_or_config_ignore(active_sevs):
+            # Refresh GitHub before resuming; a different unignored SEV may
+            # have appeared since the last remote poll.
+            continue
 
 
 POLL_INTERVAL_SEC = 60

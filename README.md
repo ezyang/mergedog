@@ -105,7 +105,9 @@ TUI commands (type in the input bar at the bottom):
 | `mark-spurious <pr>` | Snapshot current failed/cancelled checks as spurious and restart |
 | `cleanup` or `clean` | Forget successful completed shepherds |
 | `log <pr>` | Print the log file path |
-| `ignore-sev [on\|off]` | Toggle SEV parking for future spawns |
+| `ignore-sev [on\|off]` | Toggle full SEV bypass for future spawns |
+| `ignore-sev add <issue>` | Persistently ignore one `ci: sev` issue |
+| `ignore-sev remove <issue>` | Stop ignoring one `ci: sev` issue |
 | `fix-cap [N\|off\|default]` | Set the fix-commit cap for future spawns (`off` disables it) |
 | `help` | Show phase colors and common commands |
 | `migrate` | Print resume instructions for moving to another host |
@@ -192,6 +194,22 @@ mergedog config llm claude --clear-model
 `mergedog config llm` prints the current setting.  Supported providers are
 `claude`, `codex`, and `metacode`.
 
+### CI SEV ignores
+
+By default mergedog parks before actions that create fresh CI load while any
+open `ci: sev` issue exists. For a known-irrelevant incident, the mux can
+persistently ignore a specific issue number:
+
+```bash
+ignore-sev add 187193
+ignore-sev remove 187193
+ignore-sev list
+```
+
+The ignore list lives in `~/.mergedog/config.json` under `ci_sev.ignored`.
+Shepherds already parked on a SEV re-read that local config while waiting, so
+they resume shortly without a restart.
+
 ## Customizing Claude's prompt
 
 The prompts Claude sees are in `mergedog/prompts.py`. They are not
@@ -228,7 +246,7 @@ Everything lives under `~/.mergedog/` (override with `--root` or `MERGEDOG_ROOT`
 ├── mux-jobs.json             # mux's PR job resume list
 ├── mux.lock                  # flock'd by the running mux (IPC discovery)
 ├── mux.sock                  # Unix socket for IPC (same commands as TUI)
-├── config.json               # persistent operator settings (LLM provider/model)
+├── config.json               # persistent operator settings (LLM, SEV ignores)
 ├── label-cache.json          # cached repo labels for autolabeling (24h TTL)
 ├── lintrunner-venv/          # shared lintrunner virtualenv
 └── pushed-commits.log        # append-only log of pushed commits

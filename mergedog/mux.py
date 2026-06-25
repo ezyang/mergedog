@@ -27,6 +27,8 @@ Commands typed at the bottom (enter to submit):
     ignore-sev [on|off]               toggle (or show) the mux-wide
                                       ``--ignore-sev`` default applied to
                                       every shepherd spawn
+    ignore-sev add <issue>            persistently ignore one ci: sev issue;
+    ignore-sev remove <issue>         parked shepherds re-read this each poll
     fix-cap [N|off|default]           set/show the mux-wide
                                       ``--max-fix-commits`` default. ``off``
                                       disables the cap for future spawns
@@ -73,6 +75,10 @@ COMMAND_SUGGESTIONS = [
     "fix-cap ",
     "help",
     "ignore-sev ",
+    "ignore-sev add ",
+    "ignore-sev remove ",
+    "ignore-sev list",
+    "ignore-sev clear",
     "log ",
     "mark-spurious ",
     "migrate",
@@ -136,6 +142,14 @@ class HistoryInput(Input):
 
 from mergedog import github  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
+from mergedog.config import (  # noqa: E402
+    add_ignored_ci_sev,
+    clear_ignored_ci_sevs,
+    format_ci_sev_ignored_numbers,
+    get_ci_sev_config,
+    parse_ci_sev_number,
+    remove_ignored_ci_sev,
+)
 from mergedog.handoff import is_cla_merge_failure  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
@@ -1071,7 +1085,9 @@ class MuxApp(App):
     def _do_ignore_sev(self, rest: list[str]) -> str:
         if not rest:
             state = "on" if self.ignore_sev else "off"
-            return f"ignore-sev is {state}"
+            cfg = get_ci_sev_config()
+            ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
+            return f"ignore-sev is {state}; ignored ci: sev: {ignored}"
         arg = rest[0].lower()
         if arg in ("on", "true", "1", "yes"):
             new = True
@@ -1079,12 +1095,56 @@ class MuxApp(App):
             new = False
         elif arg == "toggle":
             new = not self.ignore_sev
+        elif arg in ("list", "show"):
+            if len(rest) != 1:
+                return "usage: ignore-sev list"
+            cfg = get_ci_sev_config()
+            ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
+            return f"ignored ci: sev: {ignored}"
+        elif arg in ("add", "ignore"):
+            if len(rest) != 2:
+                return "usage: ignore-sev add <issue>"
+            number = parse_ci_sev_number(rest[1])
+            cfg = add_ignored_ci_sev(number)
+            ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
+            return (
+                f"ignored ci: sev #{number} (persistent; "
+                f"ignored ci: sev: {ignored})"
+            )
+        elif arg in ("remove", "rm", "del", "delete", "unignore"):
+            if len(rest) != 2:
+                return "usage: ignore-sev remove <issue>"
+            number = parse_ci_sev_number(rest[1])
+            cfg = remove_ignored_ci_sev(number)
+            ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
+            return (
+                f"respecting ci: sev #{number} (persistent; "
+                f"ignored ci: sev: {ignored})"
+            )
+        elif arg == "clear":
+            if len(rest) != 1:
+                return "usage: ignore-sev clear"
+            clear_ignored_ci_sevs()
+            return "cleared ignored ci: sev list"
         else:
-            return "usage: ignore-sev [on|off|toggle]"
+            try:
+                number = parse_ci_sev_number(arg)
+            except ValueError:
+                return (
+                    "usage: ignore-sev "
+                    "[on|off|toggle|add <issue>|remove <issue>|clear|list]"
+                )
+            cfg = add_ignored_ci_sev(number)
+            ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
+            return (
+                f"ignored ci: sev #{number} (persistent; "
+                f"ignored ci: sev: {ignored})"
+            )
         self.ignore_sev = new
         state = "on" if new else "off"
         return (
             f"ignore-sev {state} (applies to future spawns; "
+            "per-SEV ignores unchanged; "
             f"use `rebase all` to apply to running PRs)"
         )
 
@@ -1383,6 +1443,10 @@ class MuxApp(App):
             (
                 "commands: mark-spurious <pr> | cancel <pr> | cleanup | "
                 "remove <pr> | log <pr> | status | migrate | quit"
+            ),
+            (
+                "commands: ignore-sev [on|off] | ignore-sev add <issue> | "
+                "ignore-sev remove <issue> | ignore-sev clear"
             ),
         ]
         return "\n".join(lines)

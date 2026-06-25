@@ -700,6 +700,11 @@ class TestCiSevStatus(unittest.TestCase):
                 "list_active_ci_sevs",
                 side_effect=[sevs, []],
             ),
+            mock.patch.object(
+                shepherd,
+                "get_ignored_ci_sev_numbers",
+                return_value=set(),
+            ),
             mock.patch.object(shepherd.time, "sleep"),
             mock.patch.object(shepherd, "write_status") as write_status,
             mock.patch.object(shepherd, "log"),
@@ -718,6 +723,71 @@ class TestCiSevStatus(unittest.TestCase):
                 "parked on ci: sev #187193 'runner label rename' (+1 more); "
                 "waiting before pushing fix commit"
             ),
+        )
+
+    def test_wait_for_no_active_sev_skips_configured_ignored_issue(self):
+        sevs = [{"number": 187193, "title": "runner label rename"}]
+
+        with (
+            mock.patch.object(
+                shepherd.github,
+                "list_active_ci_sevs",
+                return_value=sevs,
+            ) as list_sevs,
+            mock.patch.object(
+                shepherd,
+                "get_ignored_ci_sev_numbers",
+                return_value={187193},
+            ),
+            mock.patch.object(shepherd.time, "sleep") as sleep,
+            mock.patch.object(shepherd, "write_status") as write_status,
+            mock.patch.object(shepherd, "log") as log,
+        ):
+            waited = shepherd._wait_for_no_active_sev(
+                "pushing fix commit", ignore_sev=False, pr=123
+            )
+
+        self.assertFalse(waited)
+        list_sevs.assert_called_once()
+        sleep.assert_not_called()
+        write_status.assert_not_called()
+        log.assert_called_once_with(
+            "ci: sev #187193 is configured ignored; "
+            "continuing before pushing fix commit"
+        )
+
+    def test_wait_for_no_active_sev_rereads_ignore_config_while_parked(self):
+        sevs = [{"number": 187193, "title": "runner label rename"}]
+
+        with (
+            mock.patch.object(
+                shepherd.github,
+                "list_active_ci_sevs",
+                side_effect=[sevs, sevs],
+            ),
+            mock.patch.object(
+                shepherd,
+                "get_ignored_ci_sev_numbers",
+                side_effect=[set(), {187193}, {187193}],
+            ),
+            mock.patch.object(shepherd.time, "sleep") as sleep,
+            mock.patch.object(shepherd, "write_status"),
+            mock.patch.object(shepherd, "log") as log,
+        ):
+            waited = shepherd._wait_for_no_active_sev(
+                "pushing fix commit", ignore_sev=False, pr=123
+            )
+
+        self.assertTrue(waited)
+        sleep.assert_called_once_with(shepherd.SEV_CONFIG_POLL_INTERVAL_SEC)
+        log.assert_has_calls(
+            [
+                mock.call(
+                    "parked on ci: sev #187193 'runner label rename'; "
+                    "waiting before pushing fix commit"
+                ),
+                mock.call("ci: sev #187193 is configured ignored; resuming"),
+            ]
         )
 
 

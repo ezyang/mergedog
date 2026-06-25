@@ -25,7 +25,8 @@ user when the PR is ready for `@pytorchbot merge`.
   - `cleanup` or `clean` — forget successful completed shepherds
   - `remove <pr>` — stop and forget (wipes worktree + state)
   - `restart <pr>` — cancel + add
-  - `ignore-sev on|off` — toggle whether shepherds ignore CI SEVs
+  - `ignore-sev on|off` — toggle whether future shepherds ignore all CI SEVs
+  - `ignore-sev add|remove <issue>` — persistently ignore or respect one CI SEV
   - `fix-cap N|off|default` — set the fix-commit cap for future spawns
   - `help` — show phase colors and common commands
 - **mergedog_log** — read a PR's shepherd log.  Use `lines=` to control
