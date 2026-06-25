@@ -292,6 +292,13 @@ WorkflowFingerprint = tuple[tuple[int, str, str], ...]
 
 
 @dataclass
+class _TrunkCiGate:
+    head_sha: str
+    check_count: int
+    workflow_fingerprint: WorkflowFingerprint
+
+
+@dataclass
 class _CiCheckPollCache:
     """Cached full check list used only for unchanged pending CI."""
 
@@ -352,6 +359,21 @@ def _workflow_state_fingerprint(
             (run_id, status or "", conclusion or "")
             for run_id, (status, conclusion) in run_state_cache.items()
         )
+    )
+
+
+def _trunk_wave_has_started(
+    gate: _TrunkCiGate,
+    *,
+    head_sha: str,
+    check_count: int,
+    workflow_fingerprint: WorkflowFingerprint,
+) -> bool:
+    """Return True once applying the trunk label has produced fresh CI evidence."""
+    return (
+        head_sha != gate.head_sha
+        or check_count > gate.check_count
+        or workflow_fingerprint != gate.workflow_fingerprint
     )
 
 
@@ -2290,6 +2312,7 @@ def _shepherd_body(
         # match an intervention pattern still falls through to claude.
         intervened_run_ids: set[int] = set()
         check_poll_cache = _CiCheckPollCache()
+        trunk_ci_gate: _TrunkCiGate | None = None
 
         # Poll CI, fix or judge spurious until ready for handoff. Breaks
         # out (via the handoff path) when CI is green and the trunk
@@ -2421,14 +2444,34 @@ def _shepherd_body(
                 and workflow_gate_for_more_checks
             ):
                 status = "pending"
-            if fetched_full_checks:
-                check_poll_cache.update(
+            waiting_for_trunk_wave = False
+            if trunk_ci_gate is not None:
+                if _trunk_wave_has_started(
+                    trunk_ci_gate,
                     head_sha=current,
+                    check_count=len(checks),
                     workflow_fingerprint=workflow_fingerprint,
-                    checks=checks,
-                    status=status,
-                    fetched_at=check_poll_now,
-                )
+                ):
+                    log(f"{TRUNK_LABEL} workflows appeared; resuming CI wait")
+                    trunk_ci_gate = None
+                    stable_observation = None
+                else:
+                    # The trunk label was just applied, but GitHub is still
+                    # reporting the pre-label check set. Do not let that old
+                    # green observation satisfy handoff readiness.
+                    status = "pending"
+                    waiting_for_trunk_wave = True
+            if fetched_full_checks:
+                if waiting_for_trunk_wave:
+                    check_poll_cache.invalidate()
+                else:
+                    check_poll_cache.update(
+                        head_sha=current,
+                        workflow_fingerprint=workflow_fingerprint,
+                        checks=checks,
+                        status=status,
+                        fetched_at=check_poll_now,
+                    )
 
             done = sum(
                 1 for c in checks if c.get("bucket") not in {"pending", None}
@@ -2450,6 +2493,15 @@ def _shepherd_body(
                 and workflow_failed_run_ids
             ):
                 active_failed_count = len(workflow_failed_run_ids)
+            ci_message = _ci_status_message(
+                status,
+                done,
+                len(checks),
+                active_failed_count,
+                suppressed=suppressed_failed_count,
+            )
+            if waiting_for_trunk_wave:
+                ci_message = f"waiting for {TRUNK_LABEL} workflows to appear"
             _write_status_best_effort(
                 pr,
                 phase="polling_ci",
@@ -2457,13 +2509,7 @@ def _shepherd_body(
                 waiting_on="ci" if status == "pending" else None,
                 action="inspecting_ci" if status != "pending" else None,
                 message=_status_with_interventions(
-                    _ci_status_message(
-                        status,
-                        done,
-                        len(checks),
-                        active_failed_count,
-                        suppressed=suppressed_failed_count,
-                    ),
+                    ci_message,
                     intervention_count,
                 ),
                 intervention_count=intervention_count,
@@ -3249,7 +3295,14 @@ def _shepherd_body(
                     "waiting for trunk workflows to appear"
                 )
                 trunk_applied = True
+                trunk_ci_gate = _TrunkCiGate(
+                    head_sha=current,
+                    check_count=len(checks),
+                    workflow_fingerprint=workflow_fingerprint,
+                )
                 last_status = None
+                stable_observation = None
+                check_poll_cache.invalidate()
                 time.sleep(APPROVAL_SETTLE_SEC)
                 continue
             log("ALL CI GREEN.")

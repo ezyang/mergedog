@@ -12,6 +12,7 @@ from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     FULL_CHECK_REFRESH_SEC,
     _CiCheckPollCache,
+    _TrunkCiGate,
     _apply_merge_i_ignored_checks,
     _actionable_lint_failure_names,
     _failed_logs_are_content_free,
@@ -27,6 +28,7 @@ from mergedog.shepherd import (
     _count_mergedog_interventions_since_ack,
     _sparse_green_needs_base_refresh,
     _spurious_check_names_from_checks,
+    _trunk_wave_has_started,
     _workflow_state_fingerprint,
     describe_log_state,
 )
@@ -449,6 +451,59 @@ class TestSparseGreenDetection(unittest.TestCase):
         self.assertFalse(
             _sparse_green_needs_base_refresh(
                 "passed", checks, {1: ("in_progress", None)}
+            )
+        )
+
+
+class TestTrunkWaveGate(unittest.TestCase):
+    def test_unchanged_pre_trunk_snapshot_has_not_started(self):
+        gate = _TrunkCiGate(
+            head_sha="abc",
+            check_count=129,
+            workflow_fingerprint=((1, "completed", "success"),),
+        )
+
+        self.assertFalse(
+            _trunk_wave_has_started(
+                gate,
+                head_sha="abc",
+                check_count=129,
+                workflow_fingerprint=((1, "completed", "success"),),
+            )
+        )
+
+    def test_check_growth_starts_trunk_wave(self):
+        gate = _TrunkCiGate(
+            head_sha="abc",
+            check_count=129,
+            workflow_fingerprint=((1, "completed", "success"),),
+        )
+
+        self.assertTrue(
+            _trunk_wave_has_started(
+                gate,
+                head_sha="abc",
+                check_count=142,
+                workflow_fingerprint=((1, "completed", "success"),),
+            )
+        )
+
+    def test_workflow_state_change_starts_trunk_wave(self):
+        gate = _TrunkCiGate(
+            head_sha="abc",
+            check_count=129,
+            workflow_fingerprint=((1, "completed", "success"),),
+        )
+
+        self.assertTrue(
+            _trunk_wave_has_started(
+                gate,
+                head_sha="abc",
+                check_count=129,
+                workflow_fingerprint=(
+                    (1, "completed", "success"),
+                    (2, "queued", ""),
+                ),
             )
         )
 
