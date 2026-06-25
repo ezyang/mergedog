@@ -200,13 +200,30 @@ def _job_log_name(job: JobKey | int) -> str:
     return f"{pr}.log"
 
 
-def _read_pr_title(pr: int) -> str:
-    """Best-effort PR title from the worktree's HEAD subject.
+def _read_pr_context_title(pr: int) -> str:
+    """Read the PR title from the sidecar populated from GitHub metadata."""
+    try:
+        lines = context_file(pr).read_text().splitlines()
+    except OSError:
+        return ""
+    try:
+        title_index = lines.index("[TITLE]") + 1
+    except ValueError:
+        return ""
+    if title_index >= len(lines):
+        return ""
+    title = lines[title_index].strip()
+    return title
+
+
+def _read_pr_worktree_title(pr: int) -> str:
+    """Best-effort title fallback from the worktree's HEAD subject.
 
     ``--invert-grep`` skips ``[MERGEDOG]`` commits so an in-flight
     merge-main doesn't replace the actual contributor title with the
-    merge commit's subject. Returns "" if the worktree doesn't exist
-    yet (shepherd just spawned) or git fails -- the caller will retry.
+    merge commit's subject. ``--first-parent`` keeps the fallback on
+    the PR branch side of a merge-main commit, rather than walking into
+    unrelated upstream commits from ``main``.
     """
     wt = worktree_dir(pr)
     if not wt.exists():
@@ -215,6 +232,7 @@ def _read_pr_title(pr: int) -> str:
         proc = subprocess.run(
             [
                 "git", "log", "-1", "--pretty=%s",
+                "--first-parent",
                 "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
             ],
             cwd=wt,
@@ -228,6 +246,11 @@ def _read_pr_title(pr: int) -> str:
     if proc.returncode != 0:
         return ""
     return proc.stdout.strip()
+
+
+def _read_pr_title(pr: int) -> str:
+    """Best-effort PR title for mux display."""
+    return _read_pr_context_title(pr) or _read_pr_worktree_title(pr)
 
 
 def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:

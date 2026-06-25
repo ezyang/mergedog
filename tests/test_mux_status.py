@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,59 @@ class TestMuxInput(unittest.TestCase):
 
 
 class TestMuxStructuredStatus(unittest.TestCase):
+    def test_read_pr_title_prefers_context_sidecar_title(self):
+        with tempfile.TemporaryDirectory() as d:
+            context_path = Path(d) / "123.md"
+            context_path.write_text(
+                "PR #123\n\n[TITLE]\n[fx] Real PR title\n\n[DESCRIPTION]\nbody\n"
+            )
+
+            with (
+                mock.patch.object(
+                    mux, "context_file", return_value=context_path
+                ),
+                mock.patch.object(
+                    mux, "_read_pr_worktree_title", return_value="commit title"
+                ) as fallback,
+            ):
+                title = mux._read_pr_title(123)
+
+        self.assertEqual(title, "[fx] Real PR title")
+        fallback.assert_not_called()
+
+    def test_worktree_title_fallback_stays_on_pr_first_parent(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+
+            def git(*args):
+                subprocess.run(
+                    ["git", *args], cwd=repo, check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            git("init")
+            git("config", "user.name", "Test User")
+            git("config", "user.email", "test@example.com")
+            (repo / "base.txt").write_text("base\n")
+            git("add", "base.txt")
+            git("commit", "-m", "base")
+            git("checkout", "-b", "pr")
+            (repo / "pr.txt").write_text("pr\n")
+            git("add", "pr.txt")
+            git("commit", "-m", "PR branch title")
+            git("checkout", "-b", "upstream", "HEAD~1")
+            (repo / "main.txt").write_text("main\n")
+            git("add", "main.txt")
+            git("commit", "-m", "Unrelated upstream title")
+            git("checkout", "pr")
+            git("merge", "--no-ff", "upstream", "-m", "[MERGEDOG] Merge main")
+
+            with mock.patch.object(mux, "worktree_dir", return_value=repo):
+                title = mux._read_pr_worktree_title(123)
+
+        self.assertEqual(title, "PR branch title")
+
     def test_stack_display_layout_groups_parented_prs(self):
         jobs = [mux._pr_job(10), mux._pr_job(20), mux._pr_job(30)]
         parents = {
