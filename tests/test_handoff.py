@@ -325,6 +325,46 @@ class TestMergebotIgnoredChecks(unittest.TestCase):
             set(),
         )
 
+    def test_trusted_merge_i_command_ignores_current_failed_checks(self):
+        checks = [
+            {"name": "pull / linux", "bucket": "fail"},
+            {"name": "trunk / rocm", "bucket": "cancel"},
+            {"name": "docs", "bucket": "pass"},
+        ]
+        comments = [
+            {
+                "author": "ezyang",
+                "author_association": "MEMBER",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": taint("@pytorchbot merge -i", "pr_comment"),
+            }
+        ]
+
+        self.assertEqual(
+            handoff.mergebot_ignored_check_names(
+                comments, checks, since_iso="2026-05-08T13:00:00Z"
+            ),
+            {"pull / linux", "trunk / rocm"},
+        )
+
+    def test_untrusted_merge_i_command_is_ignored(self):
+        checks = [{"name": "pull / linux", "bucket": "fail"}]
+        comments = [
+            {
+                "author": "external",
+                "author_association": "CONTRIBUTOR",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": taint("@pytorchbot merge -i", "pr_comment"),
+            }
+        ]
+
+        self.assertEqual(
+            handoff.mergebot_ignored_check_names(
+                comments, checks, since_iso="2026-05-08T13:00:00Z"
+            ),
+            set(),
+        )
+
 
 class TestWatchStackPostHandoff(unittest.TestCase):
     def test_post_handoff_ci_status_ignores_suppressed_failures(self):

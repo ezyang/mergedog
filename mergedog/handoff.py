@@ -23,6 +23,14 @@ PROJECT = get_project_policy()
 _MERGEBOT_IGNORE_PHRASE = "will be merged while ignoring the following"
 
 
+def _is_merge_i_command(body: str) -> bool:
+    command = PROJECT.merge_command
+    if not command:
+        return False
+    pattern = re.compile(r"(?im)^\s*" + re.escape(command) + r"\s+-i(?:\s|$)")
+    return bool(pattern.search(body))
+
+
 @dataclass
 class ClaudeSession:
     """One LLM invocation, captured for the handoff comment."""
@@ -472,12 +480,17 @@ def latest_mergebot_event(
 def mergebot_ignored_check_names(
     comments: list[dict], checks: list[dict], *, since_iso: str
 ) -> set[str]:
-    """Return current failed checks explicitly ignored by pytorchmergebot.
+    """Return current failed checks explicitly ignored by ``merge -i``.
 
     A trusted merge-bot reply to ``@pytorchbot merge -i`` names the checks
     a human authorized it to ignore. Treat only those named, currently-red
     checks as already handled so mergedog can focus on any new failures from
     the merge attempt.
+
+    A trusted human ``@pytorchbot merge -i`` command is also an explicit
+    instruction to ignore the current red checks. GitHub may omit
+    ``author_association`` for older cached comments; in that case we only
+    trust the bot acknowledgement path above.
     """
     if PROJECT.mergebot_login is None:
         return set()
@@ -494,17 +507,22 @@ def mergebot_ignored_check_names(
 
     ignored: set[str] = set()
     for comment in comments:
-        if comment.get("author") != PROJECT.mergebot_login:
-            continue
         if (comment.get("created_at") or "") <= since_iso:
             continue
         body = comment.get("body") or ""
         # pytorchmergebot is trusted repo automation. We use this body only
         # as data to match against GitHub's current check names.
         clean_body = untaint(body)
-        if _MERGEBOT_IGNORE_PHRASE not in clean_body.lower():
+        if comment.get("author") == PROJECT.mergebot_login:
+            if _MERGEBOT_IGNORE_PHRASE not in clean_body.lower():
+                continue
+            ignored.update(name for name in failed_names if name in clean_body)
             continue
-        ignored.update(name for name in failed_names if name in clean_body)
+        if (
+            _is_merge_i_command(clean_body)
+            and github.is_trusted_association(comment.get("author_association"))
+        ):
+            ignored.update(failed_names)
     return ignored
 
 

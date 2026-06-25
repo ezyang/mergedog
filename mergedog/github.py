@@ -593,9 +593,10 @@ def is_self_pr(pr_data: dict, viewer: str) -> bool:
 def get_pr_comments(pr: int) -> list[dict]:
     """Return issue-tab comments on the PR, oldest first.
 
-    Each dict has ``author`` (login string), ``body``, ``created_at``.
-    Review comments (per-line on the diff) are intentionally not included
-    -- they're tied to specific commits and don't fit the sidecar format.
+    Each dict has ``author`` (login string), ``body``, ``created_at``, and
+    ``author_association`` when GitHub returns it. Review comments (per-line
+    on the diff) are intentionally not included -- they're tied to specific
+    commits and don't fit the sidecar format.
     """
     data = _gh_json(
         ["pr", "view", str(pr), "--repo", REPO, "--json", "comments"]
@@ -608,6 +609,7 @@ def get_pr_comments(pr: int) -> list[dict]:
                 "author": taint(author, "pr_comment"),
                 "body": taint(c.get("body", "") or "", "pr_comment"),
                 "created_at": c.get("createdAt", "") or "",
+                "author_association": c.get("authorAssociation"),
             }
         )
     return out

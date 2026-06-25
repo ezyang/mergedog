@@ -7,10 +7,12 @@ from unittest import mock
 
 from mergedog.claude import LLMResult
 from mergedog import shepherd
+from mergedog.state import TrustDB
 from mergedog.shepherd import (
     MIN_USEFUL_LOG_CHARS,
     FULL_CHECK_REFRESH_SEC,
     _CiCheckPollCache,
+    _apply_merge_i_ignored_checks,
     _actionable_lint_failure_names,
     _failed_logs_are_content_free,
     _filter_spurious_failed_jobs,
@@ -558,6 +560,44 @@ class TestFilterSpuriousFailedJobs(unittest.TestCase):
         failed = [("pull / linux", "real")]
 
         self.assertIs(_filter_spurious_failed_jobs(failed, set()), failed)
+
+
+class TestApplyMergeIIgnoredChecks(unittest.TestCase):
+    def test_persists_new_ignored_checks(self):
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+        spurious = {"existing / fail"}
+        comments = [
+            {
+                "author": "pytorchmergebot",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": (
+                    "Your change will be merged while ignoring the following "
+                    "1 checks: pull / linux"
+                ),
+            }
+        ]
+        checks = [
+            {"name": "pull / linux", "bucket": "fail"},
+            {"name": "existing / fail", "bucket": "fail"},
+        ]
+
+        with mock.patch.object(shepherd, "log"):
+            added = _apply_merge_i_ignored_checks(
+                trust,
+                comments,
+                checks,
+                spurious,
+                since_iso="2026-05-08T13:00:00Z",
+            )
+
+        self.assertEqual(added, {"pull / linux"})
+        self.assertEqual(spurious, {"existing / fail", "pull / linux"})
+        self.assertEqual(
+            trust.spurious_check_names,
+            ["existing / fail", "pull / linux"],
+        )
+        trust.save.assert_called_once()
 
 
 class TestActionableLintFailureNames(unittest.TestCase):

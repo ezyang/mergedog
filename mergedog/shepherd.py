@@ -605,6 +605,33 @@ def _filter_spurious_failed_jobs(
     return [(name, text) for name, text in failed if name not in spurious_names]
 
 
+def _apply_merge_i_ignored_checks(
+    trust: TrustDB,
+    comments: list[dict],
+    checks: list[dict],
+    spurious_check_names: set[str],
+    *,
+    since_iso: str,
+    note: str = "from merge -i",
+) -> set[str]:
+    newly_ignored = (
+        mergebot_ignored_check_names(comments, checks, since_iso=since_iso)
+        - spurious_check_names
+    )
+    if not newly_ignored:
+        return set()
+    spurious_check_names |= newly_ignored
+    trust.spurious_check_names = sorted(spurious_check_names)
+    trust.save()
+    log(
+        f"{PROJECT.mergebot_login} / merge -i is ignoring "
+        f"{len(newly_ignored)} failed check"
+        f"{'' if len(newly_ignored) == 1 else 's'} "
+        f"{note}; continuing with remaining CI"
+    )
+    return newly_ignored
+
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -2547,19 +2574,15 @@ def _shepherd_body(
                     comments
                 )
                 ignore_since = handoff_iso or trust.last_observed_failure_iso
-                newly_ignored = mergebot_ignored_check_names(
-                    comments, checks, since_iso=ignore_since
-                ) - spurious_check_names
+                newly_ignored = _apply_merge_i_ignored_checks(
+                    trust,
+                    comments,
+                    checks,
+                    spurious_check_names,
+                    since_iso=ignore_since,
+                    note="from merge -i",
+                )
                 if newly_ignored:
-                    spurious_check_names |= newly_ignored
-                    trust.spurious_check_names = sorted(spurious_check_names)
-                    trust.save()
-                    log(
-                        f"{PROJECT.mergebot_login} is ignoring "
-                        f"{len(newly_ignored)} failed check"
-                        f"{'' if len(newly_ignored) == 1 else 's'} "
-                        "from merge -i; continuing with remaining CI"
-                    )
                     last_status = None
                     continue
                 if is_ghstack and _is_ghstack_mergeability_failure(
@@ -2725,6 +2748,36 @@ def _shepherd_body(
                 started_at = utc_now_iso()
                 result = claude_mod.invoke_fixer(worktree, prompt)
                 ran_cleanly, new_sha, transcript = result
+                newly_ignored_during_llm = _apply_merge_i_ignored_checks(
+                    trust,
+                    github.get_pr_comments(pr),
+                    checks,
+                    spurious_check_names,
+                    since_iso=ignore_since,
+                    note=f"while {_llm_label()} was running",
+                )
+                if newly_ignored_during_llm:
+                    if new_sha is not None or not ran_cleanly:
+                        repo.set_worktree_to_sha(worktree, sha_before)
+                    _record_claude_session(
+                        sessions,
+                        mode="fix-CI",
+                        sha_before=sha_before,
+                        started_at=started_at,
+                        ran_cleanly=True,
+                        new_sha=None,
+                        transcript=transcript,
+                        on_commit="pushed fix commit {sha}",
+                        on_clean_noop="superseded by merge -i ignore (no commit)",
+                        extra=(
+                            " — failing jobs: "
+                            f"{', '.join(session_failed_jobs)}"
+                            if session_failed_jobs
+                            else ""
+                        ),
+                    )
+                    last_status = None
+                    continue
                 session_notes: list[str] = []
                 if session_failed_jobs:
                     session_notes.append(
