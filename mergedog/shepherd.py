@@ -76,7 +76,25 @@ def _fetch_current_pr_head_for_trust(
     return True
 
 
-def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> bool:
+def _write_ci_sev_status(pr: int, message: str) -> None:
+    try:
+        write_status(
+            pr,
+            phase="waiting_ci_sev",
+            category="waiting",
+            waiting_on="ci_sev",
+            message=message,
+        )
+    except Exception:
+        pass
+
+
+def _wait_for_no_active_sev(
+    reason: str,
+    *,
+    ignore_sev: bool,
+    pr: int | None = None,
+) -> bool:
     """If pytorch CI has an open SEV, block until it clears.
 
     A CI SEV here is any open issue on pytorch/pytorch tagged
@@ -101,14 +119,17 @@ def _wait_for_no_active_sev(reason: str, *, ignore_sev: bool) -> bool:
                 return True
             return False
         ids = tuple(sorted(s.get("number") for s in sevs if s.get("number")))
+        head = sevs[0]
+        others = f" (+{len(sevs) - 1} more)" if len(sevs) > 1 else ""
+        message = (
+            f"parked on ci: sev #{head.get('number')} "
+            f"{head.get('title', '?')!r}{others}; "
+            f"waiting before {reason}"
+        )
+        if pr is not None:
+            _write_ci_sev_status(pr, message)
         if ids != last_ids:
-            head = sevs[0]
-            others = f" (+{len(sevs) - 1} more)" if len(sevs) > 1 else ""
-            log(
-                f"parked on ci: sev #{head.get('number')} "
-                f"{head.get('title', '?')!r}{others}; "
-                f"waiting before {reason}"
-            )
+            log(message)
             last_ids = ids
         time.sleep(SEV_POLL_INTERVAL_SEC)
 
@@ -862,6 +883,7 @@ def _publish_ghstack_parent_rebase(
     if _wait_for_no_active_sev(
         f"propagating stack parent PR #{dep.parent_pr} to PR #{pr}",
         ignore_sev=ignore_sev,
+        pr=pr,
     ):
         return False
 
@@ -1097,7 +1119,7 @@ def _safe_push(
     ``reason`` is the human-readable verb passed to the SEV-park log
     line, e.g. ``"pushing claude fix commit"``.
     """
-    _wait_for_no_active_sev(reason, ignore_sev=ignore_sev)
+    _wait_for_no_active_sev(reason, ignore_sev=ignore_sev, pr=pr)
     repo.push_to_fork(worktree, fork_remote, branch)
     _wait_for_pr_head(pr, new_sha)
 
@@ -1187,7 +1209,7 @@ def _publish_ghstack_fix(
     fix_message = repo.commit_message(worktree, fix_sha)
     audit_ref = f"refs/heads/mergedog/{pr}/{fix_sha}"
     _wait_for_no_active_sev(
-        "pushing ghstack LLM audit commit", ignore_sev=ignore_sev
+        "pushing ghstack LLM audit commit", ignore_sev=ignore_sev, pr=pr
     )
     repo.push_ref(worktree, "origin", fix_sha, audit_ref)
     log(
@@ -1196,7 +1218,7 @@ def _publish_ghstack_fix(
     )
     repo.fixup_into_parent(worktree)
     _wait_for_no_active_sev(
-        "re-publishing via ghstack submit", ignore_sev=ignore_sev
+        "re-publishing via ghstack submit", ignore_sev=ignore_sev, pr=pr
     )
     new_head_sha = _ghstack_submit_trusted(
         worktree, head_ref, trust, fix_message
@@ -1313,7 +1335,7 @@ def _rebase_ghstack_onto_main(
     viable/strict or a recent revert rather than raw trunk tip.
     """
     if _wait_for_no_active_sev(
-        "rebasing /orig onto main", ignore_sev=ignore_sev
+        "rebasing /orig onto main", ignore_sev=ignore_sev, pr=pr
     ):
         repo.fetch_origin()
 
@@ -1380,7 +1402,9 @@ def _rebase_ghstack_onto_main(
     assert new_orig_sha is not None
     log(f"rebased /orig to {new_orig_sha[:12]}; re-publishing via ghstack")
     _wait_for_no_active_sev(
-        "re-publishing rebased /orig via ghstack submit", ignore_sev=ignore_sev
+        "re-publishing rebased /orig via ghstack submit",
+        ignore_sev=ignore_sev,
+        pr=pr,
     )
     new_head_sha = _ghstack_submit_trusted(
         worktree, head_ref, trust, "Rebase onto origin/main"
@@ -1610,7 +1634,9 @@ def _merge_main_resolving_conflicts(
     best known-good ref via ``select_rebase_target`` -- viable/strict,
     a recent revert commit, or stay put if nothing is ahead of us.
     """
-    if _wait_for_no_active_sev("merging main", ignore_sev=ignore_sev):
+    if _wait_for_no_active_sev(
+        "merging main", ignore_sev=ignore_sev, pr=pr_data["number"]
+    ):
         repo.fetch_origin()
 
     if target_ref is None:
@@ -3075,7 +3101,9 @@ def _shepherd_body(
                 # Adding ciflow/trunk kicks off a fresh wave of trunk
                 # workflows; gate on SEV so we don't pile on broken trunk.
                 _wait_for_no_active_sev(
-                    f"applying {TRUNK_LABEL} label", ignore_sev=ignore_sev
+                    f"applying {TRUNK_LABEL} label",
+                    ignore_sev=ignore_sev,
+                    pr=pr,
                 )
                 log(f"CI green; applying {TRUNK_LABEL} label")
                 github.add_label(pr, TRUNK_LABEL, loud=False)

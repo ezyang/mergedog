@@ -687,6 +687,40 @@ class TestGhstackSubmitTrusted(unittest.TestCase):
         self.assertIn("a" * 40, trust.trusted_shas)
 
 
+class TestCiSevStatus(unittest.TestCase):
+    def test_wait_for_no_active_sev_writes_structured_status(self):
+        sevs = [
+            {"number": 187193, "title": "runner label rename"},
+            {"number": 188122, "title": "cluster rename"},
+        ]
+
+        with (
+            mock.patch.object(
+                shepherd.github,
+                "list_active_ci_sevs",
+                side_effect=[sevs, []],
+            ),
+            mock.patch.object(shepherd.time, "sleep"),
+            mock.patch.object(shepherd, "write_status") as write_status,
+            mock.patch.object(shepherd, "log"),
+        ):
+            waited = shepherd._wait_for_no_active_sev(
+                "pushing fix commit", ignore_sev=False, pr=123
+            )
+
+        self.assertTrue(waited)
+        write_status.assert_called_once_with(
+            123,
+            phase="waiting_ci_sev",
+            category="waiting",
+            waiting_on="ci_sev",
+            message=(
+                "parked on ci: sev #187193 'runner label rename' (+1 more); "
+                "waiting before pushing fix commit"
+            ),
+        )
+
+
 class TestPublishGhstackFix(unittest.TestCase):
     def test_pushes_audit_commit_before_fixup_and_returns_head(self):
         from mergedog.state import TrustDB
@@ -732,9 +766,15 @@ class TestPublishGhstackFix(unittest.TestCase):
         wait_sev.assert_has_calls(
             [
                 mock.call(
-                    "pushing ghstack LLM audit commit", ignore_sev=False
+                    "pushing ghstack LLM audit commit",
+                    ignore_sev=False,
+                    pr=123,
                 ),
-                mock.call("re-publishing via ghstack submit", ignore_sev=False),
+                mock.call(
+                    "re-publishing via ghstack submit",
+                    ignore_sev=False,
+                    pr=123,
+                ),
             ]
         )
         push_ref.assert_called_once_with(
