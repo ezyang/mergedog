@@ -6,6 +6,7 @@ parses JSON. No third-party HTTP client.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import json
 import os
 import re
@@ -13,12 +14,21 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote
 
 from mergedog.log import log
 from mergedog.net import github_api_env_extra, is_transient_network_error
-from mergedog.paths import CI_LOGS_DIR, GH_API_CALLS_LOG, REPO_SLUG
+from mergedog.paths import (
+    CI_LOGS_DIR,
+    GH_API_CALLS_LOG,
+    GH_API_GOVERNOR_LOCK,
+    GH_API_GOVERNOR_STATE,
+    REPO_SLUG,
+)
 from mergedog.process import run
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_text
@@ -35,6 +45,28 @@ _GH_FALLBACK_PATHS = ("/usr/local/bin/gh",)
 _GH_MAX_RETRIES = 3
 _GH_RETRY_DELAY = 5  # seconds
 _GH_COMMAND = ["gh"]
+_GH_GOVERNOR_DEFAULT_MAX_PER_MINUTE = 20
+_GH_GOVERNOR_DEFAULT_MAX_PER_HOUR = 3000
+_GH_GOVERNOR_DEFAULT_RATE_LIMIT_COOLDOWN_SEC = 3600
+_GH_GOVERNOR_MAX_SLEEP_CHUNK_SEC = 60
+
+
+def _env_flag_enabled(name: str, *, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_nonnegative_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(parsed, 0)
 
 
 def _safe_gh_args(args: list[str]) -> list[str]:
@@ -195,6 +227,195 @@ def _classify_gh_args(args: list[str]) -> dict[str, object]:
     return fields
 
 
+def _github_governor_enabled() -> bool:
+    return _env_flag_enabled("MERGEDOG_GITHUB_API_GOVERNOR", default=True)
+
+
+def _github_governor_limits() -> tuple[int, int]:
+    return (
+        _env_nonnegative_int(
+            "MERGEDOG_GITHUB_MAX_CALLS_PER_MINUTE",
+            _GH_GOVERNOR_DEFAULT_MAX_PER_MINUTE,
+        ),
+        _env_nonnegative_int(
+            "MERGEDOG_GITHUB_MAX_CALLS_PER_HOUR",
+            _GH_GOVERNOR_DEFAULT_MAX_PER_HOUR,
+        ),
+    )
+
+
+def _github_rate_limit_cooldown_sec() -> int:
+    return _env_nonnegative_int(
+        "MERGEDOG_GITHUB_RATE_LIMIT_COOLDOWN_SEC",
+        _GH_GOVERNOR_DEFAULT_RATE_LIMIT_COOLDOWN_SEC,
+    )
+
+
+def _is_github_rate_limit_error(proc: subprocess.CompletedProcess[str]) -> bool:
+    if proc.returncode == 0:
+        return False
+    text = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+    return (
+        "api rate limit exceeded" in text
+        or "rate limit exceeded for user" in text
+        or "exceeded a secondary rate limit" in text
+    )
+
+
+def _load_governor_state(path: Path | None = None) -> dict[str, object]:
+    path = path or GH_API_GOVERNOR_STATE
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_governor_state(
+    state: dict[str, object],
+    path: Path | None = None,
+) -> None:
+    path = path or GH_API_GOVERNOR_STATE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+@contextmanager
+def _github_governor_lock(
+    path: Path | None = None,
+) -> Any:
+    path = path or GH_API_GOVERNOR_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _float_timestamps(value: object) -> list[float]:
+    if not isinstance(value, list):
+        return []
+    out: list[float] = []
+    for item in value:
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _governor_wait_seconds(
+    state: dict[str, object],
+    *,
+    now: float,
+    max_per_minute: int,
+    max_per_hour: int,
+) -> tuple[float, list[float]]:
+    calls = [t for t in _float_timestamps(state.get("calls")) if now - t < 3600]
+    waits: list[float] = []
+    pause_until = state.get("pause_until")
+    try:
+        pause_wait = float(pause_until) - now
+    except (TypeError, ValueError):
+        pause_wait = 0
+    if pause_wait > 0:
+        waits.append(pause_wait)
+
+    minute_calls = [t for t in calls if now - t < 60]
+    if max_per_minute and len(minute_calls) >= max_per_minute:
+        waits.append(minute_calls[0] + 60 - now)
+    if max_per_hour and len(calls) >= max_per_hour:
+        waits.append(calls[0] + 3600 - now)
+    return (max([0.0, *waits]), calls)
+
+
+def _format_wait(wait_sec: float) -> str:
+    wait = int(max(wait_sec, 0) + 0.999)
+    if wait < 60:
+        return f"{wait}s"
+    minutes, seconds = divmod(wait, 60)
+    if minutes < 60:
+        return f"{minutes}m{seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _governor_throttle_gh(
+    args: list[str],
+    *,
+    now_fn: Callable[[], float] = time.time,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
+    if not _github_governor_enabled():
+        return
+    max_per_minute, max_per_hour = _github_governor_limits()
+    if not max_per_minute and not max_per_hour:
+        return
+
+    logged = False
+    while True:
+        now = now_fn()
+        with _github_governor_lock():
+            state = _load_governor_state()
+            wait, calls = _governor_wait_seconds(
+                state,
+                now=now,
+                max_per_minute=max_per_minute,
+                max_per_hour=max_per_hour,
+            )
+            if wait <= 0:
+                calls.append(now)
+                state["calls"] = calls
+                state["updated_at"] = now
+                state.pop("pause_reason", None)
+                try:
+                    existing_pause_until = float(state.get("pause_until", 0) or 0)
+                except (TypeError, ValueError):
+                    existing_pause_until = 0
+                if state.get("pause_until") is not None and existing_pause_until <= now:
+                    state.pop("pause_until", None)
+                _write_governor_state(state)
+                return
+        if not logged:
+            op = str(_classify_gh_args(args).get("operation", "gh"))
+            log(
+                "GitHub API governor delaying "
+                f"{op} for {_format_wait(wait)}"
+            )
+            logged = True
+        sleep_fn(min(wait, _GH_GOVERNOR_MAX_SLEEP_CHUNK_SEC))
+
+
+def _governor_note_rate_limit(
+    *,
+    now_fn: Callable[[], float] = time.time,
+) -> float:
+    cooldown = _github_rate_limit_cooldown_sec()
+    pause_until = now_fn() + cooldown
+    if _github_governor_enabled() and cooldown > 0:
+        with _github_governor_lock():
+            state = _load_governor_state()
+            try:
+                existing_pause_until = float(state.get("pause_until", 0) or 0)
+            except (TypeError, ValueError):
+                existing_pause_until = 0
+            state["pause_until"] = max(
+                existing_pause_until,
+                pause_until,
+            )
+            state["pause_reason"] = "github rate limit"
+            state["updated_at"] = now_fn()
+            _write_governor_state(state)
+    return max(float(cooldown), 0.0)
+
+
 def _gh_callsite() -> tuple[str | None, str | None]:
     """Return ``(github_wrapper, external_caller)`` for attribution."""
     this_file = os.path.abspath(__file__)
@@ -353,10 +574,13 @@ def _gh(
 ) -> subprocess.CompletedProcess[str]:
     global _GH_COMMAND
     env_extra = github_api_env_extra()
-    for attempt in range(_GH_MAX_RETRIES):
+    attempt = 0
+    while True:
+        attempt += 1
+        _governor_throttle_gh(args)
         run_kwargs = {
             "check": False,
-            "loud": loud and attempt == 0,
+            "loud": loud and attempt == 1,
         }
         if env_extra is not None:
             run_kwargs["env_extra"] = env_extra
@@ -366,7 +590,7 @@ def _gh(
         proc = run([*_GH_COMMAND, *args], **run_kwargs)
         _record_gh_attempt(
             args,
-            attempt=attempt + 1,
+            attempt=attempt,
             proc=proc,
             duration_sec=time.monotonic() - started,
             check=check,
@@ -394,27 +618,36 @@ def _gh(
                 proc = run([*_GH_COMMAND, *args], **run_kwargs)
                 _record_gh_attempt(
                     args,
-                    attempt=attempt + 1,
+                    attempt=attempt,
                     proc=proc,
                     duration_sec=time.monotonic() - started,
                     check=check,
                     loud=bool(run_kwargs["loud"]),
                     log_context=log_context,
                 )
+        if _is_github_rate_limit_error(proc):
+            wait = _governor_note_rate_limit()
+            log(
+                "  ! GitHub API rate limit exhausted; "
+                f"retrying in {_format_wait(wait)}"
+            )
+            if wait > 0:
+                time.sleep(wait)
+            continue
         if proc.returncode == 0 or not _is_transient_gh_failure(proc):
-            if attempt > 0 and proc.returncode == 0:
+            if attempt > 1 and proc.returncode == 0:
                 suffix = f" while {log_context}" if log_context else ""
                 log(f"  gh recovered after transient failure{suffix}")
             if check and proc.returncode != 0:
                 _raise_gh_failure(proc, args)
             return proc
-        if attempt + 1 == _GH_MAX_RETRIES:
+        if attempt == _GH_MAX_RETRIES:
             log(f"  ! gh transient failure after {_GH_MAX_RETRIES} attempts")
             if check:
                 _raise_gh_failure(proc, args)
             return proc
         log(
-            f"  ! gh transient failure (attempt {attempt + 1}/{_GH_MAX_RETRIES}), "
+            f"  ! gh transient failure (attempt {attempt}/{_GH_MAX_RETRIES}), "
             f"retrying in {_GH_RETRY_DELAY}s"
         )
         time.sleep(_GH_RETRY_DELAY)

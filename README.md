@@ -163,6 +163,15 @@ include the operation, inferred PR/run/SHA, shepherd process PR, caller,
 duration, exit code, and retry attempt so quota spikes can be attributed
 without reconstructing them from prose logs.
 
+Mergedog also coordinates `gh` calls across shepherd subprocesses with a small
+file-lock governor under the same root. By default it allows 20 `gh` attempts
+per minute and 3000 per hour across the mux, leaving headroom for other local
+GitHub clients. Tune with `MERGEDOG_GITHUB_MAX_CALLS_PER_MINUTE`,
+`MERGEDOG_GITHUB_MAX_CALLS_PER_HOUR`, or disable with
+`MERGEDOG_GITHUB_API_GOVERNOR=0`. If GitHub still reports quota exhaustion,
+the shepherd sleeps for `MERGEDOG_GITHUB_RATE_LIMIT_COOLDOWN_SEC` seconds
+(default one hour) and retries instead of HALTing immediately.
+
 ### Common flags
 
 These work on the PR shepherd entry point:

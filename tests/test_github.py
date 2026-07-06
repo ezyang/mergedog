@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,16 @@ class TestGhRetries(unittest.TestCase):
         )
         self.api_log_patcher.start()
         self.addCleanup(self.api_log_patcher.stop)
+        self.governor_state_patcher = mock.patch.object(
+            github, "GH_API_GOVERNOR_STATE", Path(self.tmp.name) / "governor.json"
+        )
+        self.governor_lock_patcher = mock.patch.object(
+            github, "GH_API_GOVERNOR_LOCK", Path(self.tmp.name) / "governor.lock"
+        )
+        self.governor_state_patcher.start()
+        self.governor_lock_patcher.start()
+        self.addCleanup(self.governor_state_patcher.stop)
+        self.addCleanup(self.governor_lock_patcher.stop)
         self.proxy_patcher = mock.patch.object(
             github, "github_api_env_extra", return_value=None
         )
@@ -30,6 +41,38 @@ class TestGhRetries(unittest.TestCase):
         )
 
         self.assertTrue(github._is_transient_gh_failure(proc))
+
+    def test_github_rate_limit_error_is_recognized(self):
+        proc = subprocess.CompletedProcess(
+            ["gh"],
+            1,
+            "",
+            "gh: API rate limit exceeded for user ID 13564 (HTTP 403)\n",
+        )
+
+        self.assertTrue(github._is_github_rate_limit_error(proc))
+
+    def test_governor_waits_when_minute_window_is_full(self):
+        wait, calls = github._governor_wait_seconds(
+            {"calls": [100.0, 110.0]},
+            now=120.0,
+            max_per_minute=2,
+            max_per_hour=0,
+        )
+
+        self.assertEqual(wait, 40.0)
+        self.assertEqual(calls, [100.0, 110.0])
+
+    def test_governor_ignores_expired_hour_window_entries(self):
+        wait, calls = github._governor_wait_seconds(
+            {"calls": [0.0, 3601.0]},
+            now=3601.0,
+            max_per_minute=0,
+            max_per_hour=2,
+        )
+
+        self.assertEqual(wait, 0.0)
+        self.assertEqual(calls, [3601.0])
 
     def test_unexpected_eof_is_transient(self):
         proc = subprocess.CompletedProcess(
@@ -82,6 +125,35 @@ class TestGhRetries(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         log.assert_any_call(
             "  gh recovered after transient failure while watching post-handoff"
+        )
+
+    def test_rate_limit_error_sleeps_and_retries(self):
+        calls = [
+            subprocess.CompletedProcess(
+                ["gh"],
+                1,
+                "{}",
+                "gh: API rate limit exceeded for user ID 13564 (HTTP 403)",
+            ),
+            subprocess.CompletedProcess(["gh"], 0, "{}", ""),
+        ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"MERGEDOG_GITHUB_RATE_LIMIT_COOLDOWN_SEC": "0"},
+                clear=False,
+            ),
+            mock.patch.object(github, "run", side_effect=calls),
+            mock.patch.object(github.time, "sleep") as sleep,
+            mock.patch.object(github, "log") as log,
+        ):
+            proc = github._gh(["api", f"repos/{github.REPO}/actions/runs"])
+
+        self.assertEqual(proc.returncode, 0)
+        sleep.assert_not_called()
+        log.assert_any_call(
+            "  ! GitHub API rate limit exhausted; retrying in 0s"
         )
 
     def test_logs_stderr_after_transient_retries_exhausted(self):
