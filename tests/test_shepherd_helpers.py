@@ -90,6 +90,99 @@ class TestMergedogLabelManagement(unittest.TestCase):
         self.assertEqual(body.call_args.args[6], 0)
 
 
+class TestPreHandoffConflictRecovery(unittest.TestCase):
+    class _Trust:
+        trusted_shas = ["a" * 40]
+        spurious_check_names: list[str] = []
+        last_observed_failure_iso = ""
+        last_observed_failure_body = ""
+        merge_auto_retries = 0
+        pending_publish_orig_sha = ""
+        fix_commits_pushed = 0
+        head_branch = ""
+        head_repo_clone_url = ""
+
+        def save(self) -> None:
+            pass
+
+        def is_trusted(self, _sha: str) -> bool:
+            return True
+
+        def trust(self, _sha: str) -> None:
+            pass
+
+    def test_dirty_branch_refreshes_before_waiting_on_ci(self):
+        head = "a" * 40
+        pr_data = {
+            "number": 123,
+            "title": "Test PR",
+            "url": "https://github.com/pytorch/pytorch/pull/123",
+            "headRefName": "feature",
+            "headRefOid": head,
+            "labels": [],
+            "isDraft": False,
+            "state": "OPEN",
+            "body": "",
+        }
+        trust = self._Trust()
+
+        with (
+            mock.patch.object(
+                shepherd.TrustDB, "load_or_create", return_value=trust
+            ),
+            mock.patch.object(shepherd, "_fork_ssh_url", return_value="git@fork"),
+            mock.patch.object(shepherd, "_fork_remote_name", return_value="fork"),
+            mock.patch.object(shepherd.repo, "add_fork_remote"),
+            mock.patch.object(shepherd.repo, "fetch_pr_branch", return_value=head),
+            mock.patch.object(
+                shepherd.repo, "ensure_worktree", return_value=Path("/tmp/wt")
+            ),
+            mock.patch.object(shepherd.github, "viewer_login", return_value="bot"),
+            mock.patch.object(shepherd.github, "is_self_pr", return_value=False),
+            mock.patch.object(
+                shepherd, "seed_trust_from_reviews", return_value=head
+            ),
+            mock.patch.object(shepherd.labels, "autolabel_if_needed"),
+            mock.patch.object(shepherd, "_sync_fix_budget", return_value=0),
+            mock.patch.object(shepherd, "_write_status_best_effort"),
+            mock.patch.object(
+                shepherd,
+                "_count_mergedog_interventions_since_ack",
+                return_value=0,
+            ),
+            mock.patch.object(
+                shepherd,
+                "_refresh_status_prefix",
+                return_value=(True, False, head, "DIRTY"),
+            ),
+            mock.patch.object(
+                shepherd,
+                "_recover_from_merge_conflict",
+                side_effect=RuntimeError("stop"),
+            ) as recover,
+            mock.patch.object(shepherd, "_approve_pending_runs") as approve_runs,
+            mock.patch.object(shepherd.github, "get_pr_checks_all") as checks,
+            mock.patch.object(shepherd, "log"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                shepherd._shepherd_body(
+                    123,
+                    pr_data,
+                    rebase=False,
+                    accept_divergence=False,
+                    ignore_sev=False,
+                )
+
+        recover.assert_called_once()
+        self.assertEqual(recover.call_args.kwargs["is_ghstack"], False)
+        self.assertIn(
+            "pre-handoff conflicts",
+            recover.call_args.kwargs["change_summary"],
+        )
+        approve_runs.assert_not_called()
+        checks.assert_not_called()
+
+
 class TestFailedLogsAreContentFree(unittest.TestCase):
     def test_empty_list_is_content_free(self):
         self.assertTrue(_failed_logs_are_content_free([]))

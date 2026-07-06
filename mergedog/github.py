@@ -700,8 +700,10 @@ def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
     return labels, data.get("reviewDecision") or None
 
 
-def get_pr_poll_fields(pr: int) -> tuple[list[str], str | None, str | None]:
-    """Return ``(labels, reviewDecision, headRefOid)`` for a poll iteration."""
+def get_pr_poll_fields(
+    pr: int,
+) -> tuple[list[str], str | None, str | None, str | None]:
+    """Return ``(labels, reviewDecision, headRefOid, mergeStateStatus)``."""
     data = _gh_json(
         [
             "pr",
@@ -710,15 +712,17 @@ def get_pr_poll_fields(pr: int) -> tuple[list[str], str | None, str | None]:
             "--repo",
             REPO,
             "--json",
-            "labels,reviewDecision,headRefOid",
+            "labels,reviewDecision,headRefOid,mergeStateStatus",
         ]
     )
     labels = [lb.get("name", "") for lb in data.get("labels", []) or []]
     head = data.get("headRefOid")
+    merge_state = data.get("mergeStateStatus")
     return (
         labels,
         data.get("reviewDecision") or None,
         head if isinstance(head, str) else None,
+        merge_state if isinstance(merge_state, str) else None,
     )
 
 

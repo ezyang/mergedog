@@ -801,7 +801,9 @@ def _count_mergedog_interventions_since_ack(
         return 0
 
 
-def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None, str | None]:
+def _refresh_status_prefix(
+    pr: int,
+) -> tuple[bool | None, bool | None, str | None, str | None]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
     Called once per main-poll iteration. The prefix is the only signal
@@ -814,14 +816,14 @@ def _refresh_status_prefix(pr: int) -> tuple[bool | None, bool | None, str | Non
     over a UI nicety.
     """
     try:
-        labels, decision, head_sha = github.get_pr_poll_fields(pr)
+        labels, decision, head_sha, merge_state = github.get_pr_poll_fields(pr)
     except Exception:
-        return None, None, None
+        return None, None, None, None
     merging = github.MERGING_LABEL in labels
     approved = (decision or "").upper() == "APPROVED"
     set_merging(merging)
     set_approved(approved)
-    return approved, merging, head_sha
+    return approved, merging, head_sha, merge_state
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -2318,7 +2320,7 @@ def _shepherd_body(
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            approved, merging, current = _refresh_status_prefix(pr)
+            approved, merging, current, merge_state = _refresh_status_prefix(pr)
             if approved is not None:
                 last_approved = approved
             if merging is not None:
@@ -2366,6 +2368,29 @@ def _shepherd_body(
             intervention_count = _count_mergedog_interventions_since_ack(
                 worktree, human_ack_sha
             )
+            if (
+                merging is False
+                and (merge_state or "").upper() == "DIRTY"
+            ):
+                recovery_attempts += 1
+                log(
+                    "GitHub reports branch conflicts before handoff; "
+                    "rebasing onto main"
+                )
+                _recover_from_merge_conflict(
+                    pr, worktree, branch, trust, pr_data, sessions,
+                    pushed_changes,
+                    is_ghstack=is_ghstack, fork_remote=fork_remote,
+                    ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                    change_summary=(
+                        "merged main into the PR branch after GitHub "
+                        "reported pre-handoff conflicts"
+                    ),
+                )
+                last_status = None
+                stable_observation = None
+                pr_data = github.get_pr(pr)
+                continue
 
             # 2. Approve any approval-pending workflow runs.
             approved = _approve_pending_runs(current, run_state_cache)
