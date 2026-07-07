@@ -1530,10 +1530,12 @@ def _rebase_ghstack_onto_main(
     target_ref: str | None = None,
     target_reason: str | None = None,
 ) -> None:
-    """Rebase /orig onto a known-good point on main and re-publish via ghstack.
+    """Rebase /orig onto main and re-publish via ghstack.
 
-    Target selection mirrors ``_merge_main_resolving_conflicts``: we pick
-    viable/strict or a recent revert rather than raw trunk tip.
+    By default, target selection mirrors
+    ``_merge_main_resolving_conflicts``: we pick viable/strict or a recent
+    revert rather than raw trunk tip. Callers handling GitHub mergeability
+    failures can pass an explicit target such as ``origin/main``.
     """
     if _wait_for_no_active_sev(
         "rebasing /orig onto main", ignore_sev=ignore_sev, pr=pr
@@ -1857,15 +1859,17 @@ def _merge_main_resolving_conflicts(
     target_ref: str | None = None,
     target_reason: str | None = None,
 ) -> str | None:
-    """Merge a known-good point on main into HEAD, resolving conflicts via claude.
+    """Merge main into HEAD, resolving conflicts via claude.
 
     Returns the new head SHA if a merge commit was made, else None
     (already up to date). Trusts the new SHA. Caller is responsible
     for pushing.
 
-    Target selection: we never merge raw trunk tip. Instead we pick the
-    best known-good ref via ``select_rebase_target`` -- viable/strict,
-    a recent revert commit, or stay put if nothing is ahead of us.
+    By default, target selection avoids raw trunk tip and picks the best
+    known-good ref via ``select_rebase_target`` -- viable/strict, a recent
+    revert commit, or staying put if nothing is ahead of us. Callers
+    handling GitHub mergeability failures can pass an explicit target such
+    as ``origin/main``.
     """
     if _wait_for_no_active_sev(
         "merging main", ignore_sev=ignore_sev, pr=pr_data["number"]
@@ -1995,23 +1999,31 @@ def _recover_from_merge_conflict(
     trusted_pr: bool,
     change_summary: str,
 ) -> None:
-    """Refresh the PR branch from main after a merge conflict.
+    """Refresh the PR branch from live main after a merge conflict.
 
     Shared by the post-handoff conflict watcher, the mergebot
     merge-conflict failure path, and the startup replay of a persisted
     conflict failure.
+
+    GitHub and pytorchmergebot report mergeability against the live base
+    branch, so resolving those conflicts must target ``origin/main`` rather
+    than the normal known-good refresh point.
     """
     repo.fetch_origin()
     if is_ghstack:
         _rebase_ghstack_onto_main(
             pr, worktree, branch, trust, ignore_sev=ignore_sev,
             pr_data=pr_data, sessions=sessions,
+            target_ref="origin/main",
+            target_reason="origin/main (merge conflict)",
         )
     else:
         assert fork_remote is not None
         new_sha = _merge_main_resolving_conflicts(
             worktree, trust, branch, pr_data, sessions,
             ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+            target_ref="origin/main",
+            target_reason="origin/main (merge conflict)",
         )
         if new_sha is not None:
             log(

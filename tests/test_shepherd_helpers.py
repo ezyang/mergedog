@@ -184,6 +184,81 @@ class TestPreHandoffConflictRecovery(unittest.TestCase):
         checks.assert_not_called()
 
 
+class TestRecoverFromMergeConflict(unittest.TestCase):
+    def test_regular_pr_targets_live_main(self):
+        trust = object()
+        sessions: list = []
+        pushed_changes: list = []
+
+        with (
+            mock.patch.object(shepherd.repo, "fetch_origin") as fetch_origin,
+            mock.patch.object(
+                shepherd,
+                "_merge_main_resolving_conflicts",
+                return_value=None,
+            ) as merge_main,
+            mock.patch.object(shepherd, "_safe_push") as safe_push,
+        ):
+            shepherd._recover_from_merge_conflict(
+                123,
+                Path("/tmp/wt"),
+                "feature",
+                trust,
+                {"number": 123},
+                sessions,
+                pushed_changes,
+                is_ghstack=False,
+                fork_remote="fork",
+                ignore_sev=False,
+                trusted_pr=True,
+                change_summary="merged main after conflict",
+            )
+
+        fetch_origin.assert_called_once()
+        merge_main.assert_called_once()
+        self.assertEqual(merge_main.call_args.kwargs["target_ref"], "origin/main")
+        self.assertEqual(
+            merge_main.call_args.kwargs["target_reason"],
+            "origin/main (merge conflict)",
+        )
+        safe_push.assert_not_called()
+
+    def test_ghstack_pr_targets_live_main(self):
+        trust = object()
+        sessions: list = []
+        pushed_changes: list = []
+
+        with (
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(
+                shepherd, "_rebase_ghstack_onto_main"
+            ) as rebase_ghstack,
+        ):
+            shepherd._recover_from_merge_conflict(
+                123,
+                Path("/tmp/wt"),
+                "gh/user/123/head",
+                trust,
+                {"number": 123},
+                sessions,
+                pushed_changes,
+                is_ghstack=True,
+                fork_remote=None,
+                ignore_sev=False,
+                trusted_pr=True,
+                change_summary="rebased main after conflict",
+            )
+
+        rebase_ghstack.assert_called_once()
+        self.assertEqual(
+            rebase_ghstack.call_args.kwargs["target_ref"], "origin/main"
+        )
+        self.assertEqual(
+            rebase_ghstack.call_args.kwargs["target_reason"],
+            "origin/main (merge conflict)",
+        )
+
+
 class TestFailedLogsAreContentFree(unittest.TestCase):
     def test_empty_list_is_content_free(self):
         self.assertTrue(_failed_logs_are_content_free([]))
