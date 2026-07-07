@@ -537,6 +537,7 @@ _CiStatus = tuple[str, int, int, int, int]
 class _PostHandoffCiCache:
     head_sha: str | None = None
     workflow_fingerprint: _WorkflowFingerprint | None = None
+    suppressed_key: frozenset[str] = frozenset()
     result: _CiStatus | None = None
     fetched_at: float = 0.0
 
@@ -545,6 +546,7 @@ class _PostHandoffCiCache:
         *,
         head_sha: str | None,
         workflow_fingerprint: _WorkflowFingerprint | None,
+        suppressed_key: frozenset[str],
         now: float,
     ) -> bool:
         if head_sha is None or workflow_fingerprint is None:
@@ -555,6 +557,12 @@ class _PostHandoffCiCache:
             return True
         if self.workflow_fingerprint != workflow_fingerprint:
             return True
+        # A cached result computed with a different suppression set is not
+        # interchangeable: the merging path polls without suppression while
+        # the post-handoff path polls with it, and reusing across the two
+        # would misreport suppressed failures as CI regressions.
+        if self.suppressed_key != suppressed_key:
+            return True
         return now - self.fetched_at >= _FULL_CHECK_REFRESH_SEC
 
     def update(
@@ -562,6 +570,7 @@ class _PostHandoffCiCache:
         *,
         head_sha: str | None,
         workflow_fingerprint: _WorkflowFingerprint | None,
+        suppressed_key: frozenset[str],
         result: _CiStatus,
         fetched_at: float,
     ) -> None:
@@ -570,6 +579,7 @@ class _PostHandoffCiCache:
             return
         self.head_sha = head_sha
         self.workflow_fingerprint = workflow_fingerprint
+        self.suppressed_key = suppressed_key
         self.result = result
         self.fetched_at = fetched_at
 
@@ -685,10 +695,12 @@ def _post_handoff_ci_status_cached(
     suppressed_check_names: set[str] | None = None,
 ) -> _CiStatus | None:
     workflow_fingerprint = _workflow_fingerprint_for_sha(head_sha)
+    suppressed_key = frozenset(suppressed_check_names or ())
     now = time.time()
     if not cache.should_fetch(
         head_sha=head_sha,
         workflow_fingerprint=workflow_fingerprint,
+        suppressed_key=suppressed_key,
         now=now,
     ):
         return cache.result
@@ -699,6 +711,7 @@ def _post_handoff_ci_status_cached(
         cache.update(
             head_sha=head_sha,
             workflow_fingerprint=workflow_fingerprint,
+            suppressed_key=suppressed_key,
             result=result,
             fetched_at=now,
         )
@@ -836,8 +849,8 @@ def _write_handoff_status(
 def _merging_progress_line(
     pr: int,
     *,
-    head_sha: str | None = None,
-    cache: _PostHandoffCiCache | None = None,
+    head_sha: str | None,
+    cache: _PostHandoffCiCache,
 ) -> str:
     """Build the body of a [MERGING]-phase log line: CI progress + failures.
 
@@ -847,18 +860,7 @@ def _merging_progress_line(
     much of pytorchmergebot's rebased CI is done and how many checks it's
     waving past as failed (== "ignoring").
     """
-    if cache is not None:
-        ci = _post_handoff_ci_status_cached(
-            pr, head_sha=head_sha, cache=cache
-        )
-        if ci is None:
-            return "waiting for merge"
-        _, done, total, failed, _ = ci
-        body = f"waiting for merge; CI {done}/{total} done"
-        if failed:
-            body += f", {failed} failed"
-        return body
-    ci = _post_handoff_ci_status(pr, head_sha=head_sha)
+    ci = _post_handoff_ci_status_cached(pr, head_sha=head_sha, cache=cache)
     if ci is None:
         return "waiting for merge"
     _, done, total, failed, _ = ci

@@ -191,7 +191,6 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 parent: (_FakeProc(None), object(), parent_log),
             }
             app._pr_titles = {parent: "Parent commit", child: "Child commit"}
-            app._pr_status = {}
             table = _FakeTable()
 
             with (
@@ -372,7 +371,6 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 )
             }
             app._pr_titles = {mux._pr_job(123): "Test PR"}
-            app._pr_status = {}
             table = _FakeTable()
             hint = _FakeHint()
 
@@ -413,7 +411,6 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 job: "cleanup: removing worktree for [123] (1/1)"
             }
             app._pr_titles = {job: "Test PR"}
-            app._pr_status = {}
             table = _FakeTable()
             hint = _FakeHint()
 
@@ -448,7 +445,6 @@ class TestMuxStructuredStatus(unittest.TestCase):
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {mux._pr_job(123): (_FakeProc(None), object(), log_path)}
             app._pr_titles = {mux._pr_job(123): "Test PR"}
-            app._pr_status = {}
             table = _FakeTable()
 
             sidecar = {
@@ -482,7 +478,6 @@ class TestMuxStructuredStatus(unittest.TestCase):
             app.procs = {job: (_FakeProc(None), object(), log_path)}
             app._job_started_at = {job: 2_000_000_000.0}
             app._pr_titles = {job: "Test PR"}
-            app._pr_status = {}
             table = _FakeTable()
 
             sidecar = {
@@ -861,9 +856,7 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "[123] started")
         terminate_group.assert_called_once_with(old_proc)
-        spawn.assert_called_once_with(
-            mux._pr_job(123), ["--rebase"], spawn_pr=None
-        )
+        spawn.assert_called_once_with(mux._pr_job(123), ["--rebase"])
         self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
 
     def test_cleanup_prunes_successful_completed_jobs(self):

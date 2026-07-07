@@ -392,10 +392,10 @@ def _truncate_title(title: str, n: int = TITLE_TRUNC) -> str:
 def _last_log_line(path: Path) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as fp:
-            tail = fp.readlines()[-1] if fp.readable() else ""
+            lines = fp.readlines()
     except OSError:
         return ""
-    return tail.rstrip()
+    return lines[-1].rstrip() if lines else ""
 
 
 def _crash_summary_from_log(path: Path) -> str:
@@ -455,7 +455,7 @@ def _record_job_started(app: object, job: JobKey, started_at: float) -> None:
     started = getattr(app, "_job_started_at", None)
     if started is None:
         started = {}
-        setattr(app, "_job_started_at", started)
+        app._job_started_at = started  # type: ignore[attr-defined]
     started[job] = started_at
 
 
@@ -776,30 +776,33 @@ def _resolve_initial_jobs(
 def _spawn(
     job: JobKey | int,
     extra: list[str],
-    *,
-    spawn_pr: int | None = None,
 ) -> tuple[subprocess.Popen, object, Path]:
     job = _coerce_job(job)
     _, pr = job
-    arg_pr = spawn_pr if spawn_pr is not None else pr
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _job_log_file(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
-    f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-    command = [sys.executable, "-m", "mergedog"]
-    command.extend([str(arg_pr), *extra])
-    p = subprocess.Popen(
-        command,
-        stdout=f,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        # Make each shepherd its own session/process-group leader. Without
-        # this, ``cancel`` would SIGTERM only the python interpreter and
-        # leave any in-flight ``claude`` / ``gh`` / ``git`` subprocess
-        # running orphaned -- claude in particular can keep editing the
-        # worktree after we thought the shepherd was dead.
-        start_new_session=True,
-    )
+    try:
+        f.write(
+            f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+        )
+        command = [sys.executable, "-m", "mergedog"]
+        command.extend([str(pr), *extra])
+        p = subprocess.Popen(
+            command,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            # Make each shepherd its own session/process-group leader. Without
+            # this, ``cancel`` would SIGTERM only the python interpreter and
+            # leave any in-flight ``claude`` / ``gh`` / ``git`` subprocess
+            # running orphaned -- claude in particular can keep editing the
+            # worktree after we thought the shepherd was dead.
+            start_new_session=True,
+        )
+    except Exception:
+        f.close()
+        raise
     return (p, f, log_path)
 
 
@@ -852,7 +855,6 @@ class MuxApp(App):
         self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
         self._job_started_at: dict[JobKey, float] = {}
         self._pr_titles: dict[JobKey, str] = {}
-        self._pr_status: dict[JobKey, dict] = {}
         self._cleanup_jobs: set[JobKey] = set()
         self._cleanup_status: dict[JobKey, str] = {}
         # Jobs that halted before a previous mux shut down. Kept visible
@@ -911,14 +913,7 @@ class MuxApp(App):
             out = [f"--repo={self.repo_slug}", *out]
         return out
 
-    def _do_add_job(
-        self,
-        job: JobKey | int,
-        extra: list[str],
-        *,
-        spawn_pr: int | None = None,
-        alias_job: JobKey | None = None,
-    ) -> str:
+    def _do_add_job(self, job: JobKey | int, extra: list[str]) -> str:
         job = _coerce_job(job)
         label = _job_label(job)
         if job in getattr(self, "_cleanup_jobs", set()):
@@ -927,17 +922,19 @@ class MuxApp(App):
             return f"[{label}] already running"
         getattr(self, "_parked_jobs", {}).pop(job, None)
         started_at = time.time()
+        old_entry = self.procs.get(job)
         try:
-            self.procs[job] = _spawn(
-                job, self._shepherd_args(extra), spawn_pr=spawn_pr
-            )
+            self.procs[job] = _spawn(job, self._shepherd_args(extra))
         except Exception as e:
             return f"[{label}] spawn failed: {e}"
+        if old_entry is not None:
+            try:
+                old_entry[1].close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
         _record_job_started(self, job, started_at)
         self._pr_titles.pop(job, None)
         self._unresumable_jobs.discard(job)
-        if alias_job is not None and alias_job != job:
-            _remove_mux_job(alias_job)
         if _add_mux_job(job):
             # First time this PR joins the mux: stamp the ``mergedog`` label
             # so it is visible on GitHub as long-term tracked. Restarts and
@@ -1049,12 +1046,18 @@ class MuxApp(App):
         for job in jobs:
             parked_jobs.pop(job, None)
             started_at = time.time()
+            old_entry = self.procs.get(job)
             try:
                 self.procs[job] = _spawn(job, shepherd_args)
             except Exception as e:
                 self.notify(f"[{_job_label(job)}] failed: {e}", severity="error")
             else:
                 _record_job_started(self, job, started_at)
+                if old_entry is not None:
+                    try:
+                        old_entry[1].close()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
             self._pr_titles.pop(job, None)
         self.notify(f"{action} {len(jobs)} job(s)")
 
@@ -1316,54 +1319,68 @@ class MuxApp(App):
             f"({added} new){suffix}"
         )
 
+    def _job_display_status(
+        self,
+        job: JobKey,
+        *,
+        rc: int | None,
+        log_path: Path,
+        last: str,
+    ) -> tuple[dict | None, bool, str, str]:
+        """Compute (structured, stale, phase, status) for one tracked job.
+
+        Shared by the TUI table refresh and the IPC ``status`` command.
+        """
+        _, pr = job
+        cleanup_status = getattr(self, "_cleanup_status", {})
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return (
+                None,
+                False,
+                PHASE_NO_ACTION,
+                cleanup_status.get(job, "cleanup: queued"),
+            )
+        structured = read_status(pr)
+        started_at = getattr(self, "_job_started_at", {}).get(job)
+        stale = _status_is_stale(structured, started_at=started_at, rc=rc)
+        cla_blocked = not stale and _status_has_cla_blocker(pr, structured)
+        phase = _phase_label(
+            structured, rc=rc, stale=stale, cla_blocked=cla_blocked
+        )
+        status = _status_message(
+            structured,
+            rc=rc,
+            last_log=last,
+            crash_summary=_crash_summary_from_log(log_path)
+            if stale and rc is not None
+            else "",
+            stale=stale,
+        )
+        if cla_blocked:
+            status = _cla_blocked_status_message(status)
+        return structured, stale, phase, status
+
     def _refresh(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
         self._refresh_cleanup_hint()
+        # Snapshot: the restart worker thread can insert a previously parked
+        # job into ``self.procs`` while this interval callback iterates.
+        procs = dict(self.procs)
         parent_hints: dict[JobKey, JobKey] = {}
-        for job, (_, _, log_path) in self.procs.items():
+        for job, (_, _, log_path) in procs.items():
             parent_pr = _read_stack_parent_pr_from_log(log_path)
             if parent_pr is not None:
                 parent_hints[job] = _pr_job(parent_pr)
-        jobs, depths = _stack_display_layout(list(self.procs), parent_hints)
-        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
-        cleanup_status = getattr(self, "_cleanup_status", {})
+        jobs, depths = _stack_display_layout(list(procs), parent_hints)
         for job in jobs:
             _, pr = job
-            p, _, log_path = self.procs[job]
+            p, _, log_path = procs[job]
             rc = p.poll()
             last = _last_log_line(log_path)
-            if job in cleanup_jobs:
-                structured = None
-                stale = False
-                self._pr_status.pop(job, None)
-                phase = PHASE_NO_ACTION
-                status = cleanup_status.get(job, "cleanup: queued")
-            else:
-                structured = read_status(pr)
-                started_at = getattr(self, "_job_started_at", {}).get(job)
-                stale = _status_is_stale(structured, started_at=started_at, rc=rc)
-                if structured is None:
-                    self._pr_status.pop(job, None)
-                else:
-                    self._pr_status[job] = structured
-                cla_blocked = (
-                    not stale and _status_has_cla_blocker(pr, structured)
-                )
-                phase = _phase_label(
-                    structured, rc=rc, stale=stale, cla_blocked=cla_blocked
-                )
-                status = _status_message(
-                    structured,
-                    rc=rc,
-                    last_log=last,
-                    crash_summary=_crash_summary_from_log(log_path)
-                    if stale and rc is not None
-                    else "",
-                    stale=stale,
-                )
-                if cla_blocked:
-                    status = _cla_blocked_status_message(status)
+            _, _, phase, status = self._job_display_status(
+                job, rc=rc, log_path=log_path, last=last
+            )
             title = self._pr_titles.get(job, "")
             if not title:
                 title = _read_pr_title(pr)
@@ -1576,10 +1593,10 @@ class MuxApp(App):
         """JSON status of all tracked jobs (consumed by MCP server)."""
         rows = []
         cleanup_jobs = getattr(self, "_cleanup_jobs", set())
-        cleanup_status = getattr(self, "_cleanup_status", {})
-        for job in sorted(self.procs):
+        procs = dict(self.procs)
+        for job in sorted(procs):
             kind, pr = job
-            p, _, log_path = self.procs[job]
+            p, _, log_path = procs[job]
             rc = p.poll()
             if job in cleanup_jobs:
                 state = "cleaning"
@@ -1593,36 +1610,11 @@ class MuxApp(App):
                 state = "exited_error"
             last = _last_log_line(log_path)
             title = self._pr_titles.get(job, "") or _read_pr_title(pr)
-            if job in cleanup_jobs:
-                structured = None
-                stale = False
-                phase = PHASE_NO_ACTION
-                status_message = cleanup_status.get(job, "cleanup: queued")
-            else:
-                structured = read_status(pr)
-                started_at = getattr(self, "_job_started_at", {}).get(job)
-                stale = _status_is_stale(
-                    structured, started_at=started_at, rc=rc
+            structured, stale, phase, status_message = (
+                self._job_display_status(
+                    job, rc=rc, log_path=log_path, last=last
                 )
-                cla_blocked = (
-                    not stale and _status_has_cla_blocker(pr, structured)
-                )
-                phase = _phase_label(
-                    structured, rc=rc, stale=stale, cla_blocked=cla_blocked
-                )
-                status_message = _status_message(
-                    structured,
-                    rc=rc,
-                    last_log=last,
-                    crash_summary=_crash_summary_from_log(log_path)
-                    if stale and rc is not None
-                    else "",
-                    stale=stale,
-                )
-                if cla_blocked:
-                    status_message = _cla_blocked_status_message(
-                        status_message
-                    )
+            )
             rows.append({
                 "kind": kind,
                 "pr": pr,

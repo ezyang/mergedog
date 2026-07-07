@@ -409,6 +409,39 @@ class TestWatchPostHandoff(unittest.TestCase):
         self.assertEqual(second, first)
         checks.assert_called_once_with(101, head_sha="abc")
 
+    def test_post_handoff_ci_status_cache_refetches_on_suppression_change(self):
+        # The merging path polls without suppressions while the post-handoff
+        # path polls with them; a result cached by one must not be reused by
+        # the other, or suppressed failures leak into "CI regressed".
+        cache = handoff._PostHandoffCiCache()
+        runs = [{"id": 1, "status": "completed", "conclusion": "failure"}]
+        with (
+            mock.patch.object(
+                handoff.github,
+                "list_workflow_runs_for_sha",
+                return_value=runs,
+            ),
+            mock.patch.object(
+                handoff.github,
+                "get_pr_checks_all",
+                return_value=[{"name": "lint", "bucket": "fail"}],
+            ) as checks,
+            mock.patch.object(handoff.time, "time", side_effect=[100.0, 120.0]),
+        ):
+            unsuppressed = handoff._post_handoff_ci_status_cached(
+                101, head_sha="abc", cache=cache
+            )
+            suppressed = handoff._post_handoff_ci_status_cached(
+                101,
+                head_sha="abc",
+                cache=cache,
+                suppressed_check_names={"lint"},
+            )
+
+        self.assertEqual(unsuppressed, ("failed", 1, 1, 1, 0))
+        self.assertEqual(suppressed, ("passed", 1, 1, 0, 1))
+        self.assertEqual(checks.call_count, 2)
+
     def test_post_handoff_ci_status_cache_refetches_on_workflow_change(self):
         cache = handoff._PostHandoffCiCache()
         with (
