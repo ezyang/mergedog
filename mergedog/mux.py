@@ -100,6 +100,12 @@ PHASE_EXTERNAL_ACTION = "🔵"
 PHASE_HALTED = "🔴"
 CLEANUP_HINT = "Run 'cleanup' to remove finished mergedogs"
 
+# CI progress bar (mux table). Two-tone: cyan while checks are still running,
+# green once every check is done. See ``_ci_progress_bar``.
+BAR_WIDTH = 12
+BAR_FILLED = "█"
+BAR_EMPTY = "░"
+
 
 class HistoryInput(Input):
     """Input widget with rlwrap-style command history (Up/Down arrows)."""
@@ -593,6 +599,57 @@ def _waiting_on_external_human(structured: dict) -> bool:
     }
 
 
+def _ci_progress_bar(structured: dict | None) -> Text:
+    """Two-tone CI progress bar for the mux table.
+
+    Cyan while checks are still running; flips fully green the moment every
+    check is done (``ci_done == ci_total``). Returns an empty cell when there
+    is no CI count to show yet -- e.g. the shepherd has not reached
+    ``polling_ci``, or the status sidecar predates CI tracking. Active
+    failures are surfaced by the Sup column and Status text, not the bar
+    color, so a green bar means "all checks reported" rather than "all green".
+    """
+    if structured is None:
+        return Text("")
+    total = structured.get("ci_total")
+    done = structured.get("ci_done")
+    if not isinstance(total, int) or not isinstance(done, int) or total <= 0:
+        return Text("")
+    done = max(0, min(done, total))
+    if done >= total:
+        filled = BAR_WIDTH
+        fill_style = "green"
+    else:
+        # Never let rounding paint a full (green-implying) bar before every
+        # check has actually reported.
+        filled = min(round(BAR_WIDTH * done / total), BAR_WIDTH - 1)
+        fill_style = "cyan"
+    bar = Text()
+    bar.append(BAR_FILLED * filled, style=fill_style)
+    bar.append(BAR_EMPTY * (BAR_WIDTH - filled), style="grey37")
+    return bar
+
+
+def _intervention_cell(structured: dict | None) -> Text:
+    """Count of mergedog interventions awaiting operator review (blank if 0)."""
+    if structured is None:
+        return Text("")
+    count = _status_int_field(structured, "intervention_count")
+    if count <= 0:
+        return Text("")
+    return Text(str(count), style="dark_orange")
+
+
+def _suppressed_cell(structured: dict | None) -> Text:
+    """Count of currently-failing checks suppressed as spurious (blank if 0)."""
+    if structured is None:
+        return Text("")
+    count = _status_int_field(structured, "ci_suppressed")
+    if count <= 0:
+        return Text("")
+    return Text(str(count), style="yellow")
+
+
 def _read_last_observed_failure_body(pr: int) -> str:
     try:
         data = json.loads(state_file(pr).read_text())
@@ -886,7 +943,7 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "Title", "Phase", "Status")
+        table.add_columns("PR", "Title", "Phase", "CI", "Int", "Sup", "Status")
         for job in self._initial:
             self._do_add_job(job, [])
         self._refresh()
@@ -1378,7 +1435,7 @@ class MuxApp(App):
             p, _, log_path = procs[job]
             rc = p.poll()
             last = _last_log_line(log_path)
-            _, _, phase, status = self._job_display_status(
+            structured, _, phase, status = self._job_display_status(
                 job, rc=rc, log_path=log_path, last=last
             )
             title = self._pr_titles.get(job, "")
@@ -1395,7 +1452,15 @@ class MuxApp(App):
                 indent + _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
             )
-            table.add_row(pr_cell, Text(_truncate_title(title)), phase, status)
+            table.add_row(
+                pr_cell,
+                Text(_truncate_title(title)),
+                phase,
+                _ci_progress_bar(structured),
+                _intervention_cell(structured),
+                _suppressed_cell(structured),
+                status,
+            )
         for job in sorted(getattr(self, "_parked_jobs", {})):
             if job in self.procs:
                 continue
@@ -1418,6 +1483,9 @@ class MuxApp(App):
                 pr_cell,
                 Text(_truncate_title(title)),
                 PHASE_HALTED,
+                _ci_progress_bar(structured),
+                _intervention_cell(structured),
+                _suppressed_cell(structured),
                 f"{status} (not resumed; `restart {pr}` to re-run)",
             )
 

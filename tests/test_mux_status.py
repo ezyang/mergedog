@@ -432,7 +432,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
         read_status.assert_not_called()
         self.assertEqual(table.rows[0][2], "🟢")
         self.assertEqual(
-            table.rows[0][3],
+            table.rows[0][6],
             "cleanup: removing worktree for [123] (1/1)",
         )
         self.assertEqual(hint.content, "")
@@ -467,7 +467,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 app._refresh()
 
         self.assertEqual(table.rows[0][2], "🟢")
-        self.assertEqual(table.rows[0][3], "waiting for CI: 4/9 checks done")
+        self.assertEqual(table.rows[0][6], "waiting for CI: 4/9 checks done")
 
     def test_refresh_reports_stale_sidecar_from_prior_shepherd(self):
         with tempfile.TemporaryDirectory() as d:
@@ -502,7 +502,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         self.assertEqual(table.rows[0][2], "🟢")
         self.assertEqual(
-            table.rows[0][3],
+            table.rows[0][6],
             "starting; ignoring stale status from previous shepherd",
         )
 
@@ -1375,6 +1375,94 @@ class TestMergedogMuxLabel(unittest.TestCase):
             [{"kind": "pr", "pr": 123}, {"kind": "pr", "pr": 456}],
         )
         self.assertEqual(prs_data, [123, 456])
+
+class TestMuxCiColumns(unittest.TestCase):
+    def test_progress_bar_blank_without_ci_counts(self):
+        self.assertEqual(mux._ci_progress_bar(None).plain, "")
+        self.assertEqual(mux._ci_progress_bar({"phase": "ready"}).plain, "")
+        self.assertEqual(
+            mux._ci_progress_bar({"ci_done": 0, "ci_total": 0}).plain, ""
+        )
+
+    def test_progress_bar_is_cyan_and_partial_while_running(self):
+        bar = mux._ci_progress_bar({"ci_done": 6, "ci_total": 12})
+
+        self.assertEqual(len(bar.plain), mux.BAR_WIDTH)
+        self.assertEqual(bar.plain.count(mux.BAR_FILLED), 6)
+        self.assertEqual(bar.spans[0].style, "cyan")
+
+    def test_progress_bar_flips_green_when_all_checks_done(self):
+        bar = mux._ci_progress_bar({"ci_done": 12, "ci_total": 12})
+
+        self.assertEqual(bar.plain, mux.BAR_FILLED * mux.BAR_WIDTH)
+        self.assertEqual(bar.spans[0].style, "green")
+
+    def test_progress_bar_never_fills_completely_before_done(self):
+        # Rounding 99/100 up would paint a full (green-implying) bar; the
+        # last cell must stay empty until every check has actually reported.
+        bar = mux._ci_progress_bar({"ci_done": 99, "ci_total": 100})
+
+        self.assertEqual(bar.plain.count(mux.BAR_FILLED), mux.BAR_WIDTH - 1)
+        self.assertEqual(bar.spans[0].style, "cyan")
+
+    def test_intervention_cell_blank_until_nonzero(self):
+        self.assertEqual(mux._intervention_cell(None).plain, "")
+        self.assertEqual(
+            mux._intervention_cell({"intervention_count": 0}).plain, ""
+        )
+        self.assertEqual(
+            mux._intervention_cell({"intervention_count": 3}).plain, "3"
+        )
+
+    def test_suppressed_cell_blank_until_nonzero(self):
+        self.assertEqual(mux._suppressed_cell(None).plain, "")
+        self.assertEqual(mux._suppressed_cell({"ci_suppressed": 0}).plain, "")
+        self.assertEqual(mux._suppressed_cell({"ci_suppressed": 2}).plain, "2")
+
+    def test_refresh_renders_ci_intervention_and_suppressed_columns(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_path = Path(d) / "123.log"
+            log_path.write_text("[12:00:00] stale log line\n")
+            job = mux._pr_job(123)
+            app = mux.MuxApp.__new__(mux.MuxApp)
+            app.procs = {job: (_FakeProc(None), object(), log_path)}
+            app._pr_titles = {job: "Test PR"}
+            table = _FakeTable()
+
+            sidecar = {
+                "schema_version": 1,
+                "phase": "polling_ci",
+                "category": "action",
+                "message": "CI failed: 2 active failures (10/12 checks done)",
+                "ci_done": 10,
+                "ci_total": 12,
+                "ci_failed": 2,
+                "ci_suppressed": 1,
+                "intervention_count": 2,
+            }
+            with (
+                mock.patch.object(
+                    app, "query_one", side_effect=_query_one_for(table)
+                ),
+                mock.patch.object(
+                    mux,
+                    "_stack_display_layout",
+                    return_value=([job], {job: 0}),
+                ),
+                mock.patch.object(mux, "read_status", return_value=sidecar),
+            ):
+                app._refresh()
+
+        ci_cell, int_cell, sup_cell, status = table.rows[0][3:7]
+        self.assertEqual(len(ci_cell.plain), mux.BAR_WIDTH)
+        self.assertEqual(ci_cell.plain.count(mux.BAR_FILLED), 10)
+        self.assertEqual(ci_cell.spans[0].style, "cyan")
+        self.assertEqual(int_cell.plain, "2")
+        self.assertEqual(sup_cell.plain, "1")
+        self.assertEqual(
+            status, "CI failed: 2 active failures (10/12 checks done)"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
