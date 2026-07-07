@@ -1529,13 +1529,14 @@ def _rebase_ghstack_onto_main(
     sessions: list[ClaudeSession] | None = None,
     target_ref: str | None = None,
     target_reason: str | None = None,
-) -> None:
+) -> bool:
     """Rebase /orig onto main and re-publish via ghstack.
 
     By default, target selection mirrors
     ``_merge_main_resolving_conflicts``: we pick viable/strict or a recent
     revert rather than raw trunk tip. Callers handling GitHub mergeability
-    failures can pass an explicit target such as ``origin/main``.
+    failures can pass an explicit target such as ``origin/main``. Returns
+    whether the rebase published a new head.
     """
     if _wait_for_no_active_sev(
         "rebasing /orig onto main", ignore_sev=ignore_sev, pr=pr
@@ -1551,7 +1552,7 @@ def _rebase_ghstack_onto_main(
 
     if status == "noop":
         log("rebase produced no new commit (already at target)")
-        return
+        return False
 
     if status == "conflict":
         if pr_data is None or sessions is None:
@@ -1610,6 +1611,7 @@ def _rebase_ghstack_onto_main(
     )
     log(f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}")
     _wait_for_pr_head(pr, new_head_sha)
+    return True
 
 
 def _record_claude_session(
@@ -1999,32 +2001,52 @@ def _recover_from_merge_conflict(
     trusted_pr: bool,
     change_summary: str,
 ) -> None:
-    """Refresh the PR branch from live main after a merge conflict.
+    """Refresh the PR branch from main after a merge conflict.
 
     Shared by the post-handoff conflict watcher, the mergebot
     merge-conflict failure path, and the startup replay of a persisted
     conflict failure.
 
-    GitHub and pytorchmergebot report mergeability against the live base
-    branch, so resolving those conflicts must target ``origin/main`` rather
-    than the normal known-good refresh point.
+    Try the normal known-good refresh first. GitHub and pytorchmergebot
+    report mergeability against the live base branch, so if known-good
+    cannot advance the branch and a local probe confirms that live
+    ``origin/main`` still conflicts, fall back to live main.
     """
     repo.fetch_origin()
     if is_ghstack:
-        _rebase_ghstack_onto_main(
+        advanced = _rebase_ghstack_onto_main(
             pr, worktree, branch, trust, ignore_sev=ignore_sev,
             pr_data=pr_data, sessions=sessions,
-            target_ref="origin/main",
-            target_reason="origin/main (merge conflict)",
         )
+        if not advanced and repo.would_merge_conflict(worktree, "origin/main"):
+            log(
+                "known-good conflict recovery produced no new commit, "
+                "but origin/main still conflicts; rebasing /orig onto "
+                "origin/main"
+            )
+            _rebase_ghstack_onto_main(
+                pr, worktree, branch, trust, ignore_sev=ignore_sev,
+                pr_data=pr_data, sessions=sessions,
+                target_ref="origin/main",
+                target_reason="origin/main (merge conflict fallback)",
+            )
     else:
         assert fork_remote is not None
         new_sha = _merge_main_resolving_conflicts(
             worktree, trust, branch, pr_data, sessions,
             ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-            target_ref="origin/main",
-            target_reason="origin/main (merge conflict)",
         )
+        if new_sha is None and repo.would_merge_conflict(worktree, "origin/main"):
+            log(
+                "known-good conflict recovery produced no new commit, "
+                "but origin/main still conflicts; merging origin/main"
+            )
+            new_sha = _merge_main_resolving_conflicts(
+                worktree, trust, branch, pr_data, sessions,
+                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                target_ref="origin/main",
+                target_reason="origin/main (merge conflict fallback)",
+            )
         if new_sha is not None:
             log(
                 f"pushing merge commit {new_sha[:12]} to "

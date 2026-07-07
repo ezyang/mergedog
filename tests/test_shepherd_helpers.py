@@ -185,18 +185,20 @@ class TestPreHandoffConflictRecovery(unittest.TestCase):
 
 
 class TestRecoverFromMergeConflict(unittest.TestCase):
-    def test_regular_pr_targets_live_main(self):
+    def test_regular_pr_tries_known_good_first(self):
         trust = object()
         sessions: list = []
         pushed_changes: list = []
+        sha = "a" * 40
 
         with (
             mock.patch.object(shepherd.repo, "fetch_origin") as fetch_origin,
             mock.patch.object(
                 shepherd,
                 "_merge_main_resolving_conflicts",
-                return_value=None,
+                return_value=sha,
             ) as merge_main,
+            mock.patch.object(shepherd.repo, "would_merge_conflict") as probe,
             mock.patch.object(shepherd, "_safe_push") as safe_push,
         ):
             shepherd._recover_from_merge_conflict(
@@ -216,14 +218,56 @@ class TestRecoverFromMergeConflict(unittest.TestCase):
 
         fetch_origin.assert_called_once()
         merge_main.assert_called_once()
-        self.assertEqual(merge_main.call_args.kwargs["target_ref"], "origin/main")
-        self.assertEqual(
-            merge_main.call_args.kwargs["target_reason"],
-            "origin/main (merge conflict)",
-        )
-        safe_push.assert_not_called()
+        self.assertNotIn("target_ref", merge_main.call_args.kwargs)
+        probe.assert_not_called()
+        safe_push.assert_called_once()
 
-    def test_ghstack_pr_targets_live_main(self):
+    def test_regular_pr_falls_back_to_live_main_when_known_good_noops(self):
+        trust = object()
+        sessions: list = []
+        pushed_changes: list = []
+        sha = "b" * 40
+
+        with (
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(
+                shepherd,
+                "_merge_main_resolving_conflicts",
+                side_effect=[None, sha],
+            ) as merge_main,
+            mock.patch.object(
+                shepherd.repo, "would_merge_conflict", return_value=True
+            ) as probe,
+            mock.patch.object(shepherd, "_safe_push") as safe_push,
+        ):
+            shepherd._recover_from_merge_conflict(
+                123,
+                Path("/tmp/wt"),
+                "feature",
+                trust,
+                {"number": 123},
+                sessions,
+                pushed_changes,
+                is_ghstack=False,
+                fork_remote="fork",
+                ignore_sev=False,
+                trusted_pr=True,
+                change_summary="merged main after conflict",
+            )
+
+        self.assertEqual(merge_main.call_count, 2)
+        self.assertNotIn("target_ref", merge_main.call_args_list[0].kwargs)
+        self.assertEqual(
+            merge_main.call_args_list[1].kwargs["target_ref"], "origin/main"
+        )
+        self.assertEqual(
+            merge_main.call_args_list[1].kwargs["target_reason"],
+            "origin/main (merge conflict fallback)",
+        )
+        probe.assert_called_once_with(Path("/tmp/wt"), "origin/main")
+        safe_push.assert_called_once()
+
+    def test_regular_pr_does_not_fall_back_when_live_main_probe_is_clean(self):
         trust = object()
         sessions: list = []
         pushed_changes: list = []
@@ -231,8 +275,45 @@ class TestRecoverFromMergeConflict(unittest.TestCase):
         with (
             mock.patch.object(shepherd.repo, "fetch_origin"),
             mock.patch.object(
-                shepherd, "_rebase_ghstack_onto_main"
+                shepherd,
+                "_merge_main_resolving_conflicts",
+                return_value=None,
+            ) as merge_main,
+            mock.patch.object(
+                shepherd.repo, "would_merge_conflict", return_value=False
+            ) as probe,
+            mock.patch.object(shepherd, "_safe_push") as safe_push,
+        ):
+            shepherd._recover_from_merge_conflict(
+                123,
+                Path("/tmp/wt"),
+                "feature",
+                trust,
+                {"number": 123},
+                sessions,
+                pushed_changes,
+                is_ghstack=False,
+                fork_remote="fork",
+                ignore_sev=False,
+                trusted_pr=True,
+                change_summary="merged main after conflict",
+            )
+
+        merge_main.assert_called_once()
+        probe.assert_called_once_with(Path("/tmp/wt"), "origin/main")
+        safe_push.assert_not_called()
+
+    def test_ghstack_pr_tries_known_good_first(self):
+        trust = object()
+        sessions: list = []
+        pushed_changes: list = []
+
+        with (
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(
+                shepherd, "_rebase_ghstack_onto_main", return_value=True
             ) as rebase_ghstack,
+            mock.patch.object(shepherd.repo, "would_merge_conflict") as probe,
         ):
             shepherd._recover_from_merge_conflict(
                 123,
@@ -250,13 +331,51 @@ class TestRecoverFromMergeConflict(unittest.TestCase):
             )
 
         rebase_ghstack.assert_called_once()
+        self.assertNotIn("target_ref", rebase_ghstack.call_args.kwargs)
+        probe.assert_not_called()
+
+    def test_ghstack_pr_falls_back_to_live_main_when_known_good_noops(self):
+        trust = object()
+        sessions: list = []
+        pushed_changes: list = []
+
+        with (
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(
+                shepherd,
+                "_rebase_ghstack_onto_main",
+                side_effect=[False, True],
+            ) as rebase_ghstack,
+            mock.patch.object(
+                shepherd.repo, "would_merge_conflict", return_value=True
+            ) as probe,
+        ):
+            shepherd._recover_from_merge_conflict(
+                123,
+                Path("/tmp/wt"),
+                "gh/user/123/head",
+                trust,
+                {"number": 123},
+                sessions,
+                pushed_changes,
+                is_ghstack=True,
+                fork_remote=None,
+                ignore_sev=False,
+                trusted_pr=True,
+                change_summary="rebased main after conflict",
+            )
+
+        self.assertEqual(rebase_ghstack.call_count, 2)
+        self.assertNotIn("target_ref", rebase_ghstack.call_args_list[0].kwargs)
         self.assertEqual(
-            rebase_ghstack.call_args.kwargs["target_ref"], "origin/main"
+            rebase_ghstack.call_args_list[1].kwargs["target_ref"],
+            "origin/main",
         )
         self.assertEqual(
-            rebase_ghstack.call_args.kwargs["target_reason"],
-            "origin/main (merge conflict)",
+            rebase_ghstack.call_args_list[1].kwargs["target_reason"],
+            "origin/main (merge conflict fallback)",
         )
+        probe.assert_called_once_with(Path("/tmp/wt"), "origin/main")
 
 
 class TestFailedLogsAreContentFree(unittest.TestCase):
