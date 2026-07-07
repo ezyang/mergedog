@@ -2736,6 +2736,7 @@ def _shepherd_body(
                 ci_done=done,
                 ci_total=len(checks),
                 ci_failed=active_failed_count,
+                ci_suppressed=suppressed_failed_count,
                 fix_attempts=fix_commits_pushed,
                 max_fix_attempts=max_fix_attempts_status,
             )
@@ -2786,6 +2787,7 @@ def _shepherd_body(
                             ci_done=done,
                             ci_total=len(checks),
                             ci_failed=active_failed_count,
+                            ci_suppressed=suppressed_failed_count,
                             fix_attempts=fix_commits_pushed,
                             max_fix_attempts=max_fix_attempts_status,
                         )
@@ -2979,6 +2981,7 @@ def _shepherd_body(
                     ci_done=done,
                     ci_total=len(checks),
                     ci_failed=active_failed_count,
+                    ci_suppressed=suppressed_failed_count,
                     fix_attempts=fix_commits_pushed,
                     max_fix_attempts=max_fix_attempts_status,
                 )
@@ -3296,6 +3299,7 @@ def _shepherd_body(
                         ci_done=done,
                         ci_total=len(checks),
                         ci_failed=0,
+                        ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
                     )
@@ -3336,6 +3340,7 @@ def _shepherd_body(
                         ci_done=done,
                         ci_total=len(checks),
                         ci_failed=0,
+                        ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
                     )
@@ -3446,6 +3451,7 @@ def _shepherd_body(
                 ci_done=done,
                 ci_total=len(checks),
                 ci_failed=failed_count,
+                ci_suppressed=suppressed_failed_count,
                 fix_attempts=fix_commits_pushed,
                 max_fix_attempts=max_fix_attempts_status,
             )
