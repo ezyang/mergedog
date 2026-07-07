@@ -1429,9 +1429,6 @@ class MuxApp(App):
         getattr(self, "_unresumable_jobs", set()).discard(job)
         getattr(self, "_parked_jobs", {}).pop(job, None)
 
-    def _prune_pr(self, pr: int) -> None:
-        self._prune_job(_pr_job(pr))
-
     # ------------------------------------------------------------------
     # Command dispatch (shared by TUI input and IPC server)
     # ------------------------------------------------------------------
