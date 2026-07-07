@@ -189,6 +189,14 @@ TITLE_TRUNC = 20
 JobKey = tuple[str, int]
 PR_JOB = "pr"
 _STACK_PARENT_RE = re.compile(r"\bstack parent(?: PR)? #(\d+)\b")
+_SHEPHERDING_TITLE_RE = re.compile(
+    r"\bshepherding PR #(?P<pr>\d+): (?P<title>.*)$"
+)
+_TITLE_SOURCE_NONE = 0
+_TITLE_SOURCE_WORKTREE = 1
+_TITLE_SOURCE_LOG = 2
+_TITLE_SOURCE_CONTEXT = 3
+TitleEntry = tuple[int, str]
 
 
 def _pr_job(pr: int) -> JobKey:
@@ -259,9 +267,38 @@ def _read_pr_worktree_title(pr: int) -> str:
     return proc.stdout.strip()
 
 
+def _read_pr_log_title(pr: int) -> str:
+    """Read the GitHub PR title logged by the shepherd at startup."""
+    try:
+        lines = log_file(pr).read_text().splitlines()
+    except OSError:
+        return ""
+    needle = str(pr)
+    for line in reversed(lines):
+        match = _SHEPHERDING_TITLE_RE.search(line)
+        if match is None or match.group("pr") != needle:
+            continue
+        return match.group("title").strip()
+    return ""
+
+
+def _read_pr_title_entry(pr: int) -> TitleEntry:
+    """Best-effort PR title for mux display, tagged by source quality."""
+    title = _read_pr_context_title(pr)
+    if title:
+        return (_TITLE_SOURCE_CONTEXT, title)
+    title = _read_pr_log_title(pr)
+    if title:
+        return (_TITLE_SOURCE_LOG, title)
+    title = _read_pr_worktree_title(pr)
+    if title:
+        return (_TITLE_SOURCE_WORKTREE, title)
+    return (_TITLE_SOURCE_NONE, "")
+
+
 def _read_pr_title(pr: int) -> str:
     """Best-effort PR title for mux display."""
-    return _read_pr_context_title(pr) or _read_pr_worktree_title(pr)
+    return _read_pr_title_entry(pr)[1]
 
 
 def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:
@@ -913,7 +950,7 @@ class MuxApp(App):
         super().__init__()
         self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
         self._job_started_at: dict[JobKey, float] = {}
-        self._pr_titles: dict[JobKey, str] = {}
+        self._pr_titles: dict[JobKey, TitleEntry | str] = {}
         self._cleanup_jobs: set[JobKey] = set()
         self._cleanup_status: dict[JobKey, str] = {}
         # Jobs that halted before a previous mux shut down. Kept visible
@@ -975,6 +1012,36 @@ class MuxApp(App):
         ):
             out = [f"--repo={self.repo_slug}", *out]
         return out
+
+    def _cached_title_entry(self, job: JobKey | int) -> TitleEntry:
+        job = _coerce_job(job)
+        cached = self._pr_titles.get(job)
+        if isinstance(cached, tuple):
+            return cached
+        if cached:
+            # Some tests and older in-process callers seed plain strings.
+            # Treat those as already-authoritative titles.
+            return (_TITLE_SOURCE_CONTEXT, cached)
+        return (_TITLE_SOURCE_NONE, "")
+
+    def _title_for_job(self, job: JobKey | int) -> str:
+        job = _coerce_job(job)
+        _, pr = job
+        cached_source, cached_title = self._cached_title_entry(job)
+        if cached_source >= _TITLE_SOURCE_CONTEXT:
+            return cached_title
+        if cached_source == _TITLE_SOURCE_LOG:
+            title = _read_pr_context_title(pr)
+            if title:
+                self._pr_titles[job] = (_TITLE_SOURCE_CONTEXT, title)
+                return title
+            return cached_title
+
+        source, title = _read_pr_title_entry(pr)
+        if title and source >= cached_source:
+            self._pr_titles[job] = (source, title)
+            return title
+        return cached_title
 
     def _do_add_job(self, job: JobKey | int, extra: list[str]) -> str:
         job = _coerce_job(job)
@@ -1444,11 +1511,7 @@ class MuxApp(App):
             structured, _, phase, status = self._job_display_status(
                 job, rc=rc, log_path=log_path, last=last
             )
-            title = self._pr_titles.get(job, "")
-            if not title:
-                title = _read_pr_title(pr)
-                if title:
-                    self._pr_titles[job] = title
+            title = self._title_for_job(job)
             # OSC-8 hyperlink so cmd/ctrl-click on the PR opens the PR;
             # the worktree path is omitted from the table entirely now,
             # but it's still ``~/.mergedog/worktrees/<pr>/`` if you need
@@ -1471,9 +1534,7 @@ class MuxApp(App):
             if job in self.procs:
                 continue
             _, pr = job
-            title = self._pr_titles.get(job, "") or _read_pr_title(pr)
-            if title:
-                self._pr_titles[job] = title
+            title = self._title_for_job(job)
             pr_cell = Text(
                 _job_label(job),
                 style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
@@ -1688,7 +1749,7 @@ class MuxApp(App):
             else:
                 state = "exited_error"
             last = _last_log_line(log_path)
-            title = self._pr_titles.get(job, "") or _read_pr_title(pr)
+            title = self._title_for_job(job)
             structured, stale, phase, status_message = (
                 self._job_display_status(
                     job, rc=rc, log_path=log_path, last=last
@@ -1713,7 +1774,7 @@ class MuxApp(App):
             rows.append({
                 "kind": kind,
                 "pr": pr,
-                "title": self._pr_titles.get(job, "") or _read_pr_title(pr),
+                "title": self._title_for_job(job),
                 "state": "parked",
                 "phase": PHASE_HALTED,
                 "status": (

@@ -89,6 +89,53 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(title, "[fx] Real PR title")
         fallback.assert_not_called()
 
+    def test_read_pr_title_falls_back_to_shepherd_log_title(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            context_path = root / "123.md"
+            log_path = root / "123.log"
+            log_path.write_text(
+                "[12:00:00] shepherding PR #999: Other title\n"
+                "[12:01:00] shepherding PR #123: [fx] Real PR title\n"
+            )
+
+            with (
+                mock.patch.object(
+                    mux, "context_file", return_value=context_path
+                ),
+                mock.patch.object(mux, "log_file", return_value=log_path),
+                mock.patch.object(
+                    mux, "_read_pr_worktree_title", return_value="commit title"
+                ) as fallback,
+            ):
+                title = mux._read_pr_title(123)
+
+        self.assertEqual(title, "[fx] Real PR title")
+        fallback.assert_not_called()
+
+    def test_title_cache_upgrades_worktree_title_from_log(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        job = mux._pr_job(123)
+        app._pr_titles = {
+            job: (
+                mux._TITLE_SOURCE_WORKTREE,
+                "Merge remote-tracking branch 'upstream/main'",
+            )
+        }
+
+        with mock.patch.object(
+            mux,
+            "_read_pr_title_entry",
+            return_value=(mux._TITLE_SOURCE_LOG, "[fx] Real PR title"),
+        ):
+            title = app._title_for_job(job)
+
+        self.assertEqual(title, "[fx] Real PR title")
+        self.assertEqual(
+            app._pr_titles[job],
+            (mux._TITLE_SOURCE_LOG, "[fx] Real PR title"),
+        )
+
     def test_worktree_title_fallback_stays_on_pr_first_parent(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
