@@ -747,6 +747,70 @@ class TestApplyMergeIIgnoredChecks(unittest.TestCase):
         )
         trust.save.assert_called_once()
 
+    def test_does_not_persist_merge_i_ignored_lint_checks(self):
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+        spurious: set[str] = set()
+        comments = [
+            {
+                "author": "pytorchmergebot",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": (
+                    "Your change will be merged while ignoring the following "
+                    "1 checks: lintrunner-clang-partial / lint"
+                ),
+            }
+        ]
+        checks = [{"name": "lintrunner-clang-partial / lint", "bucket": "fail"}]
+
+        with mock.patch.object(shepherd, "log") as log:
+            added = _apply_merge_i_ignored_checks(
+                trust,
+                comments,
+                checks,
+                spurious,
+                since_iso="2026-05-08T13:00:00Z",
+            )
+
+        self.assertEqual(added, set())
+        self.assertEqual(spurious, set())
+        self.assertEqual(trust.spurious_check_names, [])
+        trust.save.assert_not_called()
+        self.assertIn("will inspect/fix", log.call_args.args[0])
+
+    def test_persists_only_non_lint_merge_i_ignored_checks(self):
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+        spurious: set[str] = set()
+        comments = [
+            {
+                "author": "pytorchmergebot",
+                "created_at": "2026-05-08T14:00:00Z",
+                "body": (
+                    "Your change will be merged while ignoring the following "
+                    "2 checks: pull / linux, lintrunner-clang-all / lint"
+                ),
+            }
+        ]
+        checks = [
+            {"name": "pull / linux", "bucket": "fail"},
+            {"name": "lintrunner-clang-all / lint", "bucket": "fail"},
+        ]
+
+        with mock.patch.object(shepherd, "log"):
+            added = _apply_merge_i_ignored_checks(
+                trust,
+                comments,
+                checks,
+                spurious,
+                since_iso="2026-05-08T13:00:00Z",
+            )
+
+        self.assertEqual(added, {"pull / linux"})
+        self.assertEqual(spurious, {"pull / linux"})
+        self.assertEqual(trust.spurious_check_names, ["pull / linux"])
+        trust.save.assert_called_once()
+
 
 class TestActionableLintFailureNames(unittest.TestCase):
     def test_detects_lintrunner_diagnostic(self):

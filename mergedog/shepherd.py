@@ -636,10 +636,24 @@ def _apply_merge_i_ignored_checks(
     since_iso: str,
     note: str = "from merge -i",
 ) -> set[str]:
-    newly_ignored = (
-        mergebot_ignored_check_names(comments, checks, since_iso=since_iso)
-        - spurious_check_names
+    ignored = mergebot_ignored_check_names(
+        comments, checks, since_iso=since_iso
     )
+    # Keep lint active so the normal log/fixer path can inspect concrete
+    # lintrunner diagnostics instead of inheriting mergebot's broad ignore.
+    ignored_lint = {
+        name
+        for name in ignored - spurious_check_names
+        if "lint" in name.lower()
+    }
+    if ignored_lint:
+        log(
+            f"{PROJECT.mergebot_login} / merge -i is ignoring lint check"
+            f"{'' if len(ignored_lint) == 1 else 's'} "
+            f"{note}, but mergedog will inspect/fix them: "
+            f"{', '.join(sorted(ignored_lint))}"
+        )
+    newly_ignored = (ignored - ignored_lint) - spurious_check_names
     if not newly_ignored:
         return set()
     spurious_check_names |= newly_ignored
