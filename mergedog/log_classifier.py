@@ -91,6 +91,22 @@ def _alarm_handler(signum: int, frame: object) -> None:
     raise _RegexTimeout
 
 
+def _match_rule(rule: Rule, lines: list[str]) -> Match | None:
+    """Scan lines in reverse for the last line matching ``rule``."""
+    for line_num in range(len(lines) - 1, -1, -1):
+        m = rule.pattern.search(lines[line_num])
+        if m:
+            captures = m.groups() if m.groups() else (m.group(0),)
+            return Match(
+                rule_name=rule.name,
+                line=lines[line_num],
+                line_num=line_num,
+                captures=captures,
+                priority=rule.priority,
+            )
+    return None
+
+
 def classify(lines: list[str]) -> Match | None:
     """Find the highest-priority rule match, scanning lines in reverse."""
     rules = _get_rules()
@@ -108,19 +124,9 @@ def classify(lines: list[str]) -> Match | None:
             if best is not None and rule.priority >= best.priority:
                 continue
             try:
-                for line_num in range(len(lines) - 1, -1, -1):
-                    m = rule.pattern.search(lines[line_num])
-                    if m:
-                        captures = m.groups() if m.groups() else (m.group(0),)
-                        candidate = Match(
-                            rule_name=rule.name,
-                            line=lines[line_num],
-                            line_num=line_num,
-                            captures=captures,
-                            priority=rule.priority,
-                        )
-                        best = candidate
-                        break
+                candidate = _match_rule(rule, lines)
+                if candidate is not None:
+                    best = candidate
             except _RegexTimeout:
                 signal.alarm(_CLASSIFY_TIMEOUT_SEC)
                 continue
@@ -138,16 +144,7 @@ def _classify_without_alarm(rules: list[Rule], lines: list[str]) -> Match | None
     for rule in rules:
         if best is not None and rule.priority >= best.priority:
             continue
-        for line_num in range(len(lines) - 1, -1, -1):
-            m = rule.pattern.search(lines[line_num])
-            if m:
-                captures = m.groups() if m.groups() else (m.group(0),)
-                best = Match(
-                    rule_name=rule.name,
-                    line=lines[line_num],
-                    line_num=line_num,
-                    captures=captures,
-                    priority=rule.priority,
-                )
-                break
+        candidate = _match_rule(rule, lines)
+        if candidate is not None:
+            best = candidate
     return best

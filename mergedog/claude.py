@@ -47,14 +47,10 @@ class LLMResult:
         yield self.transcript
 
 
-def _escape_embedded_nuls(text: str) -> str:
-    return sanitize_untrusted_text(text)
-
-
 def _build_llm_invocation(
     prompt: str, cwd: Path, config: LLMConfig
 ) -> _LLMInvocation:
-    prompt = _escape_embedded_nuls(prompt)
+    prompt = sanitize_untrusted_text(prompt)
     model = config.effective_model
     if config.provider == "claude":
         cmd = [
@@ -271,7 +267,7 @@ def _run_llm_streaming(
     suffix = " < <prompt>" if invocation.stdin_input is not None else ""
     log("$ " + " ".join(shlex.quote(c) for c in redacted) + suffix)
     env = os.environ.copy()
-    env.update({k: _escape_embedded_nuls(v) for k, v in env_extra.items()})
+    env.update({k: sanitize_untrusted_text(v) for k, v in env_extra.items()})
     try:
         proc = subprocess.Popen(
             invocation.cmd,
@@ -526,11 +522,17 @@ def _invoke(
     name, email = repo_mod.get_mergedog_identity()
     llm_config = get_llm_config()
     agent = llm_config.provider
-    # A stale spurious marker from a killed prior invocation must not let a
-    # silent no-op suppress fresh CI failures.
+    # Stale markers from a killed or failed prior invocation must not be
+    # read as fresh signals: a stale spurious marker would let a silent
+    # no-op suppress fresh CI failures, and a stale too-hard/inconclusive/
+    # rebase marker would misreport a legitimate no-op as a halt.
     spurious_path = worktree / SPURIOUS_MARKER
-    if spurious_path.exists():
-        spurious_path.unlink()
+    too_hard_path = worktree / ".mergedog-too-hard"
+    inconclusive_path = worktree / ".mergedog-inconclusive"
+    rebase_path = worktree / ".mergedog-rebase"
+    for stale in (spurious_path, too_hard_path, inconclusive_path, rebase_path):
+        if stale.exists():
+            stale.unlink()
     log(f"invoking {agent} ({mode} mode)...")
     rc, transcript = _run_llm_streaming(
         prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email),
@@ -565,17 +567,14 @@ def _invoke(
         log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
-    too_hard_path = worktree / ".mergedog-too-hard"
     too_hard = too_hard_path.exists()
     if too_hard:
         too_hard_path.unlink()
 
-    inconclusive_path = worktree / ".mergedog-inconclusive"
     inconclusive = inconclusive_path.exists()
     if inconclusive:
         inconclusive_path.unlink()
 
-    rebase_path = worktree / ".mergedog-rebase"
     rebase = rebase_path.exists()
     if rebase:
         rebase_path.unlink()

@@ -616,20 +616,35 @@ Run ``git status`` to see the conflicts, then resolve them.
 """
 
 
+def _render_conflict_prompt(
+    template: str,
+    *,
+    url: str,
+    branch: str,
+    context_path: str,
+    **extra: str,
+) -> str:
+    assert_untainted(url, context_path)
+    branch = _prompt_text(branch)
+    return template.format(
+        repo_slug=get_project_policy().repo_slug,
+        url=url,
+        branch=branch,
+        local_execution_constraint=_local_execution_constraint(),
+        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+        **extra,
+    )
+
+
 def render_rebase_conflict_prompt(
     *,
     url: str,
     branch: str,
     context_path: str,
 ) -> str:
-    assert_untainted(url, context_path)
-    branch = _prompt_text(branch)
-    return REBASE_CONFLICT_PROMPT.format(
-        repo_slug=get_project_policy().repo_slug,
-        url=url,
-        branch=branch,
-        local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+    return _render_conflict_prompt(
+        REBASE_CONFLICT_PROMPT,
+        url=url, branch=branch, context_path=context_path,
     )
 
 
@@ -639,14 +654,9 @@ def render_cherry_pick_conflict_prompt(
     branch: str,
     context_path: str,
 ) -> str:
-    assert_untainted(url, context_path)
-    branch = _prompt_text(branch)
-    return CHERRY_PICK_CONFLICT_PROMPT.format(
-        repo_slug=get_project_policy().repo_slug,
-        url=url,
-        branch=branch,
-        local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+    return _render_conflict_prompt(
+        CHERRY_PICK_CONFLICT_PROMPT,
+        url=url, branch=branch, context_path=context_path,
     )
 
 
@@ -657,13 +667,9 @@ def render_merge_conflict_prompt(
     context_path: str,
     merge_subject: str,
 ) -> str:
-    assert_untainted(url, context_path, merge_subject)
-    branch = _prompt_text(branch)
-    return MERGE_CONFLICT_PROMPT.format(
-        repo_slug=get_project_policy().repo_slug,
-        url=url,
-        branch=branch,
-        local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+    assert_untainted(merge_subject)
+    return _render_conflict_prompt(
+        MERGE_CONFLICT_PROMPT,
+        url=url, branch=branch, context_path=context_path,
         subject=merge_subject,
     )
