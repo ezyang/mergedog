@@ -823,16 +823,27 @@ def get_pr_comments(pr: int) -> list[dict]:
 # GitHub login of the dr. ci bot. A GitHub App, so the login may surface as
 # either ``pytorch-bot`` or ``pytorch-bot[bot]`` depending on the API path.
 # dr. ci re-summarizes the head commit's checks as a structured comment with
-# the salient one-line error from each failing job; it is bot-generated from
-# CI metadata (not user-controlled) and so is treated as trusted input by
-# the agent prompt.
+# the salient one-line error from each failing job.
+#
+# Trust note: pytorch-bot is a *command* bot as well as dr. ci's poster, and
+# some of its replies echo user-supplied text (command errors, arguments).
+# So "authored by pytorch-bot" alone does NOT make a comment non-user-
+# controlled. The declassification below leans on two things an echoed reply
+# can't easily fake together: the dr. ci trailer AND dr. ci's structural
+# header line ``As of commit <sha> with merge base <sha>`` whose <sha> must
+# prefix the *current* head. The head-SHA anchor (always supplied by the
+# shepherd callers) is what actually carries the trust weight.
 _DRCI_LOGINS = PROJECT.drci_logins
 _DRCI_TRAILER = PROJECT.drci_trailer
-# dr. ci's body opens with "As of commit <40-hex-sha> with merge base ...". We
-# parse this to confirm the summary describes the current head, since dr. ci
-# only refreshes every ~15 minutes -- a stale summary on a freshly-pushed head
-# can claim "no failures" while CI is actually red.
-_DRCI_COMMIT_RE = re.compile(r"As of commit ([0-9a-f]{7,40})")
+# dr. ci's body opens with a line "As of commit <sha> with merge base <sha>".
+# Anchored to line start and requiring the "with merge base" continuation so
+# a trailer/header substring embedded mid-text in an echoed bot reply doesn't
+# match. Also confirms the summary describes the current head: dr. ci only
+# refreshes every ~15 min, so a stale summary on a freshly-pushed head can
+# claim "no failures" while CI is actually red.
+_DRCI_COMMIT_RE = re.compile(
+    r"(?m)^As of commit ([0-9a-f]{7,40}) with merge base [0-9a-f]{7,40}"
+)
 
 
 def latest_drci_summary(
@@ -840,15 +851,15 @@ def latest_drci_summary(
 ) -> str | None:
     """Return the most recent dr. ci comment body, or None.
 
-    Filters for both author login (``pytorch-bot``) and the dr. ci trailer
-    so we don't accidentally treat a different pytorch-bot comment as a
-    failure summary. When ``head_sha`` is provided, also requires the body
-    to reference that SHA -- otherwise the summary is dropped (treated as
-    stale) so it can't override the live check list.
+    Filters for author login (``pytorch-bot``), the dr. ci trailer, and the
+    structural ``As of commit ... with merge base ...`` header so we don't
+    treat an arbitrary (possibly user-echoing) pytorch-bot comment as a
+    failure summary. When ``head_sha`` is provided, also requires the header
+    SHA to prefix it -- otherwise the summary is dropped (treated as stale or
+    spoofed) so it can't override the live check list.
 
-    The author + trailer filter is the trust boundary — the returned
-    string is declassified (untainted) because it is bot-generated from
-    CI metadata, not user-authored.
+    The returned string is declassified (untainted) on the strength of those
+    combined markers; see the trust note above ``_DRCI_LOGINS``.
     """
     from mergedog.taint import untaint
 
@@ -864,16 +875,14 @@ def latest_drci_summary(
     body = matches[-1].get("body") or None
     if body is None:
         return None
-    if head_sha is None:
-        return sanitize_untrusted_text(untaint(body))
     m = _DRCI_COMMIT_RE.search(body)
     if m is None:
+        # No genuine dr. ci header -> don't trust it as a CI summary, even
+        # when no head_sha was supplied to cross-check.
         return None
-    return (
-        sanitize_untrusted_text(untaint(body))
-        if head_sha.startswith(m.group(1))
-        else None
-    )
+    if head_sha is not None and not head_sha.startswith(m.group(1)):
+        return None
+    return sanitize_untrusted_text(untaint(body))
 
 
 def get_pr_head_sha(pr: int) -> str:
