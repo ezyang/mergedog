@@ -1078,7 +1078,13 @@ def post_pr_comment(pr: int, body: str) -> None:
 
 
 def get_pr_review_comments(pr: int, per_page: int = 100) -> list[dict]:
-    """Return inline PR review comments, oldest first."""
+    """Return inline PR review comments, oldest first.
+
+    ``body`` and ``path`` are contributor-authored, so they are tainted at
+    the source even though the only current consumer (inline-hunk dedup)
+    treats them as data. Tainting here means a future path that routes them
+    into a prompt trips the sink check rather than leaking silently.
+    """
     out: list[dict] = []
     page = 1
     while True:
@@ -1093,9 +1099,9 @@ def get_pr_review_comments(pr: int, per_page: int = 100) -> list[dict]:
             out.append(
                 {
                     "author": (c.get("user") or {}).get("login") or "",
-                    "body": c.get("body") or "",
+                    "body": taint(c.get("body") or "", "pr_review_comment"),
                     "commit_id": c.get("commit_id") or "",
-                    "path": c.get("path") or "",
+                    "path": taint(c.get("path") or "", "pr_review_comment"),
                     "line": c.get("line"),
                     "side": c.get("side") or "",
                 }

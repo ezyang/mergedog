@@ -2657,6 +2657,11 @@ def _shepherd_body(
             failed_count = sum(
                 1 for c in checks if c.get("bucket") in {"fail", "cancel"}
             )
+            # Check names are workflow-defined (workflow YAML name/matrix in
+            # the approved tree, or repo-authorized check apps like dr. ci),
+            # not contributor-authored free text -- so they reach the prompt
+            # untainted. This is why they aren't wrapped like ci_log excerpts;
+            # the asymmetry is deliberate, not a missed source.
             active_failed_check_names = sorted(
                 c.get("name", "")
                 for c in effective_checks
@@ -2947,13 +2952,8 @@ def _shepherd_body(
                     pr_data, trusted=trusted_pr
                 )
                 trunk_ctx = repo.trunk_revert_context(worktree)
-                effective_extra = extra_context or ""
                 if trunk_ctx:
                     log(f"injecting trunk revert context into {_llm_label()} prompt")
-                    effective_extra = (
-                        f"{trunk_ctx}\n\n{effective_extra}" if effective_extra
-                        else trunk_ctx
-                    )
                 failed = _screen_failed_job_logs(pr, failed)
                 prompt = render_fix_prompt(
                     url=pr_data.get("url", ""),
@@ -2966,7 +2966,8 @@ def _shepherd_body(
                     drci_summary=github.latest_drci_summary(
                         comments, head_sha=current
                     ),
-                    extra_context=effective_extra or None,
+                    extra_context=extra_context or None,
+                    trunk_revert_context=trunk_ctx,
                 )
                 session_failed_jobs = [name for name, _ in failed]
                 sha_before = current
