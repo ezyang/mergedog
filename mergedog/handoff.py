@@ -384,6 +384,7 @@ def post_handoff_comment(
     drci_summary: str | None = None,
     force: bool = False,
     recovering: bool = False,
+    author: str | None = None,
 ) -> bool:
     # Recovery handoffs always post a fresh comment (forcing past the
     # "already handed off" check) -- the prior comment said "ready to
@@ -392,7 +393,9 @@ def post_handoff_comment(
     if (
         not force
         and not recovering
-        and github.has_mergedog_handoff_comment(pr, head_sha=head_sha)
+        and github.has_mergedog_handoff_comment(
+            pr, head_sha=head_sha, author=author
+        )
     ):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
         return True

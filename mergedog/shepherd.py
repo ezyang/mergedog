@@ -1442,6 +1442,7 @@ def _run_operator_fix(
     trusted_pr: bool,
     sessions: list[ClaudeSession],
     pushed_changes: list[PushedChange],
+    viewer: str | None = None,
 ) -> bool:
     """Apply one trusted operator-requested follow-up to this PR."""
     request = operator_context.strip()
@@ -1490,7 +1491,9 @@ def _run_operator_fix(
         new_head_sha = _publish_ghstack_fix(
             pr, worktree, branch, new_sha, trust, ignore_sev=ignore_sev
         )
-        _post_llm_hunk_comments(pr, worktree, new_sha, commit_id=new_head_sha)
+        _post_llm_hunk_comments(
+            pr, worktree, new_sha, commit_id=new_head_sha, author=viewer
+        )
     else:
         assert fork_remote is not None
         trust.trust(new_sha)
@@ -1510,7 +1513,7 @@ def _run_operator_fix(
             "pushed an LLM-authored operator fix",
             source=f"{_llm_label()} operator-fix",
         )
-        _post_llm_hunk_comments(pr, worktree, new_sha)
+        _post_llm_hunk_comments(pr, worktree, new_sha, author=viewer)
     trust.save()
     return True
 
@@ -1696,7 +1699,12 @@ def _inline_hunk_comment_body(sha: str, key: str) -> str:
 
 
 def _post_llm_hunk_comments(
-    pr: int, worktree: Path, sha: str, *, commit_id: str | None = None
+    pr: int,
+    worktree: Path,
+    sha: str,
+    *,
+    commit_id: str | None = None,
+    author: str | None = None,
 ) -> None:
     try:
         targets = repo.diff_hunk_comment_targets(worktree, sha)
@@ -1715,9 +1723,12 @@ def _post_llm_hunk_comments(
         )
         return
 
+    # Only treat our own prior markers as dedup anchors; a spoofed marker
+    # from another commenter must not suppress a real annotation.
     existing_keys = {
         match.group(2)
         for c in existing
+        if github._is_own_comment(c, author)
         for match in [_INLINE_HUNK_MARKER_RE.search(c.get("body") or "")]
         if match is not None and match.group(1) == sha
     }
@@ -2407,6 +2418,7 @@ def _shepherd_body(
             trusted_pr=trusted_pr,
             sessions=sessions,
             pushed_changes=pushed_changes,
+            viewer=viewer,
         ):
             fix_commits_pushed = trust.fix_commits_pushed
 
@@ -2783,7 +2795,7 @@ def _shepherd_body(
                 # spurious).
                 comments = github.get_pr_comments(pr)
                 handoff_iso = github.latest_mergedog_handoff_iso_from_comments(
-                    comments
+                    comments, author=viewer
                 )
                 ignore_since = handoff_iso or trust.last_observed_failure_iso
                 newly_ignored = _apply_merge_i_ignored_checks(
@@ -3141,7 +3153,8 @@ def _shepherd_body(
                         ignore_sev=ignore_sev,
                     )
                     _post_llm_hunk_comments(
-                        pr, worktree, new_sha, commit_id=new_head_sha
+                        pr, worktree, new_sha,
+                        commit_id=new_head_sha, author=viewer,
                     )
                     last_status = None
                     continue
@@ -3203,7 +3216,8 @@ def _shepherd_body(
                         source=f"{_llm_label()} fix-CI",
                     )
                     _post_llm_hunk_comments(
-                        pr, worktree, new_sha, commit_id=final_sha
+                        pr, worktree, new_sha,
+                        commit_id=final_sha, author=viewer,
                     )
                     if merge_sha is not None and merge_sha != new_sha:
                         _record_pushed_change(
@@ -3422,6 +3436,7 @@ def _shepherd_body(
             suppressed_failures=suppressed_failures,
             drci_summary=drci_summary,
             recovering=recovery_attempts > 0,
+            author=viewer,
         )
         # Anchor the watch loop on the actual handoff comment timestamp,
         # not "now": on restart this lets us notice a "Merge failed" that
@@ -3430,7 +3445,8 @@ def _shepherd_body(
         # restart doesn't re-react to the same stale comment.
         try:
             handoff_iso = (
-                github.latest_mergedog_handoff_iso(pr) or handoff_started_iso
+                github.latest_mergedog_handoff_iso(pr, author=viewer)
+                or handoff_started_iso
             )
         except Exception as e:
             log(f"WARNING: could not verify handoff comment timestamp: {e}")

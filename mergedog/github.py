@@ -1083,6 +1083,7 @@ def get_pr_review_comments(pr: int, per_page: int = 100) -> list[dict]:
         for c in data or []:
             out.append(
                 {
+                    "author": (c.get("user") or {}).get("login") or "",
                     "body": c.get("body") or "",
                     "commit_id": c.get("commit_id") or "",
                     "path": c.get("path") or "",
@@ -1170,17 +1171,38 @@ def _mergedog_handoff_marker(body: str) -> tuple[bool, str | None]:
     return True, match.group(1)
 
 
+def _is_own_comment(comment: dict, author: str | None) -> bool:
+    """True if *comment* was posted by *author* (mergedog's own account).
+
+    The handoff/marker comments are control signals mergedog reads back on
+    restart. Anyone can post a comment containing the same marker text, so
+    we only trust markers authored by the account we post as. ``author`` is
+    the ``gh`` viewer login; matched case-insensitively (GitHub logins are
+    case-insensitive). ``author=None`` disables the check -- callers that
+    can't cheaply resolve the viewer opt out explicitly.
+    """
+    if author is None:
+        return True
+    login = comment.get("author") or ""
+    return bool(login) and str(login).lower() == author.lower()
+
+
 def has_mergedog_handoff_comment(
-    pr: int, *, head_sha: str | None = None
+    pr: int, *, head_sha: str | None = None, author: str | None = None
 ) -> bool:
     """True if an existing PR comment carries the mergedog handoff marker.
 
     Lets the shepherd be restart-safe: after a ctrl-c & rerun, we won't
     re-post the same handoff. When ``head_sha`` is supplied, require the
     marker to describe that exact PR head; an older handoff before a rebase
-    is stale and should not suppress a new comment.
+    is stale and should not suppress a new comment. When ``author`` is
+    supplied, only count markers posted by that account (mergedog's own
+    login) so a spoofed marker from another commenter can't suppress the
+    handoff.
     """
     for c in get_pr_comments(pr):
+        if not _is_own_comment(c, author):
+            continue
         body = c.get("body") or ""
         has_marker, marker_head = _mergedog_handoff_marker(body)
         if not has_marker:
@@ -1190,24 +1212,30 @@ def has_mergedog_handoff_comment(
     return False
 
 
-def latest_mergedog_handoff_iso(pr: int) -> str | None:
+def latest_mergedog_handoff_iso(pr: int, *, author: str | None = None) -> str | None:
     """``created_at`` of the most recent mergedog handoff comment, or None.
 
     Used so that a restart picks up where the previous shepherd left off:
     the post-handoff watch loop scopes "what counts as new pytorchmergebot
     activity" to comments newer than this timestamp, instead of newer than
     ``now`` (which would miss a merge-failed reply that happened before
-    we restarted).
+    we restarted). ``author`` restricts to mergedog's own comments (see
+    ``has_mergedog_handoff_comment``).
     """
-    return latest_mergedog_handoff_iso_from_comments(get_pr_comments(pr))
+    return latest_mergedog_handoff_iso_from_comments(
+        get_pr_comments(pr), author=author
+    )
 
 
-def latest_mergedog_handoff_iso_from_comments(comments: list[dict]) -> str | None:
+def latest_mergedog_handoff_iso_from_comments(
+    comments: list[dict], *, author: str | None = None
+) -> str | None:
     """Return the latest mergedog handoff timestamp from an existing comment list."""
     matches = [
         c.get("created_at") or ""
         for c in comments
-        if _mergedog_handoff_marker(c.get("body") or "")[0]
+        if _is_own_comment(c, author)
+        and _mergedog_handoff_marker(c.get("body") or "")[0]
     ]
     return max(matches) if matches else None
 

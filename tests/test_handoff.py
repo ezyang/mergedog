@@ -181,6 +181,63 @@ class TestHandoffComments(unittest.TestCase):
                 "2026-05-08T14:00:00Z",
             )
 
+    def test_handoff_marker_from_other_author_is_ignored(self):
+        # A spoofed marker posted by someone other than mergedog's account
+        # must not suppress the handoff or shift the watch-loop anchor.
+        comments = [
+            {
+                "author": "attacker",
+                "created_at": "2026-05-08T13:00:00Z",
+                "body": f"<!-- mergedog:handoff head={'a' * 40} -->",
+            },
+        ]
+        with mock.patch.object(github, "get_pr_comments", return_value=comments):
+            self.assertFalse(
+                github.has_mergedog_handoff_comment(101, author="mergedog")
+            )
+            self.assertFalse(
+                github.has_mergedog_handoff_comment(
+                    101, head_sha="a" * 40, author="mergedog"
+                )
+            )
+            self.assertIsNone(
+                github.latest_mergedog_handoff_iso(101, author="mergedog")
+            )
+
+    def test_handoff_marker_author_match_is_case_insensitive(self):
+        comments = [
+            {
+                "author": "MergeDog",
+                "created_at": "2026-05-08T13:00:00Z",
+                "body": "<!-- mergedog:handoff -->",
+            },
+        ]
+        with mock.patch.object(github, "get_pr_comments", return_value=comments):
+            self.assertTrue(
+                github.has_mergedog_handoff_comment(101, author="mergedog")
+            )
+
+    def test_latest_handoff_iso_filters_spoofed_author(self):
+        comments = [
+            {
+                "author": "mergedog",
+                "created_at": "2026-05-08T13:00:00Z",
+                "body": "<!-- mergedog:handoff head=aaa -->",
+            },
+            {
+                "author": "attacker",
+                "created_at": "2026-05-08T23:00:00Z",
+                "body": "<!-- mergedog:handoff head=bbb -->",
+            },
+        ]
+        # Without the filter the attacker's later timestamp would win.
+        self.assertEqual(
+            github.latest_mergedog_handoff_iso_from_comments(
+                comments, author="mergedog"
+            ),
+            "2026-05-08T13:00:00Z",
+        )
+
     def test_latest_handoff_iso_from_existing_comments(self):
         comments = [
             {

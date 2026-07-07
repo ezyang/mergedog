@@ -333,6 +333,7 @@ class TestGhRetries(unittest.TestCase):
             side_effect=[
                 [
                     {
+                        "user": {"login": "mergedog-bot"},
                         "body": "marker",
                         "commit_id": "abc",
                         "path": "foo.py",
@@ -349,6 +350,7 @@ class TestGhRetries(unittest.TestCase):
             comments,
             [
                 {
+                    "author": "mergedog-bot",
                     "body": "marker",
                     "commit_id": "abc",
                     "path": "foo.py",

@@ -438,6 +438,40 @@ class TestInlineHunkComments(unittest.TestCase):
 
         post_comment.assert_not_called()
 
+    def test_spoofed_marker_from_other_author_does_not_suppress(self):
+        # A marker posted by someone else with our key must not be treated
+        # as an existing annotation; we still post our own.
+        sha = "a" * 40
+        target = shepherd.repo.DiffHunkCommentTarget("foo.py", "RIGHT", 10)
+        key = shepherd._inline_hunk_key(sha, target)
+
+        with (
+            mock.patch.object(
+                shepherd.repo,
+                "diff_hunk_comment_targets",
+                return_value=[target],
+            ),
+            mock.patch.object(
+                shepherd.github,
+                "get_pr_review_comments",
+                return_value=[
+                    {
+                        "author": "attacker",
+                        "body": shepherd._inline_hunk_comment_body(sha, key),
+                    }
+                ],
+            ),
+            mock.patch.object(
+                shepherd.github, "post_pr_review_comment"
+            ) as post_comment,
+            mock.patch.object(shepherd, "log"),
+        ):
+            shepherd._post_llm_hunk_comments(
+                123, Path("/tmp/wt"), sha, author="mergedog"
+            )
+
+        post_comment.assert_called_once()
+
 
 class TestDescribeLogState(unittest.TestCase):
     def test_empty_failed_list_calls_out_status_only_checks(self):
