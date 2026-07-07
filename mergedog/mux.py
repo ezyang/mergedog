@@ -268,6 +268,7 @@ def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:
         proc = subprocess.run(
             [
                 "git", "log", "-1", "--format=%H%x00%P",
+                "--first-parent",
                 "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
             ],
             cwd=wt,
@@ -728,14 +729,6 @@ def _remove_mux_job(job: JobKey) -> None:
         return
     records.pop(job)
     _write_mux_job_records(records)
-
-
-def _add_mux_pr(pr: int) -> None:
-    _add_mux_job(_pr_job(pr))
-
-
-def _remove_mux_pr(pr: int) -> None:
-    _remove_mux_job(_pr_job(pr))
 
 
 def _resolve_initial_jobs(

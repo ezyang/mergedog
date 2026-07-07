@@ -14,38 +14,20 @@ import os
 import sys
 from pathlib import Path
 
+from mergedog.bootstrap import promote_early_env
+
 
 def main() -> int:
     # Resolve the python interpreter inside our venv so the MCP server
     # runs with the same environment regardless of how the user invoked us.
     python = sys.executable
 
+    # Forward --root/--repo to the MCP server
+    promote_early_env(sys.argv[1:])
     mergedog_root = os.environ.get("MERGEDOG_ROOT", "")
     mergedog_repo = os.environ.get("MERGEDOG_REPO_SLUG") or os.environ.get(
         "MERGEDOG_REPO", ""
     )
-    # Forward --root to the MCP server
-    i = 1
-    while i < len(sys.argv):
-        if sys.argv[i] == "--root" and i + 1 < len(sys.argv):
-            mergedog_root = str(Path(sys.argv[i + 1]).expanduser().resolve())
-            i += 2
-            continue
-        if sys.argv[i].startswith("--root="):
-            mergedog_root = str(
-                Path(sys.argv[i].split("=", 1)[1]).expanduser().resolve()
-            )
-            i += 1
-            continue
-        if sys.argv[i] == "--repo" and i + 1 < len(sys.argv):
-            mergedog_repo = sys.argv[i + 1]
-            i += 2
-            continue
-        if sys.argv[i].startswith("--repo="):
-            mergedog_repo = sys.argv[i].split("=", 1)[1]
-            i += 1
-            continue
-        i += 1
 
     mcp_args = ["-m", "mergedog.mcp_server"]
     if mergedog_root:
