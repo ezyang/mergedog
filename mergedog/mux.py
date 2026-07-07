@@ -940,7 +940,9 @@ class MuxApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("PR", "Title", "Phase", "CI", "Int", "Sup", "Status")
+        # The Phase column is an emoji whose meaning is self-evident (and
+        # documented in `help`), so it gets no heading.
+        table.add_columns("PR", "Title", "", "CI", "Int", "Sup", "Status")
         for job in self._initial:
             self._do_add_job(job, [])
         self._refresh()
