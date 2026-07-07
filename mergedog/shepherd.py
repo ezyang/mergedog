@@ -630,6 +630,20 @@ def _spurious_check_names_from_checks(checks: list[dict]) -> set[str]:
     }
 
 
+def _current_spurious_failure_names(
+    checks: list[dict], spurious_names: set[str]
+) -> set[str]:
+    """Return remembered-spurious checks that are still failing now."""
+    if not spurious_names:
+        return set()
+    return {
+        c.get("name")
+        for c in checks
+        if c.get("bucket") in {"fail", "cancel"}
+        and c.get("name") in spurious_names
+    }
+
+
 def _filter_spurious_failed_jobs(
     failed: list[tuple[str, str]], spurious_names: set[str]
 ) -> list[tuple[str, str]]:
@@ -2523,9 +2537,10 @@ def _shepherd_body(
                 bool(raw_failure_names)
                 and raw_failure_names <= spurious_check_names
             )
-            suppressed_failed_count = len(
-                raw_failure_names & spurious_check_names
+            current_spurious_failures = _current_spurious_failure_names(
+                checks, spurious_check_names
             )
+            suppressed_failed_count = len(current_spurious_failures)
             workflow_failed_run_ids: list[int] = []
             if status == "passed" and not all_failures_spurious:
                 workflow_failed_run_ids = [
@@ -3338,9 +3353,11 @@ def _shepherd_body(
             break
 
         handoff_started_iso = utc_now_iso()
-        suppressed_failures = sorted(spurious_check_names)
+        suppressed_failures = sorted(
+            _current_spurious_failure_names(checks, spurious_check_names)
+        )
         drci_summary = _latest_drci_summary_for_handoff(
-            pr, current, spurious_check_names
+            pr, current, set(suppressed_failures)
         )
         suppression_warning = suppression_drci_status_warning(
             suppressed_failures, drci_summary

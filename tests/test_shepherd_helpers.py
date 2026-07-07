@@ -26,6 +26,7 @@ from mergedog.shepherd import (
     _llm_signalled_inconclusive,
     _latest_completed_at,
     _count_mergedog_interventions_since_ack,
+    _current_spurious_failure_names,
     _sparse_green_needs_base_refresh,
     _spurious_check_names_from_checks,
     _trunk_wave_has_started,
@@ -687,6 +688,37 @@ class TestSpuriousCheckNames(unittest.TestCase):
 
     def test_workflow_only_failure_has_no_check_to_mark(self):
         self.assertEqual(_spurious_check_names_from_checks([]), set())
+
+    def test_current_spurious_failures_ignores_stale_names(self):
+        checks = [
+            {"name": "old / pass", "bucket": "pass"},
+            {"name": "live / fail", "bucket": "fail"},
+            {"name": "live / cancel", "bucket": "cancel"},
+            {"name": "other / fail", "bucket": "fail"},
+            {"name": "old / pending", "bucket": "pending"},
+        ]
+
+        self.assertEqual(
+            _current_spurious_failure_names(
+                checks,
+                {
+                    "old / pass",
+                    "live / fail",
+                    "live / cancel",
+                    "old / pending",
+                },
+            ),
+            {"live / fail", "live / cancel"},
+        )
+
+    def test_current_spurious_failures_handles_empty_suppressions(self):
+        self.assertEqual(
+            _current_spurious_failure_names(
+                [{"name": "live / fail", "bucket": "fail"}],
+                set(),
+            ),
+            set(),
+        )
 
 
 class TestFilterSpuriousFailedJobs(unittest.TestCase):
