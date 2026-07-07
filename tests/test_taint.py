@@ -7,6 +7,7 @@ from mergedog.taint import (
     TaintedStr,
     TaintError,
     assert_untainted,
+    format_untainted,
     taint,
     taint_dict,
     untaint,
@@ -132,6 +133,48 @@ class TestAssertUntainted:
         with pytest.raises(TaintError) as exc_info:
             assert_untainted(t)
         assert "pr_comment" in str(exc_info.value)
+
+
+class TestKnownLaunderingGaps:
+    """Operations on plain strings launder taint (str-subclass limitation).
+
+    These document the gap that format_untainted() and the sanitize.py
+    re-tainting exist to compensate for. If one starts failing because
+    taint *survives*, the mitigations may be removable.
+    """
+
+    def test_fstring_launders(self):
+        t = taint("evil", "test")
+        assert not isinstance(f"prefix {t}", TaintedStr)
+
+    def test_plain_template_format_launders(self):
+        t = taint("evil", "test")
+        assert not isinstance("prefix {}".format(t), TaintedStr)
+
+    def test_plain_join_launders(self):
+        t = taint("evil", "test")
+        assert not isinstance(", ".join([t, "x"]), TaintedStr)
+
+    def test_percent_format_launders(self):
+        t = taint("evil", "test")
+        assert not isinstance("prefix %s" % t, TaintedStr)
+
+
+class TestFormatUntainted:
+    def test_formats_clean_values(self):
+        assert format_untainted("a {x} b", x="mid") == "a mid b"
+
+    def test_raises_on_tainted_value(self):
+        t = taint("evil", "pr_comment")
+        with pytest.raises(TaintError, match="pr_comment"):
+            format_untainted("a {x} b", x=t)
+
+    def test_ignores_non_str_values(self):
+        assert format_untainted("n={n}", n=42) == "n=42"
+
+    def test_accepts_untainted_value(self):
+        t = taint("evil", "pr_comment")
+        assert format_untainted("a {x} b", x=untaint(t)) == "a evil b"
 
 
 class TestStrInterop:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_text
-from mergedog.taint import assert_untainted, untaint
+from mergedog.taint import assert_untainted, format_untainted, untaint
 
 
 _UNTRUSTED_CONTEXT_BLURB = """\
@@ -336,8 +336,9 @@ def render_fix_prompt(
     for name, log_text in failed_jobs:
         sections.append(f"=== {_prompt_text(name)} ===\n{_prompt_text(log_text)}\n")
     drci_section = (
-        _DRCI_SECTION_TEMPLATE.format(
-            drci_body=sanitize_untrusted_text(drci_summary).strip()
+        format_untainted(
+            _DRCI_SECTION_TEMPLATE,
+            drci_body=sanitize_untrusted_text(drci_summary).strip(),
         )
         if drci_summary
         else ""
@@ -347,17 +348,20 @@ def render_fix_prompt(
         body = "\n".join(
             f"- {sanitize_untrusted_text(n)}" for n in failing_check_names
         )
-        failing_checks_section = _FAILING_CHECKS_SECTION_TEMPLATE.format(
-            failing_checks_body=body
+        failing_checks_section = format_untainted(
+            _FAILING_CHECKS_SECTION_TEMPLATE,
+            failing_checks_body=body,
         )
     earlier_stack_section = ""
     if earlier_members:
-        earlier_stack_section = _EARLIER_STACK_SECTION_TEMPLATE.format(
-            earlier_stack_body=_format_earlier_members(earlier_members)
+        earlier_stack_section = format_untainted(
+            _EARLIER_STACK_SECTION_TEMPLATE,
+            earlier_stack_body=_format_earlier_members(earlier_members),
         )
     extra_context_section = (
-        _EXTRA_CONTEXT_SECTION_TEMPLATE.format(
-            extra_context_body=sanitize_untrusted_text(extra_context).strip()
+        format_untainted(
+            _EXTRA_CONTEXT_SECTION_TEMPLATE,
+            extra_context_body=sanitize_untrusted_text(extra_context).strip(),
         )
         if extra_context and extra_context.strip()
         else ""
@@ -365,12 +369,15 @@ def render_fix_prompt(
     ghstack_hint = _GHSTACK_HINT if is_ghstack else ""
     if earlier_in_stack > 0:
         ghstack_hint += _STACK_MEMBER_HINT.format(earlier_count=earlier_in_stack)
-    return FIX_PROMPT.format(
+    return format_untainted(
+        FIX_PROMPT,
         repo_slug=get_project_policy().repo_slug,
         url=url,
         branch=branch,
         local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+        untrusted_blurb=format_untainted(
+            _UNTRUSTED_CONTEXT_BLURB, context_path=context_path
+        ),
         failing_checks_section=failing_checks_section,
         earlier_stack_section=earlier_stack_section,
         drci_section=drci_section,
@@ -453,14 +460,18 @@ def render_operator_fix_prompt(
         ghstack_hint += _OPERATOR_STACK_MEMBER_HINT.format(
             earlier_count=earlier_in_stack
         )
-    return OPERATOR_FIX_PROMPT.format(
+    return format_untainted(
+        OPERATOR_FIX_PROMPT,
         repo_slug=get_project_policy().repo_slug,
         url=url,
         branch=branch,
         local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
-        operator_context_section=_EXTRA_CONTEXT_SECTION_TEMPLATE.format(
-            extra_context_body=sanitize_untrusted_text(operator_context).strip()
+        untrusted_blurb=format_untainted(
+            _UNTRUSTED_CONTEXT_BLURB, context_path=context_path
+        ),
+        operator_context_section=format_untainted(
+            _EXTRA_CONTEXT_SECTION_TEMPLATE,
+            extra_context_body=sanitize_untrusted_text(operator_context).strip(),
         ),
         ghstack_hint=ghstack_hint,
     )
@@ -626,12 +637,15 @@ def _render_conflict_prompt(
 ) -> str:
     assert_untainted(url, context_path)
     branch = _prompt_text(branch)
-    return template.format(
+    return format_untainted(
+        template,
         repo_slug=get_project_policy().repo_slug,
         url=url,
         branch=branch,
         local_execution_constraint=_local_execution_constraint(),
-        untrusted_blurb=_UNTRUSTED_CONTEXT_BLURB.format(context_path=context_path),
+        untrusted_blurb=format_untainted(
+            _UNTRUSTED_CONTEXT_BLURB, context_path=context_path
+        ),
         **extra,
     )
 

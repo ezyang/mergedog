@@ -20,6 +20,28 @@ The *only* code you need to audit for correctness is: (1) the sources
 in github.py (did we label everything that came from an external user?)
 and (2) the untaint() call sites (is the justification still valid?).
 
+Limitations
+===========
+
+TaintedStr is a str subclass, so any operation *on a plain str* that
+merely consumes a tainted argument returns a plain str: f-strings,
+``"template".format(tainted)``, ``", ".join(tainted_list)``, ``"%s" %
+tainted``, and ``encode().decode()`` all silently launder taint. Only
+methods called on the tainted object itself propagate it.
+
+Two mitigations keep this from being exploitable:
+
+  - Prompt sinks render templates via format_untainted(), which calls
+    assert_untainted() on every string argument before formatting, so a
+    tainted value that reaches a sink via laundering-prone plumbing
+    still crashes instead of leaking.
+  - The sanitize.py helpers explicitly re-apply taint to their output
+    (sanitizing is not declassifying), so the common
+    sanitize-then-interpolate path cannot launder by itself.
+
+When adding a new prompt or template, use format_untainted() rather
+than str.format or an f-string for the final assembly.
+
 Handling TaintError
 ===================
 
@@ -226,3 +248,15 @@ def assert_untainted(*values: str) -> None:
                 f"tainted string (source={v.source!r}) reached a prompt "
                 f"construction site without declassification: {v[:80]!r}..."
             )
+
+
+def format_untainted(template: str, **kwargs: Any) -> str:
+    """``template.format(**kwargs)`` that refuses tainted arguments.
+
+    ``str.format`` on a plain-str template returns a plain str, silently
+    laundering any TaintedStr argument (same for f-strings and ``join``).
+    Prompt sinks must use this wrapper so a missed untaint() crashes with
+    a TaintError instead of leaking undeclared untrusted text.
+    """
+    assert_untainted(*(v for v in kwargs.values() if isinstance(v, str)))
+    return template.format(**kwargs)
