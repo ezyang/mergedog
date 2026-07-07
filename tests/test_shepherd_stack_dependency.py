@@ -181,6 +181,44 @@ class TestGhstackParentStatus(unittest.TestCase):
         self.assertEqual(status.reason, "parent head is not trusted")
 
 
+class TestCheckTrustedGhstackParent(unittest.TestCase):
+    def test_skips_save_when_metadata_already_matches(self):
+        # The parent PR may have its own live shepherd; a redundant
+        # load-modify-save from the child's poll loop can clobber state
+        # that shepherd persisted in between.
+        dep = _dep()
+        trust = _Trust()
+        trust.head_branch = dep.parent_head_ref
+        trust.head_repo_clone_url = shepherd.REPO_SSH_URL
+        trust.save = mock.Mock()
+
+        with mock.patch.object(
+            shepherd.TrustDB, "load_or_create", return_value=trust
+        ):
+            trusted, returned = shepherd._check_trusted_ghstack_parent(
+                dep, "P_HEAD"
+            )
+
+        self.assertTrue(trusted)
+        self.assertIs(returned, trust)
+        trust.save.assert_not_called()
+
+    def test_saves_when_metadata_changes(self):
+        dep = _dep()
+        trust = _Trust()
+        trust.save = mock.Mock()
+
+        with mock.patch.object(
+            shepherd.TrustDB, "load_or_create", return_value=trust
+        ):
+            trusted, _ = shepherd._check_trusted_ghstack_parent(dep, "P_HEAD")
+
+        self.assertTrue(trusted)
+        self.assertEqual(trust.head_branch, dep.parent_head_ref)
+        self.assertEqual(trust.head_repo_clone_url, shepherd.REPO_SSH_URL)
+        trust.save.assert_called_once()
+
+
 class TestResolveGhstackParentDependency(unittest.TestCase):
     def test_stack_resolution_halt_falls_back_to_isolated_mode(self):
         with mock.patch(
