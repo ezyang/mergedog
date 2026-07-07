@@ -172,6 +172,15 @@ GitHub clients. Tune with `MERGEDOG_GITHUB_MAX_CALLS_PER_MINUTE`,
 the shepherd sleeps for `MERGEDOG_GITHUB_RATE_LIMIT_COOLDOWN_SEC` seconds
 (default one hour) and retries instead of HALTing immediately.
 
+Before each fix invocation, untrusted text bound for the agent (the PR
+sidecar and CI-log excerpts) is passed through a best-effort LLM
+prompt-injection screen. This is defense in depth only — it fails open
+if the classifier is unavailable, and is not a trust boundary (the
+commit-trust gate and the untrusted-data prompt framing remain the real
+defenses). A flagged sidecar degrades to bot-comments-only; a flagged
+log excerpt is withheld so the agent lacks evidence and halts for human
+review. Disable with `MERGEDOG_INJECTION_SCREEN=0`.
+
 ### Common flags
 
 These work on the PR shepherd entry point:

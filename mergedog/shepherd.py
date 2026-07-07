@@ -17,7 +17,7 @@ from pathlib import Path
 
 from mergedog import claude as claude_mod
 from mergedog import context as context_mod
-from mergedog import github, interventions, labels, repo
+from mergedog import github, injection, interventions, labels, repo
 from mergedog.config import (
     format_ci_sev_ignored_numbers,
     get_ignored_ci_sev_numbers,
@@ -1219,6 +1219,12 @@ def _refresh_context_file(
 
     When *trusted* is False (external contributor PR), the description and
     non-bot comments are omitted to prevent prompt injection via PR text.
+
+    Defense in depth: even for trusted PRs, an LLM screen looks at the
+    rendered sidecar; if it flags an injection attempt we degrade to the
+    ``trusted=False`` rendering. Best-effort only -- the screen fails
+    open (see injection.py) and the prompt's untrusted-data framing
+    remains the primary defense.
     """
     pr = pr_data["number"]
     comments = github.get_pr_comments(pr)
@@ -1230,6 +1236,21 @@ def _refresh_context_file(
         comments=comments,
         trusted=trusted,
     )
+    if trusted and injection.looks_like_injection(
+        text, source=f"PR #{pr} sidecar"
+    ):
+        log(
+            f"PR #{pr}: sidecar flagged by injection screen; "
+            "degrading to bot-comments-only context"
+        )
+        text = context_mod.render_context(
+            pr=pr,
+            url=pr_data.get("url", ""),
+            title=pr_data.get("title", ""),
+            body=pr_data.get("body", "") or "",
+            comments=comments,
+            trusted=False,
+        )
     path = context_file(pr)
     context_mod.write_context_file(path, text)
     return path, comments
@@ -1724,6 +1745,34 @@ def _post_llm_hunk_comments(
         posted += 1
     if posted:
         log(f"posted {posted} inline mergedog hunk marker(s) for {sha[:12]}")
+
+
+def _screen_failed_job_logs(
+    pr: int, failed: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Withhold CI log excerpts the injection screen flags.
+
+    Defense in depth, fail-open (see injection.py). The withheld notice
+    keeps the job entry present so the fixer sees the check exists but
+    lacks evidence to classify it -- the prompt directs it to signal
+    INCONCLUSIVE in that case, which halts for human review.
+    """
+    out: list[tuple[str, str]] = []
+    for name, text in failed:
+        if injection.looks_like_injection(
+            text, source=f"PR #{pr} CI log {name!r}"
+        ):
+            log(
+                f"PR #{pr}: withholding CI log for {name!r} "
+                "(flagged by injection screen)"
+            )
+            text = (
+                "<log excerpt withheld: flagged as a possible "
+                "prompt-injection attempt; treat this failure as lacking "
+                "evidence>"
+            )
+        out.append((name, text))
+    return out
 
 
 def _latest_drci_summary_for_handoff(
@@ -2893,6 +2942,7 @@ def _shepherd_body(
                         f"{trunk_ctx}\n\n{effective_extra}" if effective_extra
                         else trunk_ctx
                     )
+                failed = _screen_failed_job_logs(pr, failed)
                 prompt = render_fix_prompt(
                     url=pr_data.get("url", ""),
                     branch=branch,

@@ -20,6 +20,22 @@ The *only* code you need to audit for correctness is: (1) the sources
 in github.py (did we label everything that came from an external user?)
 and (2) the untaint() call sites (is the justification still valid?).
 
+The companion invariant: trusted worktrees
+==========================================
+
+String taint only covers data fetched from the GitHub API. The other
+half of the trust story is the *worktree* the agent runs in: mergedog
+never invokes an LLM inside a checkout whose head is not in the trust
+DB (seeded from a maintainer-association APPROVED review in
+trust_seed.py, extended only by mergedog's own commits and
+patch-id-equivalent mergebot rebases; enforced before every fixer
+invocation in shepherd.py). So file contents in the worktree --
+including agent-config files like CLAUDE.md that the LLM CLI reads as
+instructions -- carry maintainer-approval trust, not taint. The known
+residual is that approval attests to what the reviewer saw in the
+GitHub UI, and the diff view can collapse files (linguist-generated,
+oversized diffs); we accept that and rely on reviewer audit.
+
 Limitations
 ===========
 
