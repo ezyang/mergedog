@@ -561,12 +561,6 @@ def commit_message(worktree: Path, ref: str = "HEAD") -> str:
     ).stdout.rstrip("\n")
 
 
-def _diff_path(path: str) -> str:
-    if path == "/dev/null":
-        return path
-    return path.strip()
-
-
 def diff_hunk_comment_targets(
     worktree: Path, sha: str
 ) -> list[DiffHunkCommentTarget]:
@@ -610,10 +604,10 @@ def diff_hunk_comment_targets(
             in_hunk = False
             continue
         if not in_hunk and line.startswith("--- "):
-            old_path = _diff_path(line[4:])
+            old_path = line[4:].strip()
             continue
         if not in_hunk and line.startswith("+++ "):
-            new_path = _diff_path(line[4:])
+            new_path = line[4:].strip()
             continue
         match = _DIFF_HUNK_RE.match(line)
         if match is not None:
@@ -642,9 +636,6 @@ def diff_hunk_comment_targets(
     return targets
 
 
-VIABLE_STRICT_REF = "origin/viable/strict"
-
-
 def _resolve_ref(ref: str) -> str | None:
     """Return the SHA for ``ref``, or None if it doesn't exist locally."""
     proc = run(["git", "rev-parse", "--verify", ref], cwd=REPO_DIR, check=False)
@@ -653,7 +644,7 @@ def _resolve_ref(ref: str) -> str | None:
     return proc.stdout.strip()
 
 
-def _is_ancestor(ancestor: str, descendant: str) -> bool:
+def is_ancestor(ancestor: str, descendant: str) -> bool:
     proc = run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         cwd=REPO_DIR,
@@ -662,8 +653,26 @@ def _is_ancestor(ancestor: str, descendant: str) -> bool:
     return proc.returncode == 0
 
 
-def is_ancestor(ancestor: str, descendant: str) -> bool:
-    return _is_ancestor(ancestor, descendant)
+def _reverts_between(since: str, until: str) -> list[tuple[str, str]]:
+    """Return (sha, subject) pairs for revert commits in ``since..until``.
+
+    Matches commits whose subject starts with "Revert ", newest first.
+    """
+    proc = run(
+        ["git", "log", "--format=%H %s", f"{since}..{until}"],
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    reverts: list[tuple[str, str]] = []
+    for line in proc.stdout.strip().splitlines():
+        if not line:
+            continue
+        sha, _, subject = line.partition(" ")
+        if subject.startswith("Revert "):
+            reverts.append((sha, subject))
+    return reverts
 
 
 def _find_latest_revert(since: str, until: str) -> str | None:
@@ -672,20 +681,10 @@ def _find_latest_revert(since: str, until: str) -> str | None:
     Looks for commits whose subject starts with "Revert " in the
     ``since..until`` range, returns the SHA of the newest one.
     """
-    proc = run(
-        ["git", "log", "--oneline", "--format=%H %s", f"{since}..{until}"],
-        cwd=REPO_DIR,
-        check=False,
-    )
-    if proc.returncode != 0:
+    reverts = _reverts_between(since, until)
+    if not reverts:
         return None
-    for line in proc.stdout.strip().splitlines():
-        if not line:
-            continue
-        sha, _, subject = line.partition(" ")
-        if subject.startswith("Revert "):
-            return sha
-    return None
+    return reverts[0][0]
 
 
 def select_rebase_target(worktree: Path) -> tuple[str, str]:
@@ -712,20 +711,20 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
         main = _resolve_ref("origin/main")
         if (
             main is not None
-            and _is_ancestor(merge_base, main)
+            and is_ancestor(merge_base, main)
             and merge_base != main
         ):
             return "origin/main", "origin/main"
         return merge_base, "already at origin/main (staying put)"
 
     viable = _resolve_ref(known_good_ref)
-    viable_ahead = viable is not None and _is_ancestor(merge_base, viable) and merge_base != viable
+    viable_ahead = viable is not None and is_ancestor(merge_base, viable) and merge_base != viable
 
     revert = _find_latest_revert(merge_base, "origin/main")
     revert_ahead_of_viable = (
         revert is not None
         and viable is not None
-        and _is_ancestor(viable, revert)
+        and is_ancestor(viable, revert)
         and viable != revert
     )
 
@@ -733,7 +732,7 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
         return revert, f"revert commit {revert[:12]} (ahead of {known_good_ref})"
     if viable_ahead:
         return known_good_ref, known_good_ref.removeprefix("origin/")
-    if revert is not None and _is_ancestor(merge_base, revert) and merge_base != revert:
+    if revert is not None and is_ancestor(merge_base, revert) and merge_base != revert:
         return revert, f"revert commit {revert[:12]}"
     return merge_base, "already at best known-good point (staying put)"
 
@@ -759,20 +758,7 @@ def trunk_revert_context(worktree: Path) -> str | None:
     merge_base = run(
         ["git", "merge-base", "HEAD", "origin/main"], cwd=worktree
     ).stdout.strip()
-    proc = run(
-        ["git", "log", "--oneline", "--format=%H %s", f"{merge_base}..origin/main"],
-        cwd=REPO_DIR,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return None
-    reverts = []
-    for line in proc.stdout.strip().splitlines():
-        if not line:
-            continue
-        sha, _, subject = line.partition(" ")
-        if subject.startswith("Revert "):
-            reverts.append(subject)
+    reverts = _reverts_between(merge_base, "origin/main")
     if not reverts:
         return None
     header = (
@@ -785,7 +771,7 @@ def trunk_revert_context(worktree: Path) -> str | None:
         "INCONCLUSIVE instead of spurious unless the logs clearly prove the "
         "failure is unrelated."
     )
-    body = "\n".join(f"- {s}" for s in reverts)
+    body = "\n".join(f"- {subject}" for _, subject in reverts)
     return f"{header}\n\n{body}"
 
 
@@ -837,20 +823,12 @@ def attempt_merge_main(worktree: Path, ref: str = "origin/main") -> tuple[str, s
             return "noop", None
         return "ok", after
     # Distinguish conflict from other failures by checking for MERGE_HEAD.
-    merge_head = worktree / ".git" / "MERGE_HEAD"
-    if not merge_head.exists():
-        # Some worktree layouts put .git as a file; ask git directly.
-        proc2 = run(
-            ["git", "rev-parse", "--verify", "MERGE_HEAD"],
-            cwd=worktree,
-            check=False,
+    if not is_merge_in_progress(worktree):
+        run(["git", "merge", "--abort"], cwd=worktree, check=False)
+        raise RuntimeError(
+            f"git merge {ref} failed for a non-conflict reason:\n"
+            f"{proc.stdout}\n{proc.stderr}"
         )
-        if proc2.returncode != 0:
-            run(["git", "merge", "--abort"], cwd=worktree, check=False)
-            raise RuntimeError(
-                f"git merge {ref} failed for a non-conflict reason:\n"
-                f"{proc.stdout}\n{proc.stderr}"
-            )
     return "conflict", None
 
 
@@ -928,21 +906,7 @@ def fetch_ghstack_head(head_ref: str) -> str:
 
 def _fetch_origin_branch(branch: str) -> str:
     """Fetch a single branch from origin and return its current SHA."""
-    run(
-        [
-            "git",
-            "fetch",
-            "origin",
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-        ],
-        cwd=REPO_DIR,
-        capture=False,
-        loud=True,
-    )
-    return run(
-        ["git", "rev-parse", f"refs/remotes/origin/{branch}"],
-        cwd=REPO_DIR,
-    ).stdout.strip()
+    return fetch_pr_branch("origin", branch)
 
 
 def fixup_into_parent(worktree: Path) -> str:
@@ -1047,9 +1011,6 @@ def walk_orig_stack(orig_ref: str) -> list[int]:
         if m:
             prs.append(int(m.group(1)))
     return prs
-
-
-REBASE_BODY_HINT = "Rebase onto origin/main to refresh stale base."
 
 
 def attempt_rebase_main(worktree: Path, ref: str = "origin/main") -> tuple[str, str | None]:

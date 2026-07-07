@@ -6,6 +6,27 @@ from unittest import mock
 from mergedog import net
 
 
+class TestIsTransientNetworkError(unittest.TestCase):
+    def test_http_5xx_codes_are_transient(self):
+        self.assertTrue(net.is_transient_network_error("HTTP 502: Bad Gateway"))
+        self.assertTrue(net.is_transient_network_error("HTTP 503"))
+        self.assertTrue(net.is_transient_network_error("HTTP 504"))
+
+    def test_code_inside_larger_number_is_not_transient(self):
+        self.assertFalse(
+            net.is_transient_network_error(
+                "HTTP 404: Not Found "
+                "(https://api.github.com/repos/o/r/actions/runs/9502312345/jobs)"
+            )
+        )
+
+    def test_transient_messages_match_case_insensitively(self):
+        self.assertTrue(net.is_transient_network_error("Connection Refused"))
+
+    def test_permanent_error_is_not_transient(self):
+        self.assertFalse(net.is_transient_network_error("HTTP 404: Not Found"))
+
+
 class TestGithubApiEnvExtra(unittest.TestCase):
     def setUp(self):
         net._git_configured_proxy.cache_clear()

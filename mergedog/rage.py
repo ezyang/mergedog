@@ -115,11 +115,11 @@ def _git_worktree_summary(path: Path) -> str | None:
     return "\n\n".join(lines)
 
 
-def _pushed_commits_for(prs: list[int], pushed_commits_path: Path) -> str | None:
+def _pushed_commits_for(pr: int, pushed_commits_path: Path) -> str | None:
     pushed_commits = _read_text(pushed_commits_path)
     if pushed_commits is None:
         return None
-    pattern = re.compile(r"\bPR#(?:" + "|".join(str(pr) for pr in prs) + r")\b")
+    pattern = re.compile(rf"\bPR#{pr}\b")
     return "\n".join(
         line for line in pushed_commits.splitlines() if pattern.search(line)
     )
@@ -163,7 +163,7 @@ def build_report(pr: int, *, root: Path = ROOT) -> str:
     pushed_commits_path = root / "pushed-commits.log"
     github_calls_path = root / "gh-api-calls.jsonl"
     worktree_path = root / "worktrees" / str(pr)
-    pushed_commits = _pushed_commits_for([pr], pushed_commits_path)
+    pushed_commits = _pushed_commits_for(pr, pushed_commits_path)
     github_calls = _github_api_calls_for(pr, github_calls_path)
 
     parts = [
@@ -221,6 +221,8 @@ def create_paste(content: str, *, title: str) -> str:
     except json.JSONDecodeError:
         rows = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         for key in ("url", "uri", "link", "paste_url"):
             value = row.get(key)
             if value:

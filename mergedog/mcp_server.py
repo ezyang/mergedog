@@ -12,6 +12,7 @@ Tools:
     mergedog_status    Get live status of all tracked PR jobs
     mergedog_log       Read a PR's shepherd log (tail)
     mergedog_state     Read a PR's trust-DB state
+    mergedog_list_prs  List tracked mux PR jobs from the subscription file
 """
 from __future__ import annotations
 
@@ -58,7 +59,6 @@ mcp = FastMCP(
         "  rebase <pr>        — restart with --rebase\n"
         "  rebase all         — rebase every current mux-session job\n"
         "  reassess <pr>      — restart with --reassess\n"
-        "  fix <pr> <request> — restart with --operator-fix-context\n"
         "  mark-spurious <pr> — snapshot current failed/cancelled checks "
         "as spurious and restart\n"
         "  ignore-sev [on|off] — toggle mux-wide --ignore-sev\n"
@@ -106,7 +106,8 @@ async def mergedog_log(pr: int, lines: int = 100) -> str:
         return f"No log file for PR {pr}"
     try:
         all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        lines = max(lines, 0)
+        tail = all_lines[-lines:] if lines else []
         return "\n".join(tail)
     except OSError as e:
         return f"error reading log: {e}"

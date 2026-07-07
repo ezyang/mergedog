@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from functools import lru_cache
 
@@ -9,6 +10,11 @@ from functools import lru_cache
 # Output that indicates a transient network/proxy failure worth retrying.
 # Shared by the gh and ghstack retry loops so the lists can't drift.
 TRANSIENT_HTTP_CODES = ("502", "503", "504")
+# Match the codes as standalone numbers only, not as digit runs inside
+# larger numbers (run IDs, job IDs) like "runs/9502312345".
+_TRANSIENT_HTTP_CODE_RE = re.compile(
+    r"(?<!\d)(?:" + "|".join(TRANSIENT_HTTP_CODES) + r")(?!\d)"
+)
 TRANSIENT_MESSAGES = (
     "connection refused",
     "connection reset",
@@ -28,7 +34,7 @@ TRANSIENT_MESSAGES = (
 
 def is_transient_network_error(text: str) -> bool:
     lower = text.lower()
-    return any(code in text for code in TRANSIENT_HTTP_CODES) or any(
+    return _TRANSIENT_HTTP_CODE_RE.search(text) is not None or any(
         msg in lower for msg in TRANSIENT_MESSAGES
     )
 

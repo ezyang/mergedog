@@ -42,7 +42,7 @@ def notify_halt(msg: str) -> None:
     if url:
         text += f"\n{url}"
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [
                 meta,
                 "google.chat.message",
@@ -53,6 +53,13 @@ def notify_halt(msg: str) -> None:
             capture_output=True,
             timeout=30,
         )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace").strip()
+            print(
+                f"[notify] gchat send failed: exit {proc.returncode}: {stderr}",
+                file=sys.stderr,
+                flush=True,
+            )
     except Exception as exc:
         print(
             f"[notify] gchat send failed: {exc}",

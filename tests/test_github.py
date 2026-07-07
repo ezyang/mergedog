@@ -156,6 +156,35 @@ class TestGhRetries(unittest.TestCase):
             "  ! GitHub API rate limit exhausted; retrying in 0s"
         )
 
+    def test_transient_cap_holds_after_rate_limit_retry(self):
+        calls = [
+            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+            subprocess.CompletedProcess(
+                ["gh"],
+                1,
+                "{}",
+                "gh: API rate limit exceeded for user ID 13564 (HTTP 403)",
+            ),
+            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+        ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"MERGEDOG_GITHUB_RATE_LIMIT_COOLDOWN_SEC": "0"},
+                clear=False,
+            ),
+            mock.patch.object(github, "run", side_effect=calls) as run,
+            mock.patch.object(github.time, "sleep"),
+            mock.patch.object(github, "log") as log,
+        ):
+            proc = github._gh(["pr", "view", "1"], check=False)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(run.call_count, 4)
+        log.assert_any_call("  ! gh transient failure after 3 attempts")
+
     def test_logs_stderr_after_transient_retries_exhausted(self):
         calls = [
             subprocess.CompletedProcess(

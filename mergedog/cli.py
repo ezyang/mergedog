@@ -163,22 +163,15 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
 
-def _resolve_extra_context(args: argparse.Namespace) -> str | None:
-    if args.extra_context_file is not None:
+def _resolve_context(
+    text: str | None, file: Path | None, flag: str
+) -> str | None:
+    if file is not None:
         try:
-            return args.extra_context_file.read_text()
+            return file.read_text()
         except OSError as e:
-            raise SystemExit(f"failed to read --extra-context-file: {e}") from None
-    return args.extra_context
-
-
-def _resolve_operator_fix_context(args: argparse.Namespace) -> str | None:
-    if args.operator_fix_context_file is not None:
-        try:
-            return args.operator_fix_context_file.read_text()
-        except OSError as e:
-            raise SystemExit(f"failed to read --operator-fix-context-file: {e}") from None
-    return args.operator_fix_context
+            raise SystemExit(f"failed to read {flag}: {e}") from None
+    return text
 
 
 def _cmd_parts(cmd: object) -> list[str]:
@@ -265,8 +258,14 @@ def _single_main(argv: list[str]) -> int:
             ignore_sev=args.ignore_sev,
             reassess=args.reassess,
             max_fix_commits=args.max_fix_commits,
-            extra_context=_resolve_extra_context(args),
-            operator_fix_context=_resolve_operator_fix_context(args),
+            extra_context=_resolve_context(
+                args.extra_context, args.extra_context_file, "--extra-context-file"
+            ),
+            operator_fix_context=_resolve_context(
+                args.operator_fix_context,
+                args.operator_fix_context_file,
+                "--operator-fix-context-file",
+            ),
         )
     except KeyboardInterrupt:
         print("\ninterrupted; partial state left in ~/.mergedog/", file=sys.stderr)
@@ -340,14 +339,15 @@ def _config_main(argv: list[str]) -> int:
         choices=LLM_PROVIDERS,
         help="Provider to use for future agent invocations.",
     )
-    llm.add_argument(
+    llm_model = llm.add_mutually_exclusive_group()
+    llm_model.add_argument(
         "--model",
         help=(
             "Provider-specific model name. Defaults to opus for claude and "
             "the provider CLI's default for codex/metacode."
         ),
     )
-    llm.add_argument(
+    llm_model.add_argument(
         "--clear-model",
         action="store_true",
         help="Remove any configured model override for this provider.",

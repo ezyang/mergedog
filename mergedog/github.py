@@ -421,8 +421,8 @@ def _gh_callsite() -> tuple[str | None, str | None]:
     this_file = os.path.abspath(__file__)
     internal = {
         "_gh",
+        "_attempt",
         "_gh_json",
-        "_gh_json_lenient",
         "_gh_pr_checks_json",
         "_record_gh_attempt",
         "_gh_callsite",
@@ -575,12 +575,11 @@ def _gh(
     global _GH_COMMAND
     env_extra = github_api_env_extra()
     attempt = 0
-    while True:
-        attempt += 1
-        _governor_throttle_gh(args)
+
+    def _attempt(loud: bool, attempt: int) -> subprocess.CompletedProcess[str]:
         run_kwargs = {
             "check": False,
-            "loud": loud and attempt == 1,
+            "loud": loud,
         }
         if env_extra is not None:
             run_kwargs["env_extra"] = env_extra
@@ -597,6 +596,12 @@ def _gh(
             loud=bool(run_kwargs["loud"]),
             log_context=log_context,
         )
+        return proc
+
+    while True:
+        attempt += 1
+        _governor_throttle_gh(args)
+        proc = _attempt(loud and attempt == 1, attempt)
         if _is_gh_startup_crash(proc):
             replacement = _find_working_gh_executable(_GH_COMMAND[0])
             if replacement is not None:
@@ -606,25 +611,7 @@ def _gh(
                     f"retrying with {replacement}"
                 )
                 _GH_COMMAND = [replacement]
-                run_kwargs = {
-                    "check": False,
-                    "loud": False,
-                }
-                if env_extra is not None:
-                    run_kwargs["env_extra"] = env_extra
-                if input_text is not None:
-                    run_kwargs["input_text"] = input_text
-                started = time.monotonic()
-                proc = run([*_GH_COMMAND, *args], **run_kwargs)
-                _record_gh_attempt(
-                    args,
-                    attempt=attempt,
-                    proc=proc,
-                    duration_sec=time.monotonic() - started,
-                    check=check,
-                    loud=bool(run_kwargs["loud"]),
-                    log_context=log_context,
-                )
+                proc = _attempt(False, attempt)
         if _is_github_rate_limit_error(proc):
             wait = _governor_note_rate_limit()
             log(
@@ -641,7 +628,7 @@ def _gh(
             if check and proc.returncode != 0:
                 _raise_gh_failure(proc, args)
             return proc
-        if attempt == _GH_MAX_RETRIES:
+        if attempt >= _GH_MAX_RETRIES:
             log(f"  ! gh transient failure after {_GH_MAX_RETRIES} attempts")
             if check:
                 _raise_gh_failure(proc, args)
@@ -651,23 +638,10 @@ def _gh(
             f"retrying in {_GH_RETRY_DELAY}s"
         )
         time.sleep(_GH_RETRY_DELAY)
-    raise AssertionError("unreachable")
 
 
 def _gh_json(args: list[str], *, log_context: str | None = None) -> Any:
     return json.loads(_gh(args, log_context=log_context).stdout)
-
-
-def _gh_json_lenient(args: list[str], allowed_exit_codes: tuple[int, ...]) -> Any:
-    """Like ``_gh_json`` but tolerates specific non-zero exit codes.
-
-    ``gh pr checks`` exits 8 when checks are still pending; that's not an
-    error from our perspective, the JSON is still on stdout.
-    """
-    proc = _gh(args, check=False)
-    if proc.returncode != 0 and proc.returncode not in allowed_exit_codes:
-        proc.check_returncode()
-    return json.loads(proc.stdout)
 
 
 def _gh_pr_checks_json(args: list[str]) -> list[dict]:
@@ -890,9 +864,9 @@ def latest_drci_summary(
     if not matches:
         return None
     body = matches[-1].get("body") or None
-    if body is None or head_sha is None:
-        if body is None:
-            return None
+    if body is None:
+        return None
+    if head_sha is None:
         return sanitize_untrusted_text(untaint(body))
     m = _DRCI_COMMIT_RE.search(body)
     if m is None:
@@ -909,28 +883,6 @@ def get_pr_head_sha(pr: int) -> str:
         ["pr", "view", str(pr), "--repo", REPO, "--json", "headRefOid"]
     )
     return data["headRefOid"]
-
-
-def get_pr_status_fields(pr: int) -> tuple[list[str], str | None]:
-    """Return ``(labels, reviewDecision)`` in a single ``gh pr view`` call.
-
-    Used by the shepherd's per-iteration log-prefix refresh, where we
-    need both pieces (labels for [MERGING], reviewDecision for [APPROVED])
-    and don't want to pay for two separate round trips.
-    """
-    data = _gh_json(
-        [
-            "pr",
-            "view",
-            str(pr),
-            "--repo",
-            REPO,
-            "--json",
-            "labels,reviewDecision",
-        ]
-    )
-    labels = [lb.get("name", "") for lb in data.get("labels", []) or []]
-    return labels, data.get("reviewDecision") or None
 
 
 def get_pr_poll_fields(
@@ -983,6 +935,16 @@ def workflow_run_attempt(run_id: int | str) -> int | None:
     return int(attempt) if isinstance(attempt, int) else None
 
 
+def _ok_or_last_error(
+    proc: subprocess.CompletedProcess[str],
+) -> tuple[bool, str]:
+    if proc.returncode == 0:
+        return True, ""
+    err = (proc.stderr or proc.stdout or "").strip().splitlines()
+    msg = err[-1] if err else f"exit {proc.returncode}"
+    return False, msg
+
+
 def approve_workflow_run(run_id: int | str) -> tuple[bool, str]:
     """Approve a workflow run that is waiting for first-time-contributor approval.
 
@@ -1000,11 +962,7 @@ def approve_workflow_run(run_id: int | str) -> tuple[bool, str]:
         check=False,
         loud=True,
     )
-    if proc.returncode == 0:
-        return True, ""
-    err = (proc.stderr or proc.stdout or "").strip().splitlines()
-    msg = err[-1] if err else f"exit {proc.returncode}"
-    return False, msg
+    return _ok_or_last_error(proc)
 
 
 def rerun_failed_jobs(run_id: int | str) -> tuple[bool, str]:
@@ -1027,11 +985,7 @@ def rerun_failed_jobs(run_id: int | str) -> tuple[bool, str]:
         check=False,
         loud=True,
     )
-    if proc.returncode == 0:
-        return True, ""
-    err = (proc.stderr or proc.stdout or "").strip().splitlines()
-    msg = err[-1] if err else f"exit {proc.returncode}"
-    return False, msg
+    return _ok_or_last_error(proc)
 
 
 def run_id_for_check(check: dict) -> int | None:
