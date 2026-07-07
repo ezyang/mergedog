@@ -106,6 +106,11 @@ BAR_WIDTH = 12
 BAR_FILLED = "█"
 BAR_EMPTY = "░"
 
+# Emoji headers for the two "don't blindly trust the green" count columns.
+# Documented in ``_format_help``; the count is blank when zero.
+COL_INTERVENTIONS = "🔧"  # autonomous mergedog changes to review
+COL_SUPPRESSED = "🙈"  # currently-failing checks being ignored as spurious
+
 
 class HistoryInput(Input):
     """Input widget with rlwrap-style command history (Up/Down arrows)."""
@@ -942,7 +947,9 @@ class MuxApp(App):
         table = self.query_one(DataTable)
         # The Phase column is an emoji whose meaning is self-evident (and
         # documented in `help`), so it gets no heading.
-        table.add_columns("PR", "Title", "", "CI", "Int", "Sup", "Status")
+        table.add_columns(
+            "PR", "Title", "", "CI", COL_INTERVENTIONS, COL_SUPPRESSED, "Status"
+        )
         for job in self._initial:
             self._do_add_job(job, [])
         self._refresh()
@@ -1525,6 +1532,11 @@ class MuxApp(App):
                 f"{PHASE_YOUR_REVIEW_ACTION} review/approve first; "
                 f"{PHASE_EXTERNAL_ACTION} waiting on someone else; "
                 f"{PHASE_HALTED} halted/crashed"
+            ),
+            (
+                f"columns: CI progress bar (green when done); "
+                f"{COL_INTERVENTIONS} autonomous mergedog changes to review; "
+                f"{COL_SUPPRESSED} failing checks ignored as spurious"
             ),
             (
                 "commands: add <pr> | restart <pr|all|dead> | "
