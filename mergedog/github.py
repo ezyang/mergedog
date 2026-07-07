@@ -28,6 +28,7 @@ from mergedog.paths import (
     GH_API_GOVERNOR_LOCK,
     GH_API_GOVERNOR_STATE,
     REPO_SLUG,
+    atomic_write_text,
 )
 from mergedog.process import run
 from mergedog.project import get_project_policy
@@ -276,10 +277,7 @@ def _write_governor_state(
     path: Path | None = None,
 ) -> None:
     path = path or GH_API_GOVERNOR_STATE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(state, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    atomic_write_text(path, json.dumps(state, sort_keys=True) + "\n")
 
 
 @contextmanager

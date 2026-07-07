@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mergedog.paths import CONFIG_FILE
+from mergedog.paths import CONFIG_FILE, atomic_write_text
 
 LLM_PROVIDERS = ("claude", "codex", "metacode")
 DEFAULT_LLM_PROVIDER = "codex"
@@ -46,10 +45,7 @@ def _read_config_file(path: Path = CONFIG_FILE) -> dict[str, Any]:
 
 
 def _write_config_file(data: dict[str, Any], path: Path = CONFIG_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
 def parse_ci_sev_number(value: Any) -> int:

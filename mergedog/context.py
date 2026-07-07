@@ -11,9 +11,9 @@ regardless of what it claims to be.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from mergedog.paths import atomic_write_text
 from mergedog.sanitize import sanitize_untrusted_markdown, sanitize_untrusted_text
 from mergedog.taint import untaint
 
@@ -69,9 +69,6 @@ def render_context(
 
 
 def write_context_file(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic so a SIGKILL mid-write can't leave a truncated sidecar that
     # would confuse claude on the next run.
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    atomic_write_text(path, text)

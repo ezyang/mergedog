@@ -12,6 +12,27 @@ from mergedog.log import die, log
 from mergedog.state import TrustDB
 
 
+def latest_trusted_approval(reviews: list[dict]) -> dict | None:
+    """Most recent APPROVED review by a trusted (maintainer) association.
+
+    Filters for APPROVED reviews whose author has a trusted association
+    (MEMBER / COLLABORATOR / OWNER) and which carry a ``commit_id``, then
+    picks the latest by ``submitted_at``. Returns ``None`` if no such
+    review exists. Trust-critical: both the startup trust seed and the
+    shepherd's fix-budget refresh anchor to this selection.
+    """
+    trusted_approvals = [
+        r for r in reviews
+        if r.get("state") == "APPROVED"
+        and github.is_trusted_association(r.get("association"))
+        and r.get("commit_id")
+    ]
+    if not trusted_approvals:
+        return None
+    trusted_approvals.sort(key=lambda r: r.get("submitted_at") or "")
+    return trusted_approvals[-1]
+
+
 def seed_trust_from_reviews(
     trust: TrustDB,
     pr: int,
@@ -63,21 +84,14 @@ def seed_trust_from_reviews(
             f"(association={r.get('association')!r}, not a maintainer)"
         )
 
-    trusted_approvals = [
-        r for r in audit["reviews"]
-        if r.get("state") == "APPROVED"
-        and github.is_trusted_association(r.get("association"))
-        and r.get("commit_id")
-    ]
-    if not trusted_approvals:
+    latest = latest_trusted_approval(audit["reviews"])
+    if latest is None:
         die(
             "no APPROVED review from a maintainer "
             "(MEMBER/COLLABORATOR/OWNER) was found on this PR; "
             "halting. Get a real approval before running mergedog."
         )
 
-    trusted_approvals.sort(key=lambda r: r.get("submitted_at") or "")
-    latest = trusted_approvals[-1]
     approval_sha: str = latest["commit_id"]
     log(
         f"latest maintainer approval: {latest['login']} "

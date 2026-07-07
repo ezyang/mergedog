@@ -6,12 +6,11 @@ small machine-readable JSON file the mux can poll for richer state.
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mergedog.paths import status_file
+from mergedog.paths import atomic_write_text, status_file
 
 SCHEMA_VERSION = 1
 
@@ -73,10 +72,7 @@ def write_status(
     payload.update({k: v for k, v in optional.items() if v is not None})
 
     dst = path or status_file(pr)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n")
-    os.replace(tmp, dst)
+    atomic_write_text(dst, json.dumps(payload, sort_keys=True) + "\n")
     return payload
 
 

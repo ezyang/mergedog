@@ -56,7 +56,7 @@ from mergedog.prompts import (
 from mergedog.repo import MERGE_RESOLVED_SUBJECT
 from mergedog.state import TrustDB
 from mergedog.status import utc_now_iso, write_status
-from mergedog.trust_seed import seed_trust_from_reviews
+from mergedog.trust_seed import latest_trusted_approval, seed_trust_from_reviews
 
 
 SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
@@ -771,16 +771,8 @@ def _status_with_interventions(message: str, intervention_count: int) -> str:
 
 def _latest_trusted_approval_sha(pr: int) -> str | None:
     audit = github.get_pr_review_audit(pr)
-    trusted_approvals = [
-        r for r in audit["reviews"]
-        if r.get("state") == "APPROVED"
-        and github.is_trusted_association(r.get("association"))
-        and r.get("commit_id")
-    ]
-    if not trusted_approvals:
-        return None
-    trusted_approvals.sort(key=lambda r: r.get("submitted_at") or "")
-    return trusted_approvals[-1]["commit_id"]
+    latest = latest_trusted_approval(audit["reviews"])
+    return latest["commit_id"] if latest else None
 
 
 def _count_mergedog_interventions_since_ack(

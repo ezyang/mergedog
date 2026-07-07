@@ -26,6 +26,7 @@ WORKTREES_DIR = ROOT / "worktrees"
 STATE_DIR = ROOT / "state"
 STATUS_DIR = ROOT / "status"
 CONTEXTS_DIR = ROOT / "contexts"
+LOGS_DIR = ROOT / "logs"
 CI_LOGS_DIR = ROOT / "ci-logs"
 LINTRUNNER_VENV = ROOT / "lintrunner-venv"
 GH_API_CALLS_LOG = ROOT / "gh-api-calls.jsonl"
@@ -51,6 +52,19 @@ REPO_SSH_URL = os.environ.get("MERGEDOG_REPO_SSH_URL") or (
 )
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (tempfile + rename).
+
+    Atomic so a SIGKILL mid-write can't leave a truncated or empty file.
+    The temp name is pid-suffixed so concurrent writers can't clobber
+    each other's in-flight temp file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def worktree_dir(pr: int) -> Path:
     return WORKTREES_DIR / str(pr)
 
@@ -65,6 +79,10 @@ def status_file(pr: int) -> Path:
 
 def context_file(pr: int) -> Path:
     return CONTEXTS_DIR / f"{pr}.md"
+
+
+def log_file(pr: int) -> Path:
+    return LOGS_DIR / f"{pr}.log"
 
 
 def ensure_dirs() -> None:

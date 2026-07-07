@@ -153,13 +153,15 @@ from mergedog.config import (  # noqa: E402
 from mergedog.handoff import is_cla_merge_failure  # noqa: E402
 from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
 from mergedog.paths import (  # noqa: E402
+    LOGS_DIR,
     MUX_JOBS_FILE,
     MUX_PRS_FILE,
     MUX_SOCKET,
     REPO_SLUG,
-    ROOT,
+    atomic_write_text,
     context_file,
     ensure_dirs,
+    log_file,
     state_file,
     status_file,
     worktree_dir,
@@ -171,8 +173,6 @@ from mergedog.shepherd import (  # noqa: E402
 )
 from mergedog.status import read_status  # noqa: E402
 from mergedog.state import TrustDB  # noqa: E402
-
-LOG_DIR = ROOT / "logs"
 
 TITLE_TRUNC = 20
 JobKey = tuple[str, int]
@@ -195,9 +195,9 @@ def _job_label(job: JobKey | int) -> str:
     return str(pr)
 
 
-def _job_log_name(job: JobKey | int) -> str:
+def _job_log_file(job: JobKey | int) -> Path:
     _, pr = _coerce_job(job)
-    return f"{pr}.log"
+    return log_file(pr)
 
 
 def _read_pr_context_title(pr: int) -> str:
@@ -646,10 +646,7 @@ def _read_mux_prs() -> list[int]:
 
 
 def _write_mux_prs(prs: list[int]) -> None:
-    MUX_PRS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MUX_PRS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(sorted(set(prs))))
-    os.replace(tmp, MUX_PRS_FILE)
+    atomic_write_text(MUX_PRS_FILE, json.dumps(sorted(set(prs))))
 
 
 def _read_mux_job_records() -> dict[JobKey, dict]:
@@ -691,8 +688,6 @@ def _read_mux_jobs() -> list[JobKey]:
 
 
 def _write_mux_job_records(records: dict[JobKey, dict]) -> None:
-    MUX_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MUX_JOBS_FILE.with_suffix(".json.tmp")
     items = []
     for kind, pr in sorted(records):
         item: dict = {"kind": kind, "pr": pr}
@@ -700,8 +695,7 @@ def _write_mux_job_records(records: dict[JobKey, dict]) -> None:
         if isinstance(rc, int):
             item["rc"] = rc
         items.append(item)
-    tmp.write_text(json.dumps(items))
-    os.replace(tmp, MUX_JOBS_FILE)
+    atomic_write_text(MUX_JOBS_FILE, json.dumps(items))
     _write_mux_prs([pr for _, pr in records])
 
 
@@ -795,8 +789,8 @@ def _spawn(
     job = _coerce_job(job)
     _, pr = job
     arg_pr = spawn_pr if spawn_pr is not None else pr
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / _job_log_name(job)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _job_log_file(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
     f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
     command = [sys.executable, "-m", "mergedog"]
@@ -1569,7 +1563,7 @@ class MuxApp(App):
                 if entry is not None:
                     return str(entry[2])
                 if _pr_job(pr) in getattr(self, "_parked_jobs", {}):
-                    return str(LOG_DIR / _job_log_name(_pr_job(pr)))
+                    return str(_job_log_file(_pr_job(pr)))
                 return f"[{pr}] unknown"
             elif cmd == "migrate":
                 return self._format_migrate()
@@ -1654,7 +1648,7 @@ class MuxApp(App):
             if job in self.procs:
                 continue
             kind, pr = job
-            log_path = LOG_DIR / _job_log_name(job)
+            log_path = _job_log_file(job)
             rows.append({
                 "kind": kind,
                 "pr": pr,

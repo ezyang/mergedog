@@ -15,11 +15,10 @@ the PR has been touched by someone other than mergedog after approval.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mergedog.paths import state_file
+from mergedog.paths import atomic_write_text, state_file
 
 SCHEMA_VERSION = 1
 
@@ -118,12 +117,9 @@ class TrustDB:
 
     def save(self) -> None:
         assert self.path is not None
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: ``write_text`` is open->write->close, which can leave
-        # a half-written or empty file if we're SIGKILL'd mid-write. The
-        # trust DB is the only piece of state mergedog itself authors that
-        # can't be regenerated on restart, so we go through a tempfile +
-        # rename instead.
+        # Atomic write: the trust DB is the only piece of state mergedog
+        # itself authors that can't be regenerated on restart, so we go
+        # through a tempfile + rename instead of a bare ``write_text``.
         data = json.dumps(
             {
                 **self.extra_fields,
@@ -142,9 +138,7 @@ class TrustDB:
             },
             indent=2,
         )
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(data)
-        os.replace(tmp, self.path)
+        atomic_write_text(self.path, data)
 
     def trust(self, sha: str) -> None:
         if sha and sha not in self.trusted_shas:

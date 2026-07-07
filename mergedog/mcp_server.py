@@ -27,10 +27,12 @@ promote_early_env(sys.argv[1:])
 from mcp.server import FastMCP  # noqa: E402
 
 from mergedog.ipc import send_command  # noqa: E402
-from mergedog.paths import ROOT, MUX_JOBS_FILE, MUX_PRS_FILE  # noqa: E402
-
-LOG_DIR = ROOT / "logs"
-STATE_DIR = ROOT / "state"
+from mergedog.paths import (  # noqa: E402
+    MUX_JOBS_FILE,
+    MUX_PRS_FILE,
+    log_file,
+    state_file,
+)
 
 mcp = FastMCP(
     "mergedog",
@@ -101,7 +103,7 @@ async def mergedog_status() -> str:
 )
 async def mergedog_log(pr: int, lines: int = 100) -> str:
     """Read the last N lines of a PR's log file."""
-    log_path = LOG_DIR / f"{pr}.log"
+    log_path = log_file(pr)
     if not log_path.exists():
         return f"No log file for PR {pr}"
     try:
@@ -121,7 +123,7 @@ async def mergedog_log(pr: int, lines: int = 100) -> str:
 )
 async def mergedog_state(pr: int) -> str:
     """Read a PR's persisted state JSON."""
-    state_path = STATE_DIR / f"{pr}.json"
+    state_path = state_file(pr)
     if not state_path.exists():
         return f"No state file for PR {pr}"
     try:
