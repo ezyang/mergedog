@@ -606,23 +606,6 @@ def _workflow_fingerprint_for_sha(head_sha: str | None) -> _WorkflowFingerprint 
     )
 
 
-def _intervention_suffix(intervention_count: int | None) -> str:
-    if intervention_count is None:
-        return ""
-    plural = "" if intervention_count == 1 else "s"
-    return (
-        f"; {intervention_count} mergedog intervention{plural} "
-        "since last approval"
-    )
-
-
-def _suppressed_failure_suffix(suppressed_failure_count: int) -> str:
-    if suppressed_failure_count <= 0:
-        return ""
-    plural = "" if suppressed_failure_count == 1 else "s"
-    return f"; {suppressed_failure_count} suppressed failure{plural}"
-
-
 def _handoff_warning_suffix(
     *,
     handoff_comment_ok: bool | None = None,
@@ -740,17 +723,19 @@ def _write_post_handoff_ci_status(
         failure_plural = "" if failed == 1 else "s"
         message = (
             f"CI regressed after handoff: {failed} active "
-            f"failure{failure_plural} ({done}/{total} checks done)"
+            f"failure{failure_plural}"
         )
         category = "action"
         waiting_on = None
         action = "inspecting_ci"
     else:
-        message = f"waiting for CI after handoff: {done}/{total} checks done"
+        message = "waiting for CI after handoff"
         category = "waiting"
         waiting_on = "ci"
         action = None
-    message += _suppressed_failure_suffix(suppressed_failure_count)
+    # Progress counts, suppressed counts, and intervention counts are shown in
+    # the mux CI/Sup/Int columns, so they are kept out of the text. The Dr.CI
+    # suppression warning has no column, so it stays.
     message += _handoff_warning_suffix(
         handoff_comment_ok=handoff_comment_ok,
         suppression_warning=suppression_warning,
@@ -762,7 +747,7 @@ def _write_post_handoff_ci_status(
             category=category,
             waiting_on=waiting_on,
             action=action,
-            message=message + _intervention_suffix(intervention_count),
+            message=message,
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             approved=approved,
@@ -770,6 +755,7 @@ def _write_post_handoff_ci_status(
             ci_done=done,
             ci_total=total,
             ci_failed=failed,
+            ci_suppressed=suppressed_failure_count,
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
         )
@@ -831,17 +817,16 @@ def _write_handoff_status(
             user_action=user_action,
             message=(
                 message
-                + _suppressed_failure_suffix(suppressed_failure_count)
                 + _handoff_warning_suffix(
                     handoff_comment_ok=handoff_comment_ok,
                     suppression_warning=suppression_warning,
                 )
-                + _intervention_suffix(intervention_count)
             ),
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             approved=approved,
             merging=merging,
+            ci_suppressed=suppressed_failure_count,
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
         )

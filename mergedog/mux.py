@@ -503,15 +503,12 @@ def _status_message(
             return msg
         phase = structured.get("phase")
         if phase == "polling_ci":
-            done = structured.get("ci_done", "?")
-            total = structured.get("ci_total", "?")
+            # Progress counts live in the dedicated CI bar column, not the text.
             failed = structured.get("ci_failed")
             if failed:
-                return (
-                    f"CI failed: {failed} active failures "
-                    f"({done}/{total} checks done)"
-                )
-            return f"waiting for CI: {done}/{total} checks done"
+                plural = "" if failed == 1 else "s"
+                return f"CI failed: {failed} active failure{plural}"
+            return "waiting for CI"
         if isinstance(phase, str) and phase:
             return phase.replace("_", " ")
     if rc is None:

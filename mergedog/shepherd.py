@@ -721,48 +721,26 @@ def _write_status_best_effort(pr: int, **fields) -> None:
         pass
 
 
-def _suppressed_failure_suffix(suppressed: int) -> str:
-    if suppressed <= 0:
-        return ""
-    plural = "" if suppressed == 1 else "s"
-    return f"; {suppressed} suppressed failure{plural}"
+def _ci_status_message(status: str, failed: int) -> str:
+    """Qualitative CI state for the mux Status column.
 
-
-def _ci_status_message(
-    status: str,
-    done: int,
-    total: int,
-    failed: int,
-    *,
-    suppressed: int = 0,
-) -> str:
+    Progress counts (``done/total``) and suppressed-failure counts are
+    intentionally omitted: the mux renders those in the dedicated CI-progress
+    bar and Sup columns, so repeating them here would just be noise. Active
+    failures stay in the text -- they have no dedicated column.
+    """
     if status == "pending":
-        return (
-            f"waiting for CI: {done}/{total} checks done"
-            f"{_suppressed_failure_suffix(suppressed)}"
-        )
+        return "waiting for CI"
     if status == "failed":
         failures = (
             f"{failed} active failure"
             if failed == 1
             else f"{failed} active failures"
         )
-        return (
-            f"CI failed: {failures} ({done}/{total} checks done)"
-            f"{_suppressed_failure_suffix(suppressed)}"
-        )
+        return f"CI failed: {failures}"
     if status == "passed":
-        if suppressed:
-            plural = "" if suppressed == 1 else "s"
-            return (
-                f"CI passed with {suppressed} suppressed failure{plural}: "
-                f"{done}/{total} checks done"
-            )
-        return f"CI passed: {done}/{total} checks done"
-    return (
-        f"CI {status}: {done}/{total} checks done"
-        f"{_suppressed_failure_suffix(suppressed)}"
-    )
+        return "CI passed"
+    return f"CI {status}"
 
 
 def _fix_attempt_message(fix_attempts: int, max_fix_attempts: int) -> str:
@@ -781,18 +759,6 @@ def _fixing_ci_message(
         f"fixing CI: {active_failed_count} active failure{failure_plural}; "
         f"{_fix_attempt_message(fix_attempts, max_fix_attempts)}"
     )
-
-
-def _intervention_suffix(intervention_count: int) -> str:
-    plural = "" if intervention_count == 1 else "s"
-    return (
-        f"{intervention_count} mergedog intervention{plural} "
-        "since last approval"
-    )
-
-
-def _status_with_interventions(message: str, intervention_count: int) -> str:
-    return f"{message}; {_intervention_suffix(intervention_count)}"
 
 
 def _latest_trusted_approval_sha(pr: int) -> str | None:
@@ -2324,9 +2290,7 @@ def _shepherd_body(
         phase="starting",
         category="action",
         action="starting",
-        message=_status_with_interventions(
-            "starting shepherd", intervention_count
-        ),
+        message="starting shepherd",
         intervention_count=intervention_count,
         human_ack_sha=human_ack_sha,
         approved=last_approved,
@@ -2710,13 +2674,7 @@ def _shepherd_body(
                 and workflow_failed_run_ids
             ):
                 active_failed_count = len(workflow_failed_run_ids)
-            ci_message = _ci_status_message(
-                status,
-                done,
-                len(checks),
-                active_failed_count,
-                suppressed=suppressed_failed_count,
-            )
+            ci_message = _ci_status_message(status, active_failed_count)
             if waiting_for_trunk_wave:
                 ci_message = f"waiting for {TRUNK_LABEL} workflows to appear"
             _write_status_best_effort(
@@ -2725,10 +2683,7 @@ def _shepherd_body(
                 category="waiting" if status == "pending" else "action",
                 waiting_on="ci" if status == "pending" else None,
                 action="inspecting_ci" if status != "pending" else None,
-                message=_status_with_interventions(
-                    ci_message,
-                    intervention_count,
-                ),
+                message=ci_message,
                 intervention_count=intervention_count,
                 human_ack_sha=human_ack_sha,
                 approved=last_approved,
@@ -2770,15 +2725,12 @@ def _shepherd_body(
                             phase="waiting_stack_parent",
                             category="waiting",
                             waiting_on="stack_parent",
-                            message=_status_with_interventions(
-                                (
-                                    f"waiting for stack parent "
-                                    f"#{ghstack_parent.parent_pr}: "
-                                    f"{parent_status.reason}; parent "
-                                    f"{parent_status.parent_done}/"
-                                    f"{parent_status.parent_total} checks done"
-                                ),
-                                intervention_count,
+                            message=(
+                                f"waiting for stack parent "
+                                f"#{ghstack_parent.parent_pr}: "
+                                f"{parent_status.reason}; parent "
+                                f"{parent_status.parent_done}/"
+                                f"{parent_status.parent_total} checks done"
                             ),
                             intervention_count=intervention_count,
                             human_ack_sha=human_ack_sha,
@@ -2966,13 +2918,10 @@ def _shepherd_body(
                     phase="fixing_ci",
                     category="action",
                     action="fixing_ci",
-                    message=_status_with_interventions(
-                        _fixing_ci_message(
-                            active_failed_count,
-                            fix_commits_pushed,
-                            max_fix_attempts_status,
-                        ),
-                        intervention_count,
+                    message=_fixing_ci_message(
+                        active_failed_count,
+                        fix_commits_pushed,
+                        max_fix_attempts_status,
                     ),
                     intervention_count=intervention_count,
                     human_ack_sha=human_ack_sha,
@@ -3288,9 +3237,8 @@ def _shepherd_body(
                         phase="polling_ci",
                         category="waiting",
                         waiting_on="ci_stability",
-                        message=_status_with_interventions(
-                            f"{passed_message}; waiting {remaining}s for stability",
-                            intervention_count,
+                        message=(
+                            f"CI passed; waiting {remaining}s for stability"
                         ),
                         intervention_count=intervention_count,
                         human_ack_sha=human_ack_sha,
@@ -3325,13 +3273,10 @@ def _shepherd_body(
                         phase="refreshing_base",
                         category="action",
                         action="rebasing",
-                        message=_status_with_interventions(
-                            (
-                                f"refreshing base to trigger CI: only "
-                                f"{len(checks)} check"
-                                f"{'' if len(checks) == 1 else 's'} reported"
-                            ),
-                            intervention_count,
+                        message=(
+                            f"refreshing base to trigger CI: only "
+                            f"{len(checks)} check"
+                            f"{'' if len(checks) == 1 else 's'} reported"
                         ),
                         intervention_count=intervention_count,
                         human_ack_sha=human_ack_sha,
@@ -3404,14 +3349,8 @@ def _shepherd_body(
             ready_for_merge = last_approved is not False
             approval_actionable = not self_pr
             cla_blocked = is_cla_merge_failure(trust.last_observed_failure_body)
-            if suppressed_failed_count:
-                plural = "" if suppressed_failed_count == 1 else "s"
-                ci_green_phrase = (
-                    f"CI is green except {suppressed_failed_count} "
-                    f"suppressed failure{plural}"
-                )
-            else:
-                ci_green_phrase = "CI is green"
+            # Suppressed-failure count lives in the mux Sup column, not the text.
+            ci_green_phrase = "CI is green"
             if cla_blocked:
                 ready_message = f"waiting for contributor CLA: {ci_green_phrase}"
                 ready_user_action = None
@@ -3441,9 +3380,7 @@ def _shepherd_body(
                 category=ready_category,
                 waiting_on=ready_waiting_on,
                 user_action=ready_user_action,
-                message=_status_with_interventions(
-                    ready_message, intervention_count
-                ),
+                message=ready_message,
                 intervention_count=intervention_count,
                 human_ack_sha=human_ack_sha,
                 approved=last_approved,
@@ -3554,9 +3491,7 @@ def _shepherd_body(
             category=handoff_category,
             waiting_on=handoff_waiting_on,
             user_action=handoff_user_action,
-            message=_status_with_interventions(
-                handoff_message + handoff_warning_suffix, intervention_count
-            ),
+            message=handoff_message + handoff_warning_suffix,
             intervention_count=intervention_count,
             human_ack_sha=human_ack_sha,
             approved=last_approved,

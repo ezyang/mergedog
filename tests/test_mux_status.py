@@ -223,7 +223,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "schema_version": 1,
                 "phase": "polling_ci",
                 "category": "waiting",
-                "message": "waiting for CI: 1/2 checks done",
+                "message": "waiting for CI",
             }
             with mock.patch.object(mux, "read_status", return_value=sidecar):
                 rows = json.loads(app._format_status())
@@ -231,7 +231,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(rows[0]["pr"], 123)
         self.assertEqual(rows[0]["state"], "running")
         self.assertEqual(rows[0]["phase"], "🟢")
-        self.assertEqual(rows[0]["status"], "waiting for CI: 1/2 checks done")
+        self.assertEqual(rows[0]["status"], "waiting for CI")
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
 
     def test_phase_label_marks_easy_operator_merge(self):
@@ -305,7 +305,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             "phase": "ready",
             "category": "ready",
             "user_action": "merge when satisfied",
-            "message": "ready for human merge; 2 suppressed failures",
+            "message": "ready for human merge",
         }
         body = "## Merge failed\n- EasyCLA\n"
 
@@ -319,9 +319,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
         self.assertTrue(cla_blocked)
         self.assertEqual(phase, "🔵")
-        self.assertEqual(
-            status, "waiting for contributor CLA; 2 suppressed failures"
-        )
+        self.assertEqual(status, "waiting for contributor CLA")
 
     def test_help_documents_phase_meanings(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -451,7 +449,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "schema_version": 1,
                 "phase": "polling_ci",
                 "category": "waiting",
-                "message": "waiting for CI: 4/9 checks done",
+                "message": "waiting for CI",
             }
             with (
                 mock.patch.object(
@@ -467,7 +465,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 app._refresh()
 
         self.assertEqual(table.rows[0][2], "🟢")
-        self.assertEqual(table.rows[0][6], "waiting for CI: 4/9 checks done")
+        self.assertEqual(table.rows[0][6], "waiting for CI")
 
     def test_refresh_reports_stale_sidecar_from_prior_shepherd(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1433,7 +1431,7 @@ class TestMuxCiColumns(unittest.TestCase):
                 "schema_version": 1,
                 "phase": "polling_ci",
                 "category": "action",
-                "message": "CI failed: 2 active failures (10/12 checks done)",
+                "message": "CI failed: 2 active failures",
                 "ci_done": 10,
                 "ci_total": 12,
                 "ci_failed": 2,
@@ -1459,9 +1457,7 @@ class TestMuxCiColumns(unittest.TestCase):
         self.assertEqual(ci_cell.spans[0].style, "cyan")
         self.assertEqual(int_cell.plain, "2")
         self.assertEqual(sup_cell.plain, "1")
-        self.assertEqual(
-            status, "CI failed: 2 active failures (10/12 checks done)"
-        )
+        self.assertEqual(status, "CI failed: 2 active failures")
 
 
 if __name__ == "__main__":

@@ -276,20 +276,19 @@ class TestHandoffComments(unittest.TestCase):
                 human_ack_sha="a" * 40,
             )
 
+        # Intervention count lives in the mux Int column, not the text.
         write_status.assert_called_once_with(
             101,
             phase="ready",
             category="ready",
             waiting_on="approval",
             user_action="approve the PR after reviewing mergedog interventions",
-            message=(
-                "waiting for maintainer approval; "
-                "2 mergedog interventions since last approval"
-            ),
+            message="waiting for maintainer approval",
             intervention_count=2,
             human_ack_sha="a" * 40,
             approved=False,
             merging=False,
+            ci_suppressed=0,
         )
 
     def test_handoff_status_marks_approval_external_when_not_actionable(self):
@@ -307,11 +306,7 @@ class TestHandoffComments(unittest.TestCase):
         self.assertEqual(kwargs["category"], "waiting")
         self.assertEqual(kwargs["waiting_on"], "approval")
         self.assertIsNone(kwargs["user_action"])
-        self.assertEqual(
-            kwargs["message"],
-            "waiting for maintainer approval; "
-            "0 mergedog interventions since last approval",
-        )
+        self.assertEqual(kwargs["message"], "waiting for maintainer approval")
 
 
 class TestMergebotIgnoredChecks(unittest.TestCase):
@@ -630,11 +625,12 @@ class TestWatchPostHandoff(unittest.TestCase):
                 suppressed_failure_count=2,
             )
 
-        self.assertEqual(write_status.call_args.kwargs["phase"], "ready")
-        self.assertIn(
-            "ready for human merge; 2 suppressed failures",
-            write_status.call_args.kwargs["message"],
-        )
+        # Suppressed count is surfaced via the mux Sup column (ci_suppressed),
+        # not repeated in the Status text.
+        kwargs = write_status.call_args.kwargs
+        self.assertEqual(kwargs["phase"], "ready")
+        self.assertEqual(kwargs["message"], "ready for human merge")
+        self.assertEqual(kwargs["ci_suppressed"], 2)
 
     def test_handoff_status_surfaces_comment_failure_and_drci_warning(self):
         with mock.patch.object(handoff, "write_status") as write_status:
