@@ -5,11 +5,17 @@ the GitHub UI. Anything *rendered to nothing* or *visually hidden* in that
 UI is an injection vector -- instructions the maintainer didn't read.
 
 We strip the rendered-but-hidden surfaces before feeding text to the agent.
+
+Sanitizing is not declassifying: every function here preserves TaintedStr,
+so tainted input yields tainted output and stripping taint still requires
+an explicit, justified untaint() call at the consumer.
 """
 from __future__ import annotations
 
 import re
 import unicodedata
+
+from mergedog.taint import TaintedStr
 
 
 # Codepoint ranges that render to nothing (or to misleading visual order)
@@ -43,6 +49,17 @@ _DETAILS_TAGS_RE = re.compile(
 )
 
 
+def _retaint_like(original: str, result: str) -> str:
+    """Carry the input's taint over to a derived string.
+
+    re.sub / str-building lose the TaintedStr subclass; sanitizers must not
+    silently launder taint that way.
+    """
+    if isinstance(original, TaintedStr) and not isinstance(result, TaintedStr):
+        return TaintedStr(result, source=original.source)
+    return result
+
+
 def _escape_control(ch: str) -> str:
     code = ord(ch)
     if code <= 0xFF:
@@ -59,9 +76,9 @@ def sanitize_untrusted_text(text: str) -> str:
     invisible or layout-dependent, normalize whitespace to ASCII forms, and
     render process-control bytes visibly.
     """
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     out: list[str] = []
-    for ch in text:
+    for ch in normalized:
         if ch == "\n":
             out.append(ch)
             continue
@@ -79,19 +96,19 @@ def sanitize_untrusted_text(text: str) -> str:
             out.append(_escape_control(ch))
         else:
             out.append(ch)
-    return "".join(out)
+    return _retaint_like(text, "".join(out))
 
 
 def strip_html_comments(text: str) -> str:
-    return _HTML_COMMENT_RE.sub("", text)
+    return _retaint_like(text, _HTML_COMMENT_RE.sub("", text))
 
 
 def strip_invisible_unicode(text: str) -> str:
-    return _INVISIBLE_RE.sub("", text)
+    return _retaint_like(text, _INVISIBLE_RE.sub("", text))
 
 
 def unwrap_details(text: str) -> str:
-    return _DETAILS_TAGS_RE.sub("", text)
+    return _retaint_like(text, _DETAILS_TAGS_RE.sub("", text))
 
 
 def sanitize_untrusted_markdown(text: str) -> str:

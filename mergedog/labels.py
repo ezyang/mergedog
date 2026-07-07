@@ -19,7 +19,7 @@ from mergedog.log import log
 from mergedog.paths import REPO_SLUG, ROOT
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_markdown, sanitize_untrusted_text
-from mergedog.taint import taint, untaint
+from mergedog.taint import format_untainted, taint, untaint
 
 _LABEL_CACHE_TTL_SEC = 24 * 60 * 60
 _LABEL_CACHE_PATH = ROOT / "label-cache.json"
@@ -228,12 +228,13 @@ def autolabel_if_needed(pr: int, pr_data: dict) -> None:
 
     # Declassify: output is constrained to validated label names, limiting
     # blast radius of any injection in title/body/filenames.
-    prompt = _LABEL_PROMPT.format(
+    prompt = format_untainted(
+        _LABEL_PROMPT,
         labels_section=_format_labels_section(ciflow, release_notes, topic),
-        title=sanitize_untrusted_markdown(pr_data.get("title", "")),
+        title=untaint(sanitize_untrusted_markdown(pr_data.get("title", ""))),
         url=pr_data.get("url", ""),
         existing_labels=_prompt_text(", ".join(sorted(existing)) or "(none)"),
-        body=sanitize_untrusted_markdown(body),
+        body=untaint(sanitize_untrusted_markdown(body)),
         changed_files=_prompt_text(files_str) if files_str else "    (unavailable)",
     )
 

@@ -7,6 +7,7 @@ from mergedog.sanitize import (
     strip_invisible_unicode,
     unwrap_details,
 )
+from mergedog.taint import TaintedStr, taint
 
 
 ZWSP = chr(0x200B)
@@ -154,6 +155,43 @@ class TestSanitizeUntrustedMarkdown(unittest.TestCase):
         once = sanitize_untrusted_markdown(text)
         twice = sanitize_untrusted_markdown(once)
         self.assertEqual(once, twice)
+
+
+class TestTaintPreservation(unittest.TestCase):
+    """Sanitizing must not declassify: tainted in, tainted out."""
+
+    def test_sanitize_untrusted_text_preserves_taint(self):
+        result = sanitize_untrusted_text(taint(f"a{ZWSP}b\r\nc", "src"))
+        self.assertIsInstance(result, TaintedStr)
+        self.assertEqual(result.source, "src")
+
+    def test_sanitize_untrusted_markdown_preserves_taint(self):
+        result = sanitize_untrusted_markdown(
+            taint("<!--x--><details>y</details>", "src")
+        )
+        self.assertIsInstance(result, TaintedStr)
+        self.assertEqual(result.source, "src")
+        self.assertEqual(result, "y")
+
+    def test_strip_html_comments_preserves_taint(self):
+        self.assertIsInstance(
+            strip_html_comments(taint("a<!--b-->c", "src")), TaintedStr
+        )
+
+    def test_strip_invisible_unicode_preserves_taint(self):
+        self.assertIsInstance(
+            strip_invisible_unicode(taint(f"a{ZWSP}b", "src")), TaintedStr
+        )
+
+    def test_unwrap_details_preserves_taint(self):
+        self.assertIsInstance(
+            unwrap_details(taint("<details>x</details>", "src")), TaintedStr
+        )
+
+    def test_plain_str_stays_plain(self):
+        self.assertNotIsInstance(
+            sanitize_untrusted_markdown("clean text"), TaintedStr
+        )
 
 
 if __name__ == "__main__":
