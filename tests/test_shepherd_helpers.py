@@ -602,6 +602,36 @@ class TestInterventionCount(unittest.TestCase):
                 0,
             )
 
+    def test_counts_trusted_ghstack_heads_when_orig_subject_is_folded(self):
+        with tempfile.TemporaryDirectory() as d:
+            worktree = Path(d)
+            self._git(worktree, "init")
+            self._git(worktree, "config", "user.name", "Test User")
+            self._git(worktree, "config", "user.email", "test@example.com")
+            (worktree / "file.txt").write_text("")
+            self._git(worktree, "add", "file.txt")
+            self._git(worktree, "commit", "-m", "Contributor change")
+            ack_sha = self._git(worktree, "rev-parse", "HEAD")
+            orig_branch = self._git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+
+            self._git(worktree, "checkout", "-b", "ghstack-head")
+            rebase_sha = self._commit(
+                worktree, "[MERGEDOG] Rebase onto origin/main"
+            )
+            fix_sha = self._commit(worktree, "[MERGEDOG] Fix CI")
+            self._git(worktree, "checkout", orig_branch)
+
+            self.assertEqual(
+                _count_mergedog_interventions_since_ack(worktree, ack_sha),
+                0,
+            )
+            self.assertEqual(
+                _count_mergedog_interventions_since_ack(
+                    worktree, ack_sha, [ack_sha, rebase_sha, fix_sha]
+                ),
+                2,
+            )
+
 
 class TestInlineHunkComments(unittest.TestCase):
     def test_posts_missing_inline_hunk_marker(self):

@@ -770,9 +770,11 @@ def _latest_trusted_approval_sha(pr: int) -> str | None:
 def _count_mergedog_interventions_since_ack(
     worktree: Path,
     human_ack_sha: str | None,
+    trusted_shas: list[str] | None = None,
 ) -> int:
     if not human_ack_sha:
         return 0
+    local_count = 0
     try:
         proc = subprocess.run(
             [
@@ -790,13 +792,67 @@ def _count_mergedog_interventions_since_ack(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return 0
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        try:
+            local_count = max(0, int(proc.stdout.strip() or "0"))
+        except ValueError:
+            local_count = 0
+    return max(
+        local_count,
+        _count_trusted_mergedog_subjects_since_ack(
+            worktree, human_ack_sha, trusted_shas
+        ),
+    )
+
+
+def _commit_subject(worktree: Path, sha: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "show", "-s", "--format=%s", sha],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     if proc.returncode != 0:
+        return ""
+    return proc.stdout.splitlines()[0] if proc.stdout else ""
+
+
+def _count_trusted_mergedog_subjects_since_ack(
+    worktree: Path,
+    human_ack_sha: str,
+    trusted_shas: list[str] | None,
+) -> int:
+    """Count trusted [MERGEDOG] heads after the review baseline.
+
+    Ghstack fixups fold the LLM's commit into ``/orig`` and preserve the
+    contributor's original subject there. The audit subject survives on the
+    synthetic ``/head`` SHA we trust after publishing, so use the trust DB as a
+    fallback when branch history no longer exposes the [MERGEDOG] subjects.
+    """
+    if not trusted_shas:
         return 0
     try:
-        return max(0, int(proc.stdout.strip() or "0"))
+        ack_index = len(trusted_shas) - 1 - trusted_shas[::-1].index(
+            human_ack_sha
+        )
     except ValueError:
         return 0
+
+    count = 0
+    seen: set[str] = set()
+    for sha in trusted_shas[ack_index + 1:]:
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        if _commit_subject(worktree, sha).startswith("[MERGEDOG]"):
+            count += 1
+    return count
 
 
 def _refresh_status_prefix(
@@ -1929,6 +1985,14 @@ def _sync_fix_budget(
         trust.fix_budget_ack_sha = ack
         trust.fix_commits_pushed = 0
         trust.save()
+    elif self_pr and not trust.fix_budget_ack_sha:
+        # On self-authored PRs the trust seed is the moving PR head. Keep the
+        # first trusted head as the review baseline so restarts do not hide
+        # mergedog interventions that still need operator review.
+        trust.fix_budget_ack_sha = (
+            trust.trusted_shas[0] if trust.trusted_shas else ack
+        )
+        trust.save()
     elif trust.fix_commits_pushed:
         log(
             f"restored fix-commit count from previous run: "
@@ -2281,6 +2345,8 @@ def _shepherd_body(
     fix_commits_pushed = _sync_fix_budget(
         trust, human_ack_sha, reassess=reassess, self_pr=self_pr
     )
+    if self_pr and trust.fix_budget_ack_sha:
+        human_ack_sha = trust.fix_budget_ack_sha
     max_fix_attempts_status = max_fix_commits
     if max_fix_commits == 0:
         log("  fix cap:    disabled")
@@ -2292,7 +2358,7 @@ def _shepherd_body(
     last_approved: bool | None = None
     last_merging: bool | None = None
     intervention_count = _count_mergedog_interventions_since_ack(
-        worktree, human_ack_sha
+        worktree, human_ack_sha, trust.trusted_shas
     )
     _write_status_best_effort(
         pr,
@@ -2543,7 +2609,7 @@ def _shepherd_body(
                     f"{subject!r}. Manual intervention required."
                 )
             intervention_count = _count_mergedog_interventions_since_ack(
-                worktree, human_ack_sha
+                worktree, human_ack_sha, trust.trusted_shas
             )
             if (
                 merging is False

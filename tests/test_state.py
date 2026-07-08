@@ -138,6 +138,19 @@ class TestFixBudget(unittest.TestCase):
                 reloaded, "b" * 40, self_pr=True
             )
             self.assertEqual(count, 1)
+            self.assertEqual(reloaded.fix_budget_ack_sha, "a" * 40)
+
+    def test_self_pr_uses_first_trusted_sha_as_restart_baseline(self):
+        from mergedog import shepherd
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            trust = self._trust(tmp)
+            trust.trust("a" * 40)
+
+            shepherd._sync_fix_budget(trust, "b" * 40, self_pr=True)
+
+            self.assertEqual(trust.fix_budget_ack_sha, "a" * 40)
 
 
 if __name__ == "__main__":
