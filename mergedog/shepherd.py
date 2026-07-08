@@ -801,7 +801,13 @@ def _count_mergedog_interventions_since_ack(
 
 def _refresh_status_prefix(
     pr: int,
-) -> tuple[bool | None, bool | None, str | None, str | None]:
+) -> tuple[
+    bool | None,
+    bool | None,
+    str | None,
+    str | None,
+    list[str] | None,
+]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
     Called once per main-poll iteration. The prefix is the only signal
@@ -810,18 +816,21 @@ def _refresh_status_prefix(
     only reads the last log line per shepherd, so we have to thread the
     state through the log itself.
 
+    Also returns the live label names from the same lightweight PR poll so
+    the CI loop does not rely on a stale startup PR snapshot.
+
     Failures are silently swallowed: a bad ``gh`` call here shouldn't HALT
     over a UI nicety.
     """
     try:
         labels, decision, head_sha, merge_state = github.get_pr_poll_fields(pr)
     except Exception:
-        return None, None, None, None
+        return None, None, None, None, None
     merging = github.MERGING_LABEL in labels
     approved = (decision or "").upper() == "APPROVED"
     set_merging(merging)
     set_approved(approved)
-    return approved, merging, head_sha, merge_state
+    return approved, merging, head_sha, merge_state, labels
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -2470,11 +2479,29 @@ def _shepherd_body(
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            approved, merging, current, merge_state = _refresh_status_prefix(pr)
+            approved, merging, current, merge_state, observed_labels = (
+                _refresh_status_prefix(pr)
+            )
             if approved is not None:
                 last_approved = approved
             if merging is not None:
                 last_merging = merging
+            if TRUNK_LABEL is not None and observed_labels is not None:
+                observed_trunk_applied = TRUNK_LABEL in observed_labels
+                if observed_trunk_applied != trunk_applied:
+                    if observed_trunk_applied:
+                        log(
+                            f"{TRUNK_LABEL} label is already present; "
+                            "continuing with trunk CI"
+                        )
+                    else:
+                        log(
+                            f"{TRUNK_LABEL} label is no longer present; "
+                            "will request trunk CI again"
+                        )
+                        trunk_ci_gate = None
+                        stable_observation = None
+                    trunk_applied = observed_trunk_applied
             # 1. Verify the PR head is still trusted.
             if current is None:
                 current = github.get_pr_head_sha(pr)

@@ -91,6 +91,39 @@ class TestMergedogLabelManagement(unittest.TestCase):
         self.assertEqual(body.call_args.args[6], 0)
 
 
+class TestRefreshStatusPrefix(unittest.TestCase):
+    def test_returns_live_labels_from_poll_fields(self):
+        labels = ["ciflow/trunk", "merging"]
+        with (
+            mock.patch.object(
+                shepherd.github,
+                "get_pr_poll_fields",
+                return_value=(labels, "APPROVED", "abc", "CLEAN"),
+            ),
+            mock.patch.object(shepherd.github, "MERGING_LABEL", "merging"),
+            mock.patch.object(shepherd, "set_merging") as set_merging,
+            mock.patch.object(shepherd, "set_approved") as set_approved,
+        ):
+            self.assertEqual(
+                shepherd._refresh_status_prefix(123),
+                (True, True, "abc", "CLEAN", labels),
+            )
+
+        set_merging.assert_called_once_with(True)
+        set_approved.assert_called_once_with(True)
+
+    def test_returns_none_fields_when_poll_fails(self):
+        with mock.patch.object(
+            shepherd.github,
+            "get_pr_poll_fields",
+            side_effect=RuntimeError("boom"),
+        ):
+            self.assertEqual(
+                shepherd._refresh_status_prefix(123),
+                (None, None, None, None, None),
+            )
+
+
 class TestPreHandoffConflictRecovery(unittest.TestCase):
     class _Trust:
         trusted_shas = ["a" * 40]
@@ -154,7 +187,7 @@ class TestPreHandoffConflictRecovery(unittest.TestCase):
             mock.patch.object(
                 shepherd,
                 "_refresh_status_prefix",
-                return_value=(True, False, head, "DIRTY"),
+                return_value=(True, False, head, "DIRTY", []),
             ),
             mock.patch.object(
                 shepherd,
