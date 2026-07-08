@@ -177,6 +177,7 @@ from mergedog.paths import (  # noqa: E402
     status_file,
     worktree_dir,
 )
+from mergedog.project import get_project_policy  # noqa: E402
 from mergedog.shepherd import (  # noqa: E402
     EXIT_PR_NOT_ACTIONABLE,
     MAX_FIX_COMMITS,
@@ -184,6 +185,9 @@ from mergedog.shepherd import (  # noqa: E402
 )
 from mergedog.status import read_status  # noqa: E402
 from mergedog.state import TrustDB  # noqa: E402
+
+PROJECT = get_project_policy()
+CI_PROGRESS_TOTAL_ESTIMATE = PROJECT.ci_progress_total_estimate
 
 TITLE_TRUNC = 20
 JobKey = tuple[str, int]
@@ -638,7 +642,11 @@ def _waiting_on_external_human(structured: dict) -> bool:
     }
 
 
-def _ci_progress_bar(structured: dict | None) -> Text:
+def _ci_progress_bar(
+    structured: dict | None,
+    *,
+    estimated_total: int | None = None,
+) -> Text:
     """Two-tone CI progress bar for the mux table.
 
     Cyan while checks are still running; flips fully green the moment every
@@ -647,6 +655,9 @@ def _ci_progress_bar(structured: dict | None) -> Text:
     ``polling_ci``, or the status sidecar predates CI tracking. Active
     failures are surfaced by the Sup column and Status text, not the bar
     color, so a green bar means "all checks reported" rather than "all green".
+    While checks are pending, ``estimated_total`` is a denominator floor so
+    newly-materializing CI waves do not look half done immediately; larger
+    actual totals from extra CI labels still win.
     """
     if structured is None:
         return Text("")
@@ -655,13 +666,18 @@ def _ci_progress_bar(structured: dict | None) -> Text:
     if not isinstance(total, int) or not isinstance(done, int) or total <= 0:
         return Text("")
     done = max(0, min(done, total))
+    if estimated_total is None:
+        estimated_total = CI_PROGRESS_TOTAL_ESTIMATE
     if done >= total:
         filled = BAR_WIDTH
         fill_style = "green"
     else:
+        display_total = total
+        if isinstance(estimated_total, int) and estimated_total > 0:
+            display_total = max(total, estimated_total)
         # Never let rounding paint a full (green-implying) bar before every
         # check has actually reported.
-        filled = min(round(BAR_WIDTH * done / total), BAR_WIDTH - 1)
+        filled = min(round(BAR_WIDTH * done / display_total), BAR_WIDTH - 1)
         fill_style = "cyan"
     bar = Text()
     bar.append(BAR_FILLED * filled, style=fill_style)

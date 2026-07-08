@@ -1430,11 +1430,32 @@ class TestMuxCiColumns(unittest.TestCase):
         )
 
     def test_progress_bar_is_cyan_and_partial_while_running(self):
-        bar = mux._ci_progress_bar({"ci_done": 6, "ci_total": 12})
+        bar = mux._ci_progress_bar(
+            {"ci_done": 6, "ci_total": 12},
+            estimated_total=0,
+        )
 
         self.assertEqual(len(bar.plain), mux.BAR_WIDTH)
         self.assertEqual(bar.plain.count(mux.BAR_FILLED), 6)
         self.assertEqual(bar.spans[0].style, "cyan")
+
+    def test_progress_bar_uses_estimated_total_floor_while_running(self):
+        bar = mux._ci_progress_bar(
+            {"ci_done": 60, "ci_total": 120},
+            estimated_total=240,
+        )
+
+        self.assertEqual(len(bar.plain), mux.BAR_WIDTH)
+        self.assertEqual(bar.plain.count(mux.BAR_FILLED), 3)
+        self.assertEqual(bar.spans[0].style, "cyan")
+
+    def test_progress_bar_uses_actual_total_when_above_estimate(self):
+        bar = mux._ci_progress_bar(
+            {"ci_done": 120, "ci_total": 240},
+            estimated_total=100,
+        )
+
+        self.assertEqual(bar.plain.count(mux.BAR_FILLED), 6)
 
     def test_progress_bar_flips_green_when_all_checks_done(self):
         bar = mux._ci_progress_bar({"ci_done": 12, "ci_total": 12})
@@ -1442,10 +1463,22 @@ class TestMuxCiColumns(unittest.TestCase):
         self.assertEqual(bar.plain, mux.BAR_FILLED * mux.BAR_WIDTH)
         self.assertEqual(bar.spans[0].style, "green")
 
+    def test_progress_bar_all_done_ignores_estimate(self):
+        bar = mux._ci_progress_bar(
+            {"ci_done": 12, "ci_total": 12},
+            estimated_total=240,
+        )
+
+        self.assertEqual(bar.plain, mux.BAR_FILLED * mux.BAR_WIDTH)
+        self.assertEqual(bar.spans[0].style, "green")
+
     def test_progress_bar_never_fills_completely_before_done(self):
         # Rounding 99/100 up would paint a full (green-implying) bar; the
         # last cell must stay empty until every check has actually reported.
-        bar = mux._ci_progress_bar({"ci_done": 99, "ci_total": 100})
+        bar = mux._ci_progress_bar(
+            {"ci_done": 99, "ci_total": 100},
+            estimated_total=0,
+        )
 
         self.assertEqual(bar.plain.count(mux.BAR_FILLED), mux.BAR_WIDTH - 1)
         self.assertEqual(bar.spans[0].style, "cyan")
@@ -1495,12 +1528,13 @@ class TestMuxCiColumns(unittest.TestCase):
                     return_value=([job], {job: 0}),
                 ),
                 mock.patch.object(mux, "read_status", return_value=sidecar),
+                mock.patch.object(mux, "CI_PROGRESS_TOTAL_ESTIMATE", 200),
             ):
                 app._refresh()
 
         ci_cell, int_cell, sup_cell, status = table.rows[0][3:7]
         self.assertEqual(len(ci_cell.plain), mux.BAR_WIDTH)
-        self.assertEqual(ci_cell.plain.count(mux.BAR_FILLED), 10)
+        self.assertEqual(ci_cell.plain.count(mux.BAR_FILLED), 1)
         self.assertEqual(ci_cell.spans[0].style, "cyan")
         self.assertEqual(int_cell.plain, "2")
         self.assertEqual(sup_cell.plain, "1")
