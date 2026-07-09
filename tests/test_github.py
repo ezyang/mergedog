@@ -52,6 +52,13 @@ class TestGhRetries(unittest.TestCase):
 
         self.assertTrue(github._is_github_rate_limit_error(proc))
 
+    def test_bad_credentials_can_be_transient(self):
+        proc = subprocess.CompletedProcess(
+            ["gh"], 1, "", "gh: Bad credentials (HTTP 401)\n"
+        )
+
+        self.assertTrue(github._is_transient_gh_failure(proc))
+
     def test_governor_waits_when_minute_window_is_full(self):
         wait, calls = github._governor_wait_seconds(
             {"calls": [100.0, 110.0]},

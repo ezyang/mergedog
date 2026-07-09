@@ -509,10 +509,12 @@ def _is_gh_startup_crash(proc: subprocess.CompletedProcess[str]) -> bool:
 
 
 def _is_transient_gh_failure(proc: subprocess.CompletedProcess[str]) -> bool:
-    """True if the gh CLI failed due to a transient HTTP error."""
+    """True if the gh CLI failed in a way worth retrying briefly."""
     if proc.returncode == 0:
         return False
     if _is_gh_startup_crash(proc):
+        return True
+    if "bad credentials (http 401)" in (proc.stderr or "").lower():
         return True
     return is_transient_network_error(proc.stderr or "")
 
