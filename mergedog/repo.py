@@ -1054,7 +1054,7 @@ def attempt_rebase_main(worktree: Path, ref: str = "origin/main") -> tuple[str, 
     name, email = get_mergedog_identity()
     before = head_sha(worktree)
     proc = run(
-        ["git", "rebase", ref],
+        ["git", "rebase", "--reapply-cherry-picks", ref],
         cwd=worktree,
         check=False,
         env_extra=author_env(name, email),

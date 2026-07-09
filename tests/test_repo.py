@@ -43,6 +43,44 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+class TestAttemptRebaseMain(unittest.TestCase):
+    def test_reapplies_commit_that_was_landed_then_reverted_upstream(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "file.txt").write_text("base\n")
+            _git(root, "add", "file.txt")
+            _git(root, "commit", "-q", "-m", "base")
+
+            _git(root, "checkout", "-q", "-b", "topic")
+            (root / "file.txt").write_text("base\ntopic\n")
+            _git(root, "add", "file.txt")
+            _git(root, "commit", "-q", "-m", "topic change")
+            topic_sha = _git(root, "rev-parse", "HEAD")
+
+            _git(root, "checkout", "-q", "-b", "upstream", "HEAD^")
+            (root / "upstream.txt").write_text("upstream\n")
+            _git(root, "add", "upstream.txt")
+            _git(root, "commit", "-q", "-m", "upstream change")
+            _git(root, "cherry-pick", topic_sha)
+            _git(root, "revert", "--no-edit", "HEAD")
+
+            _git(root, "checkout", "-q", "topic")
+            with mock.patch.object(
+                repo,
+                "get_mergedog_identity",
+                return_value=("Tester", "tester@example.com"),
+            ):
+                status, new_sha = repo.attempt_rebase_main(root, ref="upstream")
+
+            self.assertEqual(status, "ok")
+            self.assertIsNotNone(new_sha)
+            self.assertNotEqual(new_sha, topic_sha)
+            self.assertEqual((root / "file.txt").read_text(), "base\ntopic\n")
+
+
 class TestPatchIdMatchesAny(unittest.TestCase):
     def test_matches_rebased_equivalent_commit(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(
