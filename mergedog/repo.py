@@ -137,6 +137,18 @@ _DIFF_HUNK_RE = re.compile(
 )
 
 
+def _content_without_whitespace(lines: Sequence[str]) -> str:
+    return "".join("".join(line.split()) for line in lines)
+
+
+def _hunk_has_nontrivial_change(
+    removed_lines: Sequence[str], added_lines: Sequence[str]
+) -> bool:
+    return _content_without_whitespace(removed_lines) != _content_without_whitespace(
+        added_lines
+    )
+
+
 def get_mergedog_identity() -> tuple[str, str]:
     """Return ``(name, email)`` to use for mergedog-authored commits.
 
@@ -564,7 +576,7 @@ def commit_message(worktree: Path, ref: str = "HEAD") -> str:
 def diff_hunk_comment_targets(
     worktree: Path, sha: str
 ) -> list[DiffHunkCommentTarget]:
-    """Return the top changed line of each hunk in ``sha``'s patch."""
+    """Return the top changed line of each nontrivial hunk in ``sha``'s patch."""
     diff = run(
         [
             "git",
@@ -586,15 +598,21 @@ def diff_hunk_comment_targets(
     new_line = 0
     first_left: DiffHunkCommentTarget | None = None
     first_right: DiffHunkCommentTarget | None = None
+    removed_lines: list[str] = []
+    added_lines: list[str] = []
     in_hunk = False
 
     def flush_hunk() -> None:
         nonlocal first_left, first_right
         target = first_right or first_left
-        if target is not None:
+        if target is not None and _hunk_has_nontrivial_change(
+            removed_lines, added_lines
+        ):
             targets.append(target)
         first_left = None
         first_right = None
+        removed_lines.clear()
+        added_lines.clear()
 
     for line in diff.splitlines():
         if line.startswith("diff --git "):
@@ -619,11 +637,13 @@ def diff_hunk_comment_targets(
         if not in_hunk:
             continue
         if line.startswith("+"):
+            added_lines.append(line[1:])
             path = new_path if new_path != "/dev/null" else old_path
             if first_right is None and path and path != "/dev/null":
                 first_right = DiffHunkCommentTarget(path, "RIGHT", new_line)
             new_line += 1
         elif line.startswith("-"):
+            removed_lines.append(line[1:])
             path = old_path if old_path != "/dev/null" else new_path
             if first_left is None and path and path != "/dev/null":
                 first_left = DiffHunkCommentTarget(path, "LEFT", old_line)

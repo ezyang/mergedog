@@ -117,6 +117,26 @@ class TestDiffHunkCommentTargets(unittest.TestCase):
                 ],
             )
 
+    def test_skips_whitespace_only_hunks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _git(root, "init", "-q")
+            _git(root, "config", "user.name", "Tester")
+            _git(root, "config", "user.email", "tester@example.com")
+            (root / "file.txt").write_text("one\ntwo\nthree\nfour\n")
+            _git(root, "add", "file.txt")
+            _git(root, "commit", "-q", "-m", "base")
+
+            (root / "file.txt").write_text("one\n  two  \nthree\nFOUR\n")
+            _git(root, "add", "file.txt")
+            _git(root, "commit", "-q", "-m", "[MERGEDOG] fix")
+            sha = _git(root, "rev-parse", "HEAD")
+
+            self.assertEqual(
+                repo.diff_hunk_comment_targets(root, sha),
+                [repo.DiffHunkCommentTarget("file.txt", "RIGHT", 4)],
+            )
+
 
 class TestTrunkRevertContext(unittest.TestCase):
     def test_revert_context_is_cautious_about_spurious_failures(self):
