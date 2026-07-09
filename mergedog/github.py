@@ -894,8 +894,8 @@ def get_pr_head_sha(pr: int) -> str:
 
 def get_pr_poll_fields(
     pr: int,
-) -> tuple[list[str], str | None, str | None, str | None]:
-    """Return ``(labels, reviewDecision, headRefOid, mergeStateStatus)``."""
+) -> tuple[list[str], str | None, str | None, str | None, str | None]:
+    """Return ``(labels, reviewDecision, headRefOid, mergeStateStatus, state)``."""
     data = _gh_json(
         [
             "pr",
@@ -904,17 +904,19 @@ def get_pr_poll_fields(
             "--repo",
             REPO,
             "--json",
-            "labels,reviewDecision,headRefOid,mergeStateStatus",
+            "labels,reviewDecision,headRefOid,mergeStateStatus,state",
         ]
     )
     labels = [lb.get("name", "") for lb in data.get("labels", []) or []]
     head = data.get("headRefOid")
     merge_state = data.get("mergeStateStatus")
+    state = data.get("state")
     return (
         labels,
         data.get("reviewDecision") or None,
         head if isinstance(head, str) else None,
         merge_state if isinstance(merge_state, str) else None,
+        state if isinstance(state, str) else None,
     )
 
 

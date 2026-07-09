@@ -463,11 +463,12 @@ class TestPrPollFields(unittest.TestCase):
                 "reviewDecision": "APPROVED",
                 "headRefOid": "abc",
                 "mergeStateStatus": "DIRTY",
+                "state": "OPEN",
             },
         ) as gh_json:
             self.assertEqual(
                 github.get_pr_poll_fields(123),
-                (["ciflow/trunk"], "APPROVED", "abc", "DIRTY"),
+                (["ciflow/trunk"], "APPROVED", "abc", "DIRTY", "OPEN"),
             )
 
         self.assertEqual(
@@ -479,7 +480,7 @@ class TestPrPollFields(unittest.TestCase):
                 "--repo",
                 github.REPO,
                 "--json",
-                "labels,reviewDecision,headRefOid,mergeStateStatus",
+                "labels,reviewDecision,headRefOid,mergeStateStatus,state",
             ],
         )
 

@@ -855,6 +855,18 @@ def _count_trusted_mergedog_subjects_since_ack(
     return count
 
 
+def _trunk_ci_requested_by_labels(labels: list[str] | None) -> bool:
+    if TRUNK_LABEL is None:
+        return True
+    if labels is None:
+        return False
+    return TRUNK_LABEL in labels or github.MERGING_LABEL in labels
+
+
+def _pr_label_names(pr_data: dict) -> list[str]:
+    return [lb.get("name", "") for lb in pr_data.get("labels", []) or []]
+
+
 def _refresh_status_prefix(
     pr: int,
 ) -> tuple[
@@ -863,6 +875,7 @@ def _refresh_status_prefix(
     str | None,
     str | None,
     list[str] | None,
+    str | None,
 ]:
     """Toggle the [MERGING]/[APPROVED] log prefix based on the PR's state.
 
@@ -872,21 +885,23 @@ def _refresh_status_prefix(
     only reads the last log line per shepherd, so we have to thread the
     state through the log itself.
 
-    Also returns the live label names from the same lightweight PR poll so
-    the CI loop does not rely on a stale startup PR snapshot.
+    Also returns the live label names and PR state from the same lightweight
+    PR poll so the CI loop does not rely on a stale startup PR snapshot.
 
     Failures are silently swallowed: a bad ``gh`` call here shouldn't HALT
     over a UI nicety.
     """
     try:
-        labels, decision, head_sha, merge_state = github.get_pr_poll_fields(pr)
+        labels, decision, head_sha, merge_state, state = (
+            github.get_pr_poll_fields(pr)
+        )
     except Exception:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     merging = github.MERGING_LABEL in labels
     approved = (decision or "").upper() == "APPROVED"
     set_merging(merging)
     set_approved(approved)
-    return approved, merging, head_sha, merge_state, labels
+    return approved, merging, head_sha, merge_state, labels, state
 
 
 def _is_ghstack(pr_data: dict) -> bool:
@@ -2505,11 +2520,7 @@ def _shepherd_body(
     # always owns the land decision (and the skip decision, when claude
     # judges spurious).
     while True:
-        trunk_applied = (
-            True
-            if TRUNK_LABEL is None
-            else github.has_label(pr_data, TRUNK_LABEL)
-        )
+        trunk_applied = _trunk_ci_requested_by_labels(_pr_label_names(pr_data))
         last_status: str | None = None
         # (status, check_count) we last observed. Becomes the anchor for
         # the stability window: when it changes (new check arrives,
@@ -2545,21 +2556,34 @@ def _shepherd_body(
         # out (via the handoff path) when CI is green and the trunk
         # label is on.
         while True:
-            approved, merging, current, merge_state, observed_labels = (
+            approved, merging, current, merge_state, observed_labels, pr_state = (
                 _refresh_status_prefix(pr)
             )
+            if pr_state is not None and pr_state != "OPEN":
+                complete(
+                    f"PR is not open (state={pr_state}); shepherd complete",
+                    code=EXIT_PR_NOT_ACTIONABLE,
+                )
             if approved is not None:
                 last_approved = approved
             if merging is not None:
                 last_merging = merging
             if TRUNK_LABEL is not None and observed_labels is not None:
-                observed_trunk_applied = TRUNK_LABEL in observed_labels
+                observed_trunk_applied = _trunk_ci_requested_by_labels(
+                    observed_labels
+                )
                 if observed_trunk_applied != trunk_applied:
                     if observed_trunk_applied:
-                        log(
-                            f"{TRUNK_LABEL} label is already present; "
-                            "continuing with trunk CI"
-                        )
+                        if github.MERGING_LABEL in observed_labels:
+                            log(
+                                f"{github.MERGING_LABEL} label is already "
+                                "present; continuing with merge CI"
+                            )
+                        else:
+                            log(
+                                f"{TRUNK_LABEL} label is already present; "
+                                "continuing with trunk CI"
+                            )
                     else:
                         log(
                             f"{TRUNK_LABEL} label is no longer present; "

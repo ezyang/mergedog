@@ -29,6 +29,7 @@ from mergedog.shepherd import (
     _current_spurious_failure_names,
     _sparse_green_needs_base_refresh,
     _spurious_check_names_from_checks,
+    _trunk_ci_requested_by_labels,
     _trunk_wave_has_started,
     _workflow_state_fingerprint,
     describe_log_state,
@@ -98,7 +99,7 @@ class TestRefreshStatusPrefix(unittest.TestCase):
             mock.patch.object(
                 shepherd.github,
                 "get_pr_poll_fields",
-                return_value=(labels, "APPROVED", "abc", "CLEAN"),
+                return_value=(labels, "APPROVED", "abc", "CLEAN", "OPEN"),
             ),
             mock.patch.object(shepherd.github, "MERGING_LABEL", "merging"),
             mock.patch.object(shepherd, "set_merging") as set_merging,
@@ -106,7 +107,7 @@ class TestRefreshStatusPrefix(unittest.TestCase):
         ):
             self.assertEqual(
                 shepherd._refresh_status_prefix(123),
-                (True, True, "abc", "CLEAN", labels),
+                (True, True, "abc", "CLEAN", labels, "OPEN"),
             )
 
         set_merging.assert_called_once_with(True)
@@ -120,7 +121,7 @@ class TestRefreshStatusPrefix(unittest.TestCase):
         ):
             self.assertEqual(
                 shepherd._refresh_status_prefix(123),
-                (None, None, None, None, None),
+                (None, None, None, None, None, None),
             )
 
 
@@ -187,7 +188,7 @@ class TestPreHandoffConflictRecovery(unittest.TestCase):
             mock.patch.object(
                 shepherd,
                 "_refresh_status_prefix",
-                return_value=(True, False, head, "DIRTY", []),
+                return_value=(True, False, head, "DIRTY", [], "OPEN"),
             ),
             mock.patch.object(
                 shepherd,
@@ -841,6 +842,9 @@ class TestSparseGreenDetection(unittest.TestCase):
 
 
 class TestTrunkWaveGate(unittest.TestCase):
+    def test_merging_label_counts_as_trunk_ci_requested(self):
+        self.assertTrue(_trunk_ci_requested_by_labels(["merging"]))
+
     def test_unchanged_pre_trunk_snapshot_has_not_started(self):
         gate = _TrunkCiGate(
             head_sha="abc",
