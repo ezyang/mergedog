@@ -263,6 +263,13 @@ def _is_github_rate_limit_error(proc: subprocess.CompletedProcess[str]) -> bool:
     )
 
 
+def _is_missing_label_error(proc: subprocess.CompletedProcess[str]) -> bool:
+    if proc.returncode == 0:
+        return False
+    text = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+    return "label does not exist" in text and "http 404" in text
+
+
 def _load_governor_state(path: Path | None = None) -> dict[str, object]:
     path = path or GH_API_GOVERNOR_STATE
     try:
@@ -1058,15 +1065,19 @@ def add_label(pr: int, label: str, *, loud: bool = True) -> None:
 
 
 def remove_label(pr: int, label: str) -> None:
-    _gh(
-        [
-            "api",
-            "-X",
-            "DELETE",
-            f"repos/{REPO}/issues/{pr}/labels/{quote(label, safe='')}",
-        ],
-        loud=True,
-    )
+    args = [
+        "api",
+        "-X",
+        "DELETE",
+        f"repos/{REPO}/issues/{pr}/labels/{quote(label, safe='')}",
+    ]
+    proc = _gh(args, check=False, loud=True)
+    if proc.returncode == 0:
+        return
+    if _is_missing_label_error(proc):
+        log(f"label {label!r} already absent from PR #{pr}")
+        return
+    _raise_gh_failure(proc, args)
 
 
 def post_pr_comment(pr: int, body: str) -> None:

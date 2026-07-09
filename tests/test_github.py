@@ -421,7 +421,8 @@ class TestGhRetries(unittest.TestCase):
         )
 
     def test_remove_label_uses_rest_issue_endpoint(self):
-        with mock.patch.object(github, "_gh") as gh:
+        proc = subprocess.CompletedProcess(["gh"], 0, "", "")
+        with mock.patch.object(github, "_gh", return_value=proc) as gh:
             github.remove_label(123, "topic: bug fixes")
 
         gh.assert_called_once_with(
@@ -431,8 +432,26 @@ class TestGhRetries(unittest.TestCase):
                 "DELETE",
                 f"repos/{github.REPO}/issues/123/labels/topic%3A%20bug%20fixes",
             ],
+            check=False,
             loud=True,
         )
+
+    def test_remove_label_treats_missing_label_as_success(self):
+        proc = subprocess.CompletedProcess(
+            ["gh"],
+            1,
+            '{"message":"Label does not exist"}',
+            "gh: Label does not exist (HTTP 404)\n",
+        )
+        with (
+            mock.patch.object(github, "_gh", return_value=proc),
+            mock.patch.object(github, "_raise_gh_failure") as raise_failure,
+            mock.patch.object(github, "log") as log,
+        ):
+            github.remove_label(123, "mergedog")
+
+        raise_failure.assert_not_called()
+        log.assert_called_once_with("label 'mergedog' already absent from PR #123")
 
 
 class TestPrMergeCommit(unittest.TestCase):
