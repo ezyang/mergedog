@@ -1383,12 +1383,28 @@ def _ghstack_submit_trusted(
     """
     trust.pending_publish_orig_sha = repo.head_sha(worktree)
     trust.save()
-    repo.ghstack_submit(worktree, message)
+    try:
+        repo.ghstack_submit(worktree, message)
+    except Exception as e:
+        if _ghstack_error_has_no_submit_commit(e):
+            trust.pending_publish_orig_sha = ""
+            trust.save()
+        raise
     new_head_sha = repo.fetch_ghstack_head(head_ref)
     trust.pending_publish_orig_sha = ""
     trust.trust(new_head_sha)
     trust.save()
     return new_head_sha
+
+
+def _ghstack_error_has_no_submit_commit(exc: Exception) -> bool:
+    parts = [
+        str(exc),
+        str(getattr(exc, "output", "") or ""),
+        str(getattr(exc, "stdout", "") or ""),
+        str(getattr(exc, "stderr", "") or ""),
+    ]
+    return "doesn't seem to be a commit that can be submitted" in "\n".join(parts)
 
 
 def _recover_pending_ghstack_publish(
@@ -1590,6 +1606,7 @@ def _rebase_ghstack_onto_main(
         repo.fetch_origin()
 
     target = _select_refresh_target(worktree, target_ref, target_reason)
+    orig_sha_before = repo.head_sha(worktree)
 
     try:
         status, new_orig_sha = repo.attempt_rebase_main(worktree, ref=target)
@@ -1646,6 +1663,13 @@ def _rebase_ghstack_onto_main(
             )
 
     assert new_orig_sha is not None
+    if repo.is_ancestor_in_worktree(worktree, new_orig_sha, "origin/main"):
+        repo.set_worktree_to_sha(worktree, orig_sha_before)
+        die(
+            "rebase dropped /orig onto a commit already reachable from "
+            "origin/main; the PR change appears to be already applied "
+            "upstream, so mergedog did not run ghstack submit"
+        )
     log(f"rebased /orig to {new_orig_sha[:12]}; re-publishing via ghstack")
     _wait_for_no_active_sev(
         "re-publishing rebased /orig via ghstack submit",

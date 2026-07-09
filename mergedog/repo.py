@@ -673,6 +673,15 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
     return proc.returncode == 0
 
 
+def is_ancestor_in_worktree(worktree: Path, ancestor: str, descendant: str) -> bool:
+    proc = run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=worktree,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def _reverts_between(since: str, until: str) -> list[tuple[str, str]]:
     """Return (sha, subject) pairs for revert commits in ``since..until``.
 

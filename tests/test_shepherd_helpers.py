@@ -19,6 +19,7 @@ from mergedog.shepherd import (
     _filter_spurious_failed_jobs,
     _green_check_count_is_sparse,
     _has_workflow_gate_for_more_checks,
+    _ghstack_error_has_no_submit_commit,
     _inconclusive_refresh_target,
     _is_ghstack_mergeability_failure,
     _llm_halt_message,
@@ -1264,6 +1265,114 @@ class TestGhstackSubmitTrusted(unittest.TestCase):
         self.assertEqual(recorded_at_submit, ["b" * 40])
         self.assertEqual(trust.pending_publish_orig_sha, "")
         self.assertIn("a" * 40, trust.trusted_shas)
+
+    def test_clears_pending_record_when_ghstack_has_no_submit_commit(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+
+        with mock.patch.object(
+            shepherd.repo, "head_sha", return_value="b" * 40
+        ), mock.patch.object(
+            shepherd.repo,
+            "ghstack_submit",
+            side_effect=RuntimeError(
+                "[] doesn't seem to be a commit that can be submitted!"
+            ),
+        ), mock.patch.object(
+            shepherd.repo, "fetch_ghstack_head"
+        ) as fetch_head:
+            with self.assertRaises(RuntimeError):
+                shepherd._ghstack_submit_trusted(
+                    Path("/tmp/wt"), "gh/u/1/head", trust, "msg"
+                )
+
+        self.assertEqual(trust.pending_publish_orig_sha, "")
+        fetch_head.assert_not_called()
+
+    def test_keeps_pending_record_when_ghstack_failure_may_have_pushed(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1)
+        trust.save = mock.Mock()
+
+        with mock.patch.object(
+            shepherd.repo, "head_sha", return_value="b" * 40
+        ), mock.patch.object(
+            shepherd.repo,
+            "ghstack_submit",
+            side_effect=RuntimeError("network failed after submit started"),
+        ):
+            with self.assertRaises(RuntimeError):
+                shepherd._ghstack_submit_trusted(
+                    Path("/tmp/wt"), "gh/u/1/head", trust, "msg"
+                )
+
+        self.assertEqual(trust.pending_publish_orig_sha, "b" * 40)
+
+
+class TestGhstackSubmitErrorClassification(unittest.TestCase):
+    def test_detects_no_submit_commit_from_subprocess_output(self):
+        error = subprocess.CalledProcessError(
+            1,
+            ["ghstack"],
+            stderr=(
+                "RuntimeError: [] doesn't seem to be a commit that can be "
+                "submitted!"
+            ),
+        )
+
+        self.assertTrue(_ghstack_error_has_no_submit_commit(error))
+
+    def test_rejects_unrelated_submit_failure(self):
+        self.assertFalse(
+            _ghstack_error_has_no_submit_commit(RuntimeError("network down"))
+        )
+
+
+class TestRebaseGhstackOntoMain(unittest.TestCase):
+    def test_halts_when_rebase_drops_orig_commit(self):
+        from mergedog.state import TrustDB
+
+        trust = TrustDB(pr=1)
+        worktree = Path("/tmp/wt")
+
+        with (
+            mock.patch.object(
+                shepherd, "_wait_for_no_active_sev", return_value=False
+            ),
+            mock.patch.object(
+                shepherd, "_select_refresh_target", return_value="origin/main"
+            ),
+            mock.patch.object(
+                shepherd.repo, "head_sha", return_value="a" * 40
+            ),
+            mock.patch.object(
+                shepherd.repo,
+                "attempt_rebase_main",
+                return_value=("ok", "b" * 40),
+            ),
+            mock.patch.object(
+                shepherd.repo, "is_ancestor_in_worktree", return_value=True
+            ) as is_ancestor,
+            mock.patch.object(shepherd.repo, "set_worktree_to_sha") as reset,
+            mock.patch.object(shepherd, "_ghstack_submit_trusted") as submit,
+            mock.patch.object(shepherd, "die", side_effect=SystemExit) as die,
+        ):
+            with self.assertRaises(SystemExit):
+                shepherd._rebase_ghstack_onto_main(
+                    123,
+                    worktree,
+                    "gh/u/1/head",
+                    trust,
+                    ignore_sev=False,
+                )
+
+        is_ancestor.assert_called_once_with(worktree, "b" * 40, "origin/main")
+        reset.assert_called_once_with(worktree, "a" * 40)
+        submit.assert_not_called()
+        self.assertIn("rebase dropped /orig", die.call_args.args[0])
 
 
 class TestCiSevStatus(unittest.TestCase):
