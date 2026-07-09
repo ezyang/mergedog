@@ -39,6 +39,15 @@ class TestEarlierStackSection(unittest.TestCase):
         self.assertIn("rather than unrelated trunk drift", prompt)
         self.assertIn("standalone test-policy cleanup", prompt)
 
+    def test_fix_prompt_requires_original_failing_test_in_commit_message(self):
+        prompt = render_fix_prompt(**_BASE_KWARGS)
+
+        self.assertIn("The exact failing test, test target, or CI test command", prompt)
+        self.assertIn("Copy it verbatim", prompt)
+        self.assertIn("reviewer can reproduce the original CI failure", prompt)
+        self.assertIn("logs do not expose a precise test or command", prompt)
+        self.assertIn("Failing test: test/test_torch.py::TestTorch", prompt)
+
     def test_section_omitted_when_no_earlier_members(self):
         prompt = render_fix_prompt(**_BASE_KWARGS)
         self.assertNotIn("earlier-stack status", prompt)

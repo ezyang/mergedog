@@ -104,6 +104,11 @@ Commit message contract (when you do commit):
   - Body (separated from subject by a blank line) MUST contain:
       * Which CI job(s) failed -- the workflow / job name as it appears in \
         the logs below.
+      * The exact failing test, test target, or CI test command when the \
+        logs expose one. Copy it verbatim (for example \
+        ``test/test_foo.py::TestFoo::test_bar`` or ``python test/run_test.py \
+        ...``) so a reviewer can reproduce the original CI failure. If the \
+        logs do not expose a precise test or command, explicitly say that.
       * The salient line(s) of the failure -- ideally the actual error \
         message, abridged to a few lines if it's long. The reviewer must be \
         able to see WHAT went wrong without opening CI.
@@ -118,6 +123,7 @@ Commit message contract (when you do commit):
       [MERGEDOG] Fix CUDA dispatch for set_print_sci_mode
 
       Failing job: pull / linux-jammy-cuda12.1-py3.10 / test (default)
+      Failing test: test/test_torch.py::TestTorch::test_set_print_sci_mode_cuda
       Error:
         RuntimeError: dispatch key CUDA not registered for set_print_sci_mode
 
