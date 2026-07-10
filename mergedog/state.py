@@ -52,6 +52,10 @@ class TrustDB:
     # failures. Persisted so restarts can't grant a fresh budget and
     # spam the merge command during an outage. Reset by --reassess.
     merge_auto_retries: int = 0
+    # Conflict resolutions performed by the LLM since the mux last reset
+    # the counter for a scheduled land. A scheduled land may auto-trigger
+    # merge only when this remains zero across restarts.
+    conflict_resolutions_pushed: int = 0
     # The /orig commit a ghstack submit is about to publish. Between
     # ghstack's push and trusting the resulting /head SHA there is a
     # window where a kill leaves the PR head untrusted (and the next run
@@ -77,6 +81,7 @@ class TrustDB:
             "fix_commits_pushed",
             "fix_budget_ack_sha",
             "merge_auto_retries",
+            "conflict_resolutions_pushed",
             "pending_publish_orig_sha",
         }
     )
@@ -103,6 +108,9 @@ class TrustDB:
                 fix_commits_pushed=int(data.get("fix_commits_pushed", 0)),
                 fix_budget_ack_sha=data.get("fix_budget_ack_sha", ""),
                 merge_auto_retries=int(data.get("merge_auto_retries", 0)),
+                conflict_resolutions_pushed=int(
+                    data.get("conflict_resolutions_pushed", 0)
+                ),
                 pending_publish_orig_sha=data.get(
                     "pending_publish_orig_sha", ""
                 ),
@@ -134,6 +142,9 @@ class TrustDB:
                 "fix_commits_pushed": self.fix_commits_pushed,
                 "fix_budget_ack_sha": self.fix_budget_ack_sha,
                 "merge_auto_retries": self.merge_auto_retries,
+                "conflict_resolutions_pushed": (
+                    self.conflict_resolutions_pushed
+                ),
                 "pending_publish_orig_sha": self.pending_publish_orig_sha,
             },
             indent=2,

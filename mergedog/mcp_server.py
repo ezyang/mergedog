@@ -61,6 +61,8 @@ mcp = FastMCP(
         "  rebase <pr>        — restart with --rebase\n"
         "  rebase all         — rebase every current mux-session job\n"
         "  reassess <pr>      — restart with --reassess\n"
+        "  hold <pr> <when>   — keep green during a freeze and schedule land\n"
+        "  unhold <pr>        — clear a scheduled land\n"
         "  mark-spurious <pr> — snapshot current failed/cancelled checks "
         "as spurious and restart\n"
         "  ignore-sev [on|off] — toggle mux-wide --ignore-sev\n"
@@ -84,7 +86,8 @@ async def mergedog_command(command: str) -> str:
         "Get the current status of all PR jobs tracked by the mux. "
         "Returns JSON with kind, pr, title, state "
         "(running/exited_ok/exited_error), phase, status, last_log, "
-        "shepherd_status_stale, and shepherd_status for each job."
+        "shepherd_status_stale, shepherd_status, and optional scheduled_land "
+        "for each job."
     ),
 )
 async def mergedog_status() -> str:

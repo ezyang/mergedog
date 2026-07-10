@@ -38,6 +38,7 @@ def write_status(
     ci_suppressed: int | None = None,
     fix_attempts: int | None = None,
     max_fix_attempts: int | None = None,
+    conflict_resolution_count: int | None = None,
     handoff_comment_ok: bool | None = None,
     suppression_warning: str | None = None,
     path: Path | None = None,
@@ -68,6 +69,7 @@ def write_status(
         "ci_suppressed": ci_suppressed,
         "fix_attempts": fix_attempts,
         "max_fix_attempts": max_fix_attempts,
+        "conflict_resolution_count": conflict_resolution_count,
         "handoff_comment_ok": handoff_comment_ok,
         "suppression_warning": suppression_warning,
     }

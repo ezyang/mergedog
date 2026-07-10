@@ -3,6 +3,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -1251,6 +1252,55 @@ class TestMuxJobPersistence(unittest.TestCase):
 
         self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
 
+    def test_respawn_preserves_scheduled_land_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prs_file = root / "mux-prs.json"
+            jobs_file = root / "mux-jobs.json"
+            jobs_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "kind": "pr",
+                            "pr": 123,
+                            "rc": 1,
+                            "scheduled_land": {
+                                "land_at": "2026-07-15T09:00:00-07:00",
+                                "prep_at": "2026-07-14T09:00:00-07:00",
+                                "auto_merge": False,
+                                "fix_commits_baseline": 2,
+                            },
+                        }
+                    ]
+                )
+            )
+
+            with (
+                mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
+                mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
+            ):
+                records = mux._read_mux_job_records()
+                mux._add_mux_job(mux._pr_job(123))
+                jobs_data = json.loads(jobs_file.read_text())
+
+        scheduled = records[mux._pr_job(123)]["scheduled_land"]
+        self.assertEqual(scheduled["fix_commits_baseline"], 2)
+        self.assertEqual(
+            jobs_data,
+            [
+                {
+                    "kind": "pr",
+                    "pr": 123,
+                    "scheduled_land": {
+                        "land_at": "2026-07-15T09:00:00-07:00",
+                        "prep_at": "2026-07-14T09:00:00-07:00",
+                        "auto_merge": False,
+                        "fix_commits_baseline": 2,
+                    },
+                }
+            ],
+        )
+
     def test_restart_unparks_job(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -1290,6 +1340,168 @@ class TestMuxJobPersistence(unittest.TestCase):
         # Un-parking a job that was already tracked must not re-stamp the
         # label -- it only joins the mux once.
         add_label.assert_not_called()
+
+
+class TestScheduledLand(unittest.TestCase):
+    def _app(self, scheduled: mux.ScheduledLand, *, rc=None):
+        job = mux._pr_job(123)
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.procs = {job: (_FakeProc(rc), object(), Path("123.log"))}
+        app._parked_jobs = {}
+        app._cleanup_jobs = set()
+        app._unresumable_jobs = set()
+        app._scheduled_lands = {job: scheduled}
+        app._job_started_at = {job: 1.0}
+        app._pr_titles = {}
+        app.notify = mock.Mock()
+        return app, job
+
+    def test_parse_hold_args_defaults_to_one_day_prep_and_auto_merge(self):
+        parsed = mux._parse_hold_args(["123", "2026-07-15T09:00:00-07:00"])
+
+        self.assertIsInstance(parsed, tuple)
+        pr, scheduled = parsed
+        self.assertEqual(pr, 123)
+        self.assertEqual(
+            scheduled.prep_at.isoformat(),
+            "2026-07-14T09:00:00-07:00",
+        )
+        self.assertTrue(scheduled.auto_merge)
+
+    def test_prep_rebase_restarts_once_when_due(self):
+        now = datetime.now().astimezone()
+        scheduled = mux.ScheduledLand(
+            land_at=now + timedelta(days=1),
+            prep_at=now - timedelta(minutes=1),
+        )
+        app, job = self._app(scheduled)
+
+        with (
+            mock.patch.object(app, "_persist_mux_records") as persist,
+            mock.patch.object(app, "_restart_scheduled_job", return_value="[123] started") as restart,
+        ):
+            app._process_scheduled_lands_once()
+
+        self.assertTrue(app._scheduled_lands[job].prep_started_at)
+        restart.assert_called_once_with(job, ["--rebase"])
+        persist.assert_called_once()
+
+    def test_auto_merge_posts_when_due_and_clean(self):
+        now = datetime.now().astimezone()
+        scheduled = mux.ScheduledLand(
+            land_at=now - timedelta(minutes=1),
+            prep_at=None,
+            fix_commits_baseline=2,
+        )
+        app, _job = self._app(scheduled)
+        status = {
+            "phase": "watching_merge",
+            "waiting_on": "human_merge",
+            "updated_at": now.isoformat(),
+            "approved": True,
+            "ci_failed": 0,
+        }
+        trust = mock.Mock(conflict_resolutions_pushed=0, fix_commits_pushed=2)
+
+        with (
+            mock.patch.object(mux, "PROJECT", mock.Mock(merge_command="@bot merge")),
+            mock.patch.object(app, "_persist_mux_records") as persist,
+            mock.patch.object(mux, "read_status", return_value=status),
+            mock.patch.object(mux.TrustDB, "load_or_create", return_value=trust),
+            mock.patch.object(mux, "_own_merge_command_comment_iso", return_value=None),
+            mock.patch.object(mux.github, "post_pr_comment") as post,
+        ):
+            app._process_scheduled_lands_once()
+
+        post.assert_called_once_with(123, "@bot merge")
+        self.assertTrue(app._scheduled_lands[mux._pr_job(123)].merge_posted_at)
+        persist.assert_called_once()
+
+    def test_ready_to_merge_accepts_post_handoff_ready_shape_only(self):
+        self.assertFalse(
+            mux._scheduled_status_ready_to_merge(
+                {
+                    "phase": "ready",
+                    "approved": True,
+                    "user_action": "merge when satisfied",
+                }
+            )
+        )
+        self.assertTrue(
+            mux._scheduled_status_ready_to_merge(
+                {
+                    "phase": "ready",
+                    "approved": True,
+                    "handoff_comment_ok": True,
+                    "user_action": "merge when satisfied",
+                }
+            )
+        )
+
+    def test_auto_merge_uses_existing_own_merge_command(self):
+        now = datetime.now().astimezone()
+        scheduled = mux.ScheduledLand(
+            land_at=now - timedelta(minutes=1),
+            prep_at=None,
+        )
+        app, _job = self._app(scheduled)
+        status = {
+            "phase": "watching_merge",
+            "waiting_on": "human_merge",
+            "updated_at": now.isoformat(),
+            "approved": True,
+            "ci_failed": 0,
+        }
+        trust = mock.Mock(conflict_resolutions_pushed=0, fix_commits_pushed=0)
+
+        with (
+            mock.patch.object(mux, "PROJECT", mock.Mock(merge_command="@bot merge")),
+            mock.patch.object(app, "_persist_mux_records"),
+            mock.patch.object(mux, "read_status", return_value=status),
+            mock.patch.object(mux.TrustDB, "load_or_create", return_value=trust),
+            mock.patch.object(
+                mux,
+                "_own_merge_command_comment_iso",
+                return_value="2026-07-15T09:01:00Z",
+            ),
+            mock.patch.object(mux.github, "post_pr_comment") as post,
+        ):
+            app._process_scheduled_lands_once()
+
+        post.assert_not_called()
+        self.assertEqual(
+            app._scheduled_lands[mux._pr_job(123)].merge_posted_at,
+            "2026-07-15T09:01:00Z",
+        )
+
+    def test_auto_merge_releases_to_manual_queue_after_conflict_resolution(self):
+        now = datetime.now().astimezone()
+        scheduled = mux.ScheduledLand(
+            land_at=now - timedelta(minutes=1),
+            prep_at=None,
+        )
+        app, job = self._app(scheduled)
+        status = {
+            "phase": "watching_merge",
+            "waiting_on": "human_merge",
+            "updated_at": now.isoformat(),
+            "approved": True,
+            "ci_failed": 0,
+        }
+        trust = mock.Mock(conflict_resolutions_pushed=1, fix_commits_pushed=0)
+
+        with (
+            mock.patch.object(mux, "PROJECT", mock.Mock(merge_command="@bot merge")),
+            mock.patch.object(app, "_persist_mux_records") as persist,
+            mock.patch.object(mux, "read_status", return_value=status),
+            mock.patch.object(mux.TrustDB, "load_or_create", return_value=trust),
+            mock.patch.object(mux.github, "post_pr_comment") as post,
+        ):
+            app._process_scheduled_lands_once()
+
+        post.assert_not_called()
+        self.assertNotIn(job, app._scheduled_lands)
+        persist.assert_called_once()
 
 
 class TestMergedogMuxLabel(unittest.TestCase):

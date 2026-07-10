@@ -53,11 +53,13 @@ class TestTrustDBRoundTrip(unittest.TestCase):
             trust.fix_commits_pushed = 2
             trust.fix_budget_ack_sha = "a" * 40
             trust.merge_auto_retries = 1
+            trust.conflict_resolutions_pushed = 3
             trust.save()
             reloaded = self._load(tmp, 1)
             self.assertEqual(reloaded.fix_commits_pushed, 2)
             self.assertEqual(reloaded.fix_budget_ack_sha, "a" * 40)
             self.assertEqual(reloaded.merge_auto_retries, 1)
+            self.assertEqual(reloaded.conflict_resolutions_pushed, 3)
 
     def test_known_fields_not_duplicated_into_extra(self):
         with tempfile.TemporaryDirectory() as d:

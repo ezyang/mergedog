@@ -1132,11 +1132,13 @@ def _publish_ghstack_parent_rebase(
         f"({status.child_parent_sha[:12]} -> {base_sha[:12]})"
     )
     repo.set_worktree_to_sha(worktree, base_sha)
+    had_conflict = False
     try:
         repo.ghstack_cherry_pick(worktree, pr)
     except subprocess.CalledProcessError:
         if not repo.is_cherry_pick_in_progress(worktree):
             raise
+        had_conflict = True
         if pr_data is None or sessions is None:
             repo.run(
                 ["git", "cherry-pick", "--abort"],
@@ -1193,6 +1195,8 @@ def _publish_ghstack_parent_rebase(
         trust,
         "Propagate parent update downstream",
     )
+    if had_conflict:
+        _record_conflict_resolution(trust)
     trust.spurious_check_names = []
     trust.save()
     log(f"ghstack submitted; new {dep.child_head_ref} = {new_head_sha[:12]}")
@@ -1617,7 +1621,8 @@ def _rebase_ghstack_onto_main(
         log("rebase produced no new commit (already at target)")
         return False
 
-    if status == "conflict":
+    had_conflict = status == "conflict"
+    if had_conflict:
         if pr_data is None or sessions is None:
             repo.abort_rebase(worktree)
             die(
@@ -1679,6 +1684,8 @@ def _rebase_ghstack_onto_main(
     new_head_sha = _ghstack_submit_trusted(
         worktree, head_ref, trust, "Rebase onto origin/main"
     )
+    if had_conflict:
+        _record_conflict_resolution(trust)
     log(f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}")
     _wait_for_pr_head(pr, new_head_sha)
     return True
@@ -1723,6 +1730,16 @@ def _record_claude_session(
             transcript=transcript,
         )
     )
+
+
+def _conflict_resolution_count(trust: TrustDB) -> int:
+    value = getattr(trust, "conflict_resolutions_pushed", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _record_conflict_resolution(trust: TrustDB) -> None:
+    trust.conflict_resolutions_pushed = _conflict_resolution_count(trust) + 1
+    trust.save()
 
 
 def _record_pushed_change(
@@ -1959,7 +1976,8 @@ def _merge_main_resolving_conflicts(
         log("merge produced no new commit (already up to date)")
         return None
 
-    if status == "conflict":
+    had_conflict = status == "conflict"
+    if had_conflict:
         log(f"merge produced conflicts; asking {_llm_label()} to resolve")
         ctx_path, _ = _refresh_context_file(pr_data, trusted=trusted_pr)
         prompt = render_merge_conflict_prompt(
@@ -1994,6 +2012,8 @@ def _merge_main_resolving_conflicts(
             die(f"{_llm_label()} aborted the merge; halting for human intervention")
 
     assert new_sha is not None
+    if had_conflict:
+        _record_conflict_resolution(trust)
     trust.trust(new_sha)
     return new_sha
 
@@ -2411,6 +2431,7 @@ def _shepherd_body(
         merging=last_merging,
         fix_attempts=fix_commits_pushed,
         max_fix_attempts=max_fix_attempts_status,
+        conflict_resolution_count=_conflict_resolution_count(trust),
     )
     # Auto-retries for infra-flake merge failures (e.g. 504). Capped at
     # MAX_MERGE_AUTO_RETRIES to prevent runaway commenting during outages.
@@ -2835,6 +2856,7 @@ def _shepherd_body(
                 ci_suppressed=suppressed_failed_count,
                 fix_attempts=fix_commits_pushed,
                 max_fix_attempts=max_fix_attempts_status,
+                conflict_resolution_count=_conflict_resolution_count(trust),
             )
             summary = f"{status} ({done}/{len(checks)} done)"
             if summary != last_status:
@@ -2883,6 +2905,9 @@ def _shepherd_body(
                             ci_suppressed=suppressed_failed_count,
                             fix_attempts=fix_commits_pushed,
                             max_fix_attempts=max_fix_attempts_status,
+                            conflict_resolution_count=(
+                                _conflict_resolution_count(trust)
+                            ),
                         )
                         time.sleep(POLL_INTERVAL_SEC)
                         continue
@@ -3074,6 +3099,7 @@ def _shepherd_body(
                     ci_suppressed=suppressed_failed_count,
                     fix_attempts=fix_commits_pushed,
                     max_fix_attempts=max_fix_attempts_status,
+                    conflict_resolution_count=_conflict_resolution_count(trust),
                 )
                 ctx_path, comments = _refresh_context_file(
                     pr_data, trusted=trusted_pr
@@ -3391,6 +3417,9 @@ def _shepherd_body(
                         ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
+                        conflict_resolution_count=(
+                            _conflict_resolution_count(trust)
+                        ),
                     )
                     log(
                         f"{passed_message}; waiting {remaining}s for stability "
@@ -3429,6 +3458,9 @@ def _shepherd_body(
                         ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
+                        conflict_resolution_count=(
+                            _conflict_resolution_count(trust)
+                        ),
                     )
                     # Deliberately bypass the ci:sev gate for this recovery:
                     # the problem is that no real CI wave exists to wait on.
@@ -3532,6 +3564,7 @@ def _shepherd_body(
                 ci_suppressed=suppressed_failed_count,
                 fix_attempts=fix_commits_pushed,
                 max_fix_attempts=max_fix_attempts_status,
+                conflict_resolution_count=_conflict_resolution_count(trust),
             )
             break
 
@@ -3639,6 +3672,7 @@ def _shepherd_body(
             merging=last_merging,
             fix_attempts=fix_commits_pushed,
             max_fix_attempts=max_fix_attempts_status,
+            conflict_resolution_count=_conflict_resolution_count(trust),
         )
 
         result, event_iso, fail_body = watch_post_handoff(

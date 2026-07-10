@@ -17,6 +17,9 @@ Commands typed at the bottom (enter to submit):
     restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       start/restart a shepherd with --rebase
     rebase all                        re-run every session job with --rebase
+    hold <pr> <land-at>               keep PR green during a freeze, prep
+                                      rebase before <land-at>, and land then
+    unhold <pr>                       clear a scheduled land
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
@@ -50,7 +53,8 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from mergedog.bootstrap import promote_early_env
@@ -74,6 +78,7 @@ COMMAND_SUGGESTIONS = [
     "fix ",
     "fix-cap ",
     "help",
+    "hold ",
     "ignore-sev ",
     "ignore-sev add ",
     "ignore-sev remove ",
@@ -91,6 +96,7 @@ COMMAND_SUGGESTIONS = [
     "restart all",
     "restart dead",
     "status",
+    "unhold ",
 ]
 
 PHASE_NO_ACTION = "🟢"
@@ -192,6 +198,8 @@ CI_PROGRESS_TOTAL_ESTIMATE = PROJECT.ci_progress_total_estimate
 TITLE_TRUNC = 20
 JobKey = tuple[str, int]
 PR_JOB = "pr"
+SCHEDULED_LAND_KEY = "scheduled_land"
+DEFAULT_PREP_BEFORE = timedelta(days=1)
 _STACK_PARENT_RE = re.compile(r"\bstack parent(?: PR)? #(\d+)\b")
 _SHEPHERDING_TITLE_RE = re.compile(
     r"\bshepherding PR #(?P<pr>\d+): (?P<title>.*)$"
@@ -201,6 +209,32 @@ _TITLE_SOURCE_WORKTREE = 1
 _TITLE_SOURCE_LOG = 2
 _TITLE_SOURCE_CONTEXT = 3
 TitleEntry = tuple[int, str]
+
+
+@dataclass
+class ScheduledLand:
+    """Persisted mux-side code-freeze hold for one PR."""
+
+    land_at: datetime
+    prep_at: datetime | None
+    auto_merge: bool = True
+    fix_commits_baseline: int = 0
+    prep_started_at: str = ""
+    merge_posted_at: str = ""
+
+    def to_record(self) -> dict:
+        data: dict = {
+            "land_at": self.land_at.isoformat(),
+            "auto_merge": self.auto_merge,
+            "fix_commits_baseline": self.fix_commits_baseline,
+        }
+        if self.prep_at is not None:
+            data["prep_at"] = self.prep_at.isoformat()
+        if self.prep_started_at:
+            data["prep_started_at"] = self.prep_started_at
+        if self.merge_posted_at:
+            data["merge_posted_at"] = self.merge_posted_at
+        return data
 
 
 def _pr_job(pr: int) -> JobKey:
@@ -221,6 +255,178 @@ def _job_label(job: JobKey | int) -> str:
 def _job_log_file(job: JobKey | int) -> Path:
     _, pr = _coerce_job(job)
     return log_file(pr)
+
+
+def _local_tzinfo():
+    return datetime.now().astimezone().tzinfo
+
+
+def _ensure_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_local_tzinfo())
+    return dt
+
+
+def _parse_datetime(value: str) -> datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("missing timestamp")
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError as e:
+        raise ValueError(
+            "expected ISO timestamp, e.g. 2026-07-15T09:00-07:00"
+        ) from e
+    return _ensure_aware(dt)
+
+
+_DURATION_RE = re.compile(r"\A(?P<count>\d+)(?P<unit>[dhm])\Z")
+
+
+def _parse_duration(value: str) -> timedelta:
+    raw = value.strip().lower()
+    if raw in {"0", "0s"}:
+        return timedelta(0)
+    match = _DURATION_RE.fullmatch(raw)
+    if match is None:
+        raise ValueError("expected duration like 1d, 6h, or 30m")
+    count = int(match.group("count"))
+    unit = match.group("unit")
+    if unit == "d":
+        return timedelta(days=count)
+    if unit == "h":
+        return timedelta(hours=count)
+    return timedelta(minutes=count)
+
+
+def _scheduled_land_from_record(value: object) -> ScheduledLand | None:
+    if not isinstance(value, dict):
+        return None
+    land_at_raw = value.get("land_at")
+    if not isinstance(land_at_raw, str):
+        return None
+    try:
+        land_at = _parse_datetime(land_at_raw)
+        prep_at_raw = value.get("prep_at")
+        prep_at = (
+            _parse_datetime(prep_at_raw)
+            if isinstance(prep_at_raw, str) and prep_at_raw
+            else None
+        )
+    except ValueError:
+        return None
+    prep_started_at = value.get("prep_started_at")
+    merge_posted_at = value.get("merge_posted_at")
+    fix_commits_baseline = value.get("fix_commits_baseline")
+    return ScheduledLand(
+        land_at=land_at,
+        prep_at=prep_at,
+        auto_merge=value.get("auto_merge") is not False,
+        fix_commits_baseline=(
+            fix_commits_baseline
+            if isinstance(fix_commits_baseline, int)
+            and not isinstance(fix_commits_baseline, bool)
+            else 0
+        ),
+        prep_started_at=prep_started_at if isinstance(prep_started_at, str) else "",
+        merge_posted_at=merge_posted_at if isinstance(merge_posted_at, str) else "",
+    )
+
+
+def _record_scheduled_land(record: dict) -> ScheduledLand | None:
+    return _scheduled_land_from_record(record.get(SCHEDULED_LAND_KEY))
+
+
+def _schedule_now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _parse_hold_args(rest: list[str]) -> tuple[int, ScheduledLand] | str:
+    if len(rest) < 2:
+        return (
+            "usage: hold <pr> <land-at> "
+            "[--prep-before 1d|--no-prep] [--no-auto-merge]"
+        )
+    pr = _parse_pr(rest[0])
+    prep_before: timedelta | None = DEFAULT_PREP_BEFORE
+    auto_merge = True
+    when_parts: list[str] = []
+    i = 1
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--no-prep":
+            prep_before = None
+            i += 1
+        elif arg == "--prep-before":
+            if i + 1 >= len(rest):
+                return "usage: hold <pr> <land-at> --prep-before <duration>"
+            try:
+                prep_before = _parse_duration(rest[i + 1])
+            except ValueError as e:
+                return f"invalid --prep-before: {e}"
+            i += 2
+        elif arg.startswith("--prep-before="):
+            try:
+                prep_before = _parse_duration(arg.split("=", 1)[1])
+            except ValueError as e:
+                return f"invalid --prep-before: {e}"
+            i += 1
+        elif arg == "--auto-merge":
+            auto_merge = True
+            i += 1
+        elif arg == "--no-auto-merge":
+            auto_merge = False
+            i += 1
+        elif arg.startswith("-"):
+            return f"unknown hold flag: {arg}"
+        else:
+            when_parts.append(arg)
+            i += 1
+    if not when_parts:
+        return "usage: hold <pr> <land-at>"
+    try:
+        land_at = _parse_datetime(" ".join(when_parts))
+    except ValueError as e:
+        return f"invalid land-at: {e}"
+    prep_at = None
+    if prep_before is not None:
+        prep_at = land_at - prep_before
+    return pr, ScheduledLand(
+        land_at=land_at,
+        prep_at=prep_at,
+        auto_merge=auto_merge,
+    )
+
+
+def _format_schedule_time(dt: datetime) -> str:
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _format_scheduled_status(
+    scheduled: ScheduledLand,
+    *,
+    base_status: str,
+    now: datetime | None = None,
+) -> str:
+    now = now or datetime.now().astimezone()
+    land = _format_schedule_time(scheduled.land_at)
+    if scheduled.merge_posted_at:
+        prefix = f"scheduled merge posted for {land}"
+    elif now >= scheduled.land_at:
+        prefix = f"unfreeze reached {land}"
+    elif scheduled.prep_started_at:
+        prefix = f"hold until {land}; prep rebase started"
+    elif scheduled.prep_at is not None:
+        prefix = (
+            f"hold until {land}; prep {_format_schedule_time(scheduled.prep_at)}"
+        )
+    else:
+        prefix = f"hold until {land}"
+    if not scheduled.auto_merge and not scheduled.merge_posted_at:
+        prefix += "; manual merge"
+    return f"{prefix}; {base_status}" if base_status else prefix
 
 
 def _read_pr_context_title(pr: int) -> str:
@@ -619,6 +825,73 @@ def _status_int_field(structured: dict, key: str) -> int:
     return 0
 
 
+def _schedule_can_defer_review(structured: dict | None) -> bool:
+    if structured is None:
+        return True
+    if structured.get("handoff_comment_ok") is False:
+        return False
+    if _status_int_field(structured, "fix_attempts") > 0:
+        return False
+    if _status_int_field(structured, "conflict_resolution_count") > 0:
+        return False
+    return True
+
+
+def _scheduled_manual_blocker(structured: dict | None) -> str | None:
+    if structured is None:
+        return None
+    waiting_on = _status_text_field(structured, "waiting_on")
+    if waiting_on == "approval" or structured.get("approved") is False:
+        return "waiting for maintainer approval"
+    if waiting_on == "contributor":
+        return "waiting for contributor CLA"
+    if structured.get("handoff_comment_ok") is False:
+        return "handoff comment failed"
+    return None
+
+
+def _scheduled_status_ready_to_merge(structured: dict | None) -> bool:
+    if structured is None:
+        return False
+    if _status_int_field(structured, "ci_failed") > 0:
+        return False
+    phase = _status_text_field(structured, "phase")
+    if (
+        phase == "watching_merge"
+        and _status_text_field(structured, "waiting_on") == "human_merge"
+    ):
+        return True
+    # Once watch_post_handoff starts polling, it writes approved handoff rows
+    # as phase=ready. Require the handoff-specific field so we don't merge
+    # from the pre-handoff "ready: CI is green" status before the summary
+    # comment exists.
+    if (
+        phase == "ready"
+        and "handoff_comment_ok" in structured
+        and structured.get("approved") is True
+        and "merge" in _status_text_field(structured, "user_action")
+    ):
+        return True
+    return False
+
+
+def _own_merge_command_comment_iso(pr: int) -> str | None:
+    command = PROJECT.merge_command
+    if not command:
+        return None
+    viewer = github.viewer_login()
+    comments = github.get_pr_comments(pr)
+    for comment in reversed(comments):
+        author = str(comment.get("author") or "")
+        if not author or author.lower() != viewer.lower():
+            continue
+        if str(comment.get("body") or "").strip() != command:
+            continue
+        created_at = comment.get("created_at")
+        return created_at if isinstance(created_at, str) else ""
+    return None
+
+
 def _has_user_action(structured: dict) -> bool:
     return bool(_status_text_field(structured, "user_action"))
 
@@ -790,6 +1063,11 @@ def _read_mux_job_records() -> dict[JobKey, dict]:
                     record = {}
                     if isinstance(item.get("rc"), int):
                         record["rc"] = item["rc"]
+                    scheduled = _scheduled_land_from_record(
+                        item.get(SCHEDULED_LAND_KEY)
+                    )
+                    if scheduled is not None:
+                        record[SCHEDULED_LAND_KEY] = scheduled.to_record()
                     out[_pr_job(pr)] = record
         except (TypeError, ValueError, KeyError):
             continue
@@ -804,9 +1082,13 @@ def _write_mux_job_records(records: dict[JobKey, dict]) -> None:
     items = []
     for kind, pr in sorted(records):
         item: dict = {"kind": kind, "pr": pr}
-        rc = records[(kind, pr)].get("rc")
+        record = records[(kind, pr)]
+        rc = record.get("rc")
         if isinstance(rc, int):
             item["rc"] = rc
+        scheduled = _record_scheduled_land(record)
+        if scheduled is not None:
+            item[SCHEDULED_LAND_KEY] = scheduled.to_record()
         items.append(item)
     atomic_write_text(MUX_JOBS_FILE, json.dumps(items))
     _write_mux_prs([pr for _, pr in records])
@@ -825,12 +1107,14 @@ def _add_mux_job(job: JobKey) -> bool:
     so callers can apply the ``mergedog`` join label exactly once.
     """
     records = _read_mux_job_records()
+    old_record = records.get(job, {})
     newly_joined = job not in records
     # Always rewrite the record: a (re)spawned job sheds any recorded
     # exit code, so a later resume treats it as live rather than parked.
-    if records.get(job) == {}:
+    new_record = {k: v for k, v in old_record.items() if k != "rc"}
+    if not newly_joined and new_record == old_record:
         return False
-    records[job] = {}
+    records[job] = new_record
     _write_mux_job_records(records)
     return newly_joined
 
@@ -962,6 +1246,7 @@ class MuxApp(App):
         gchat_to: str | None = None,
         repo_slug: str = REPO_SLUG,
         lock_fd: int = -1,
+        scheduled: dict[JobKey, ScheduledLand] | None = None,
     ) -> None:
         super().__init__()
         self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
@@ -975,6 +1260,15 @@ class MuxApp(App):
         # ``restart``/``add`` unparks them.
         self._parked_jobs: dict[JobKey, int] = dict(parked or {})
         self._initial = [_coerce_job(job) for job in initial]
+        tracked_jobs = set(self._initial) | set(self._parked_jobs)
+        if scheduled is None:
+            scheduled = {
+                job: sched
+                for job, record in _read_mux_job_records().items()
+                if job in tracked_jobs
+                if (sched := _record_scheduled_land(record)) is not None
+            }
+        self._scheduled_lands: dict[JobKey, ScheduledLand] = dict(scheduled)
         self.ignore_sev = ignore_sev
         self.max_fix_commits = max_fix_commits
         self.gchat_to = gchat_to
@@ -989,7 +1283,8 @@ class MuxApp(App):
         yield HistoryInput(
             placeholder=(
                 "<pr> | add <pr> | restart <pr|all|dead> | rebase <pr|all> | reassess <pr> | "
-                "fix <pr> | mark-spurious <pr> | cancel <pr> | cleanup | clean | "
+                "hold <pr> <land-at> | unhold <pr> | fix <pr> | "
+                "mark-spurious <pr> | cancel <pr> | cleanup | clean | "
                 "remove <pr> | log <pr> | fix-cap | "
                 "help | migrate | quit"
             ),
@@ -1007,6 +1302,7 @@ class MuxApp(App):
             self._do_add_job(job, [])
         self._refresh()
         self.set_interval(2.0, self._refresh)
+        self.set_interval(10.0, self._tick_scheduled_lands)
         self.query_one(HistoryInput).focus()
         self._start_ipc_server()
 
@@ -1108,6 +1404,42 @@ class MuxApp(App):
                 f"failed: {e}",
                 severity="warning",
             )
+
+    def _persist_mux_records(self) -> None:
+        records: dict[JobKey, dict] = {}
+        jobs = (
+            set(self.procs)
+            | set(getattr(self, "_parked_jobs", {}))
+            | set(getattr(self, "_scheduled_lands", {}))
+        )
+        unresumable_jobs = getattr(self, "_unresumable_jobs", set())
+        for job in jobs:
+            if job in unresumable_jobs:
+                continue
+            record: dict = {}
+            if job in getattr(self, "_parked_jobs", {}):
+                record["rc"] = self._parked_jobs[job]
+            elif job in self.procs:
+                rc = self.procs[job][0].poll()
+                if rc is not None and rc not in (0, EXIT_PR_NOT_ACTIONABLE):
+                    record["rc"] = rc
+            scheduled = getattr(self, "_scheduled_lands", {}).get(job)
+            if scheduled is not None:
+                record[SCHEDULED_LAND_KEY] = scheduled.to_record()
+            records[job] = record
+        _write_mux_job_records(records)
+
+    def _set_scheduled_land(
+        self, job: JobKey | int, scheduled: ScheduledLand
+    ) -> None:
+        job = _coerce_job(job)
+        self._scheduled_lands[job] = scheduled
+        self._persist_mux_records()
+
+    def _clear_scheduled_land(self, job: JobKey | int) -> None:
+        job = _coerce_job(job)
+        if self._scheduled_lands.pop(job, None) is not None:
+            self._persist_mux_records()
 
     def _do_add(self, pr: int, extra: list[str]) -> str:
         return self._do_add_job(_pr_job(pr), extra)
@@ -1241,6 +1573,142 @@ class MuxApp(App):
             "no PRs to rebase",
         )
 
+    def _tick_scheduled_lands(self) -> None:
+        if getattr(self, "_scheduled_lands", {}):
+            self._process_scheduled_lands()
+
+    def _restart_scheduled_job(self, job: JobKey, extra: list[str]) -> str:
+        _, pr = job
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{pr}] cleanup in progress"
+        entry = self.procs.get(job)
+        if entry is not None and entry[0].poll() is None:
+            self._do_cancel_job(job, keep_resumable=True)
+        return self._do_add(pr, extra)
+
+    def _ensure_scheduled_job_running(self, job: JobKey) -> str | None:
+        _, pr = job
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{pr}] cleanup in progress"
+        entry = self.procs.get(job)
+        if entry is not None and entry[0].poll() is None:
+            return None
+        return self._do_add(pr, [])
+
+    def _release_scheduled_land(self, job: JobKey, reason: str) -> None:
+        _, pr = job
+        if self._scheduled_lands.pop(job, None) is None:
+            return
+        self._persist_mux_records()
+        self.notify(f"[{pr}] unfreeze reached; {reason}")
+
+    def _process_scheduled_lands_once(self) -> None:
+        now = datetime.now().astimezone()
+        for job, scheduled in list(getattr(self, "_scheduled_lands", {}).items()):
+            if job in getattr(self, "_cleanup_jobs", set()):
+                continue
+            _, pr = job
+            if (
+                scheduled.prep_at is not None
+                and not scheduled.prep_started_at
+                and now >= scheduled.prep_at
+            ):
+                scheduled.prep_started_at = _schedule_now_iso()
+                self._scheduled_lands[job] = scheduled
+                self._persist_mux_records()
+                result = self._restart_scheduled_job(job, ["--rebase"])
+                self.notify(f"[{pr}] scheduled prep rebase: {result}")
+                continue
+
+            if now < scheduled.land_at or scheduled.merge_posted_at:
+                continue
+
+            started = self._ensure_scheduled_job_running(job)
+            if started is not None:
+                self.notify(f"[{pr}] scheduled land: {started}")
+                continue
+
+            if not scheduled.auto_merge:
+                self._release_scheduled_land(
+                    job,
+                    "scheduled hold cleared; continuing as normal queue",
+                )
+                continue
+            if PROJECT.merge_command is None:
+                self._release_scheduled_land(
+                    job,
+                    "no merge command is configured; continuing as normal queue",
+                )
+                continue
+
+            structured = read_status(pr)
+            entry = self.procs.get(job)
+            rc = entry[0].poll() if entry is not None else None
+            if _status_is_stale(
+                structured,
+                started_at=getattr(self, "_job_started_at", {}).get(job),
+                rc=rc,
+            ):
+                continue
+            trust = TrustDB.load_or_create(pr)
+            if trust.conflict_resolutions_pushed > 0:
+                self._release_scheduled_land(
+                    job,
+                    "auto-merge disabled: conflict resolution needs review; "
+                    "continuing as normal queue",
+                )
+                continue
+            if trust.fix_commits_pushed != scheduled.fix_commits_baseline:
+                self._release_scheduled_land(
+                    job,
+                    "auto-merge disabled: mergedog fix state changed; "
+                    "continuing as normal queue",
+                )
+                continue
+            blocker = _scheduled_manual_blocker(structured)
+            if blocker is not None:
+                self._release_scheduled_land(
+                    job,
+                    f"auto-merge disabled: {blocker}; continuing as normal queue",
+                )
+                continue
+            if not _scheduled_status_ready_to_merge(structured):
+                continue
+
+            try:
+                existing = _own_merge_command_comment_iso(pr)
+            except Exception as e:
+                self.notify(
+                    f"[{pr}] scheduled merge check failed: {e}",
+                    severity="warning",
+                )
+                continue
+            if existing:
+                scheduled.merge_posted_at = existing
+                self._scheduled_lands[job] = scheduled
+                self._persist_mux_records()
+                self.notify(
+                    f"[{pr}] scheduled merge command already present; watching"
+                )
+                continue
+
+            try:
+                github.post_pr_comment(pr, PROJECT.merge_command)
+            except Exception as e:
+                self.notify(
+                    f"[{pr}] scheduled merge command failed: {e}",
+                    severity="error",
+                )
+                continue
+            scheduled.merge_posted_at = _schedule_now_iso()
+            self._scheduled_lands[job] = scheduled
+            self._persist_mux_records()
+            self.notify(f"[{pr}] posted scheduled merge command")
+
+    @work(thread=True, exclusive=True, group="scheduled-lands")
+    def _process_scheduled_lands(self) -> None:
+        self._process_scheduled_lands_once()
+
     def _do_ignore_sev(self, rest: list[str]) -> str:
         if not rest:
             state = "on" if self.ignore_sev else "off"
@@ -1333,6 +1801,50 @@ class MuxApp(App):
             f"use `restart <pr>` or `restart all` to apply to running PRs)"
         )
 
+    def _hold_summary(self, scheduled: ScheduledLand) -> str:
+        parts = [f"land at {_format_schedule_time(scheduled.land_at)}"]
+        if scheduled.prep_at is not None:
+            parts.append(f"prep rebase at {_format_schedule_time(scheduled.prep_at)}")
+        else:
+            parts.append("no prep rebase")
+        parts.append(
+            "auto-merge if clean" if scheduled.auto_merge else "manual merge"
+        )
+        return "; ".join(parts)
+
+    def _do_hold(self, rest: list[str]) -> str:
+        parsed = _parse_hold_args(rest)
+        if isinstance(parsed, str):
+            return parsed
+        pr, scheduled = parsed
+        job = _pr_job(pr)
+        if job in getattr(self, "_cleanup_jobs", set()):
+            return f"[{pr}] cleanup in progress"
+        trust = TrustDB.load_or_create(pr)
+        if trust.conflict_resolutions_pushed:
+            trust.conflict_resolutions_pushed = 0
+            trust.save()
+        scheduled.fix_commits_baseline = trust.fix_commits_pushed
+        self._set_scheduled_land(job, scheduled)
+        if job not in self.procs:
+            started = self._do_add(pr, [])
+            return f"[{pr}] hold scheduled: {self._hold_summary(scheduled)}; {started}"
+        entry = self.procs[job]
+        if entry[0].poll() is not None:
+            started = self._do_add(pr, [])
+            return f"[{pr}] hold scheduled: {self._hold_summary(scheduled)}; {started}"
+        return f"[{pr}] hold scheduled: {self._hold_summary(scheduled)}"
+
+    def _do_unhold(self, rest: list[str]) -> str:
+        if len(rest) != 1:
+            return "usage: unhold <pr>"
+        pr = _parse_pr(rest[0])
+        job = _pr_job(pr)
+        if job not in getattr(self, "_scheduled_lands", {}):
+            return f"[{pr}] no scheduled hold"
+        self._clear_scheduled_land(job)
+        return f"[{pr}] cleared scheduled hold"
+
     def _do_cancel_job(
         self,
         job: JobKey | int,
@@ -1349,6 +1861,7 @@ class MuxApp(App):
         _terminate_group(entry[0])
         if not keep_resumable:
             self._unresumable_jobs.add(job)
+            getattr(self, "_scheduled_lands", {}).pop(job, None)
             _remove_mux_job(job)
         return f"[{label}] terminated"
 
@@ -1504,6 +2017,22 @@ class MuxApp(App):
         )
         if cla_blocked:
             status = _cla_blocked_status_message(status)
+        scheduled = getattr(self, "_scheduled_lands", {}).get(job)
+        if scheduled is not None:
+            now = datetime.now().astimezone()
+            status = _format_scheduled_status(
+                scheduled,
+                base_status=status,
+                now=now,
+            )
+            if (
+                not scheduled.merge_posted_at
+                and now < scheduled.land_at
+                and phase
+                in {PHASE_YOUR_EASY_ACTION, PHASE_YOUR_REVIEW_ACTION}
+                and _schedule_can_defer_review(structured)
+            ):
+                phase = PHASE_NO_ACTION
         return structured, stale, phase, status
 
     def _refresh(self) -> None:
@@ -1562,6 +2091,12 @@ class MuxApp(App):
                 if isinstance(detail, str) and detail
                 else "halted before mux restart"
             )
+            scheduled = getattr(self, "_scheduled_lands", {}).get(job)
+            if scheduled is not None:
+                status = _format_scheduled_status(
+                    scheduled,
+                    base_status=status,
+                )
             table.add_row(
                 pr_cell,
                 Text(_truncate_title(title)),
@@ -1570,6 +2105,31 @@ class MuxApp(App):
                 _intervention_cell(structured),
                 _suppressed_cell(structured),
                 f"{status} (not resumed; `restart {pr}` to re-run)",
+            )
+        scheduled_only = sorted(
+            set(getattr(self, "_scheduled_lands", {}))
+            - set(procs)
+            - set(getattr(self, "_parked_jobs", {}))
+        )
+        for job in scheduled_only:
+            _, pr = job
+            title = self._title_for_job(job)
+            pr_cell = Text(
+                _job_label(job),
+                style=f"link https://github.com/{REPO_SLUG}/pull/{pr}",
+            )
+            scheduled = self._scheduled_lands[job]
+            table.add_row(
+                pr_cell,
+                Text(_truncate_title(title)),
+                PHASE_NO_ACTION,
+                Text(""),
+                Text(""),
+                Text(""),
+                _format_scheduled_status(
+                    scheduled,
+                    base_status="not running",
+                ),
             )
 
     def _prune_job(self, job: JobKey | int) -> None:
@@ -1596,6 +2156,7 @@ class MuxApp(App):
         getattr(self, "_job_started_at", {}).pop(job, None)
         getattr(self, "_unresumable_jobs", set()).discard(job)
         getattr(self, "_parked_jobs", {}).pop(job, None)
+        getattr(self, "_scheduled_lands", {}).pop(job, None)
 
     # ------------------------------------------------------------------
     # Command dispatch (shared by TUI input and IPC server)
@@ -1619,6 +2180,10 @@ class MuxApp(App):
                 "commands: add <pr> | restart <pr|all|dead> | "
                 "rebase <pr|all> | reassess <pr> | "
                 "fix <pr> <trusted request>"
+            ),
+            (
+                "commands: hold <pr> <land-at> [--prep-before 1d|--no-prep] "
+                "[--no-auto-merge] | unhold <pr>"
             ),
             (
                 "commands: mark-spurious <pr> | cancel <pr> | cleanup | "
@@ -1704,6 +2269,10 @@ class MuxApp(App):
                     return fix_args
                 self._do_cancel_job(_pr_job(pr), keep_resumable=True)
                 return self._do_add(pr, fix_args)
+            elif cmd in ("hold", "schedule-land", "schedule_land"):
+                return self._do_hold(rest)
+            elif cmd in ("unhold", "unschedule-land", "unschedule_land"):
+                return self._do_unhold(rest)
             elif cmd in ("mark-spurious", "spurious", "ignore-failures"):
                 if not rest:
                     return "usage: mark-spurious <pr>"
@@ -1771,7 +2340,7 @@ class MuxApp(App):
                     job, rc=rc, log_path=log_path, last=last
                 )
             )
-            rows.append({
+            row = {
                 "kind": kind,
                 "pr": pr,
                 "title": title,
@@ -1781,25 +2350,62 @@ class MuxApp(App):
                 "last_log": last,
                 "shepherd_status_stale": stale,
                 "shepherd_status": structured,
-            })
+            }
+            scheduled = getattr(self, "_scheduled_lands", {}).get(job)
+            if scheduled is not None:
+                row[SCHEDULED_LAND_KEY] = scheduled.to_record()
+            rows.append(row)
         for job in sorted(getattr(self, "_parked_jobs", {})):
             if job in self.procs:
                 continue
             kind, pr = job
             log_path = _job_log_file(job)
-            rows.append({
+            status_message = (
+                "halted before mux restart; not resumed "
+                f"(`restart {pr}` to re-run)"
+            )
+            scheduled = getattr(self, "_scheduled_lands", {}).get(job)
+            if scheduled is not None:
+                status_message = _format_scheduled_status(
+                    scheduled,
+                    base_status=status_message,
+                )
+            row = {
                 "kind": kind,
                 "pr": pr,
                 "title": self._title_for_job(job),
                 "state": "parked",
                 "phase": PHASE_HALTED,
-                "status": (
-                    "halted before mux restart; not resumed "
-                    f"(`restart {pr}` to re-run)"
-                ),
+                "status": status_message,
                 "last_log": _last_log_line(log_path),
                 "shepherd_status_stale": True,
                 "shepherd_status": read_status(pr),
+            }
+            if scheduled is not None:
+                row[SCHEDULED_LAND_KEY] = scheduled.to_record()
+            rows.append(row)
+        scheduled_only = sorted(
+            set(getattr(self, "_scheduled_lands", {}))
+            - set(procs)
+            - set(getattr(self, "_parked_jobs", {}))
+        )
+        for job in scheduled_only:
+            kind, pr = job
+            scheduled = self._scheduled_lands[job]
+            rows.append({
+                "kind": kind,
+                "pr": pr,
+                "title": self._title_for_job(job),
+                "state": "scheduled",
+                "phase": PHASE_NO_ACTION,
+                "status": _format_scheduled_status(
+                    scheduled,
+                    base_status="not running",
+                ),
+                "last_log": _last_log_line(_job_log_file(job)),
+                "shepherd_status_stale": True,
+                "shepherd_status": read_status(pr),
+                SCHEDULED_LAND_KEY: scheduled.to_record(),
             })
         return json.dumps(rows, indent=2)
 
@@ -1897,18 +2503,34 @@ class MuxApp(App):
 
     def on_unmount(self) -> None:
         unresumable_jobs = getattr(self, "_unresumable_jobs", set())
-        records: dict[JobKey, dict] = {
-            job: {"rc": rc}
-            for job, rc in getattr(self, "_parked_jobs", {}).items()
-        }
+        records: dict[JobKey, dict] = {}
+        scheduled_lands = getattr(self, "_scheduled_lands", {})
+        completed_jobs: set[JobKey] = set()
+        for job, rc in getattr(self, "_parked_jobs", {}).items():
+            if job in unresumable_jobs:
+                continue
+            record: dict = {"rc": rc}
+            if job in scheduled_lands:
+                record[SCHEDULED_LAND_KEY] = scheduled_lands[job].to_record()
+            records[job] = record
         for job, (p, _f, _) in self.procs.items():
             rc = p.poll()
-            if job in unresumable_jobs or rc in (0, EXIT_PR_NOT_ACTIONABLE):
+            if rc in (0, EXIT_PR_NOT_ACTIONABLE):
+                completed_jobs.add(job)
+                continue
+            if job in unresumable_jobs:
                 continue
             # Live jobs resume on the next mux start; jobs that halted
             # carry their exit code so the next mux parks them instead
             # of re-running (and re-notifying) a deterministic halt.
-            records[job] = {} if rc is None else {"rc": rc}
+            record = {} if rc is None else {"rc": rc}
+            if job in scheduled_lands:
+                record[SCHEDULED_LAND_KEY] = scheduled_lands[job].to_record()
+            records[job] = record
+        for job, scheduled in scheduled_lands.items():
+            if job in records or job in unresumable_jobs or job in completed_jobs:
+                continue
+            records[job] = {SCHEDULED_LAND_KEY: scheduled.to_record()}
         _write_mux_job_records(records)
         if self._ipc_server is not None:
             self._ipc_server.close()
