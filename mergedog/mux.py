@@ -1251,7 +1251,10 @@ class MuxApp(App):
     Input { dock: bottom; }
     """
 
-    BINDINGS = [("ctrl+c", "quit", "Quit")]
+    BINDINGS = [
+        ("ctrl+c", "quit", "Quit"),
+        ("ctrl+z", "suspend_process", "Suspend"),
+    ]
 
     def __init__(
         self,

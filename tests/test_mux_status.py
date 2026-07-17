@@ -53,6 +53,13 @@ def _query_one_for(table, hint=None):
 
 
 class TestMuxInput(unittest.TestCase):
+    def test_ctrl_z_suspends_mux(self):
+        bindings = {
+            key: action for key, action, _description in mux.MuxApp.BINDINGS
+        }
+
+        self.assertEqual(bindings["ctrl+z"], "suspend_process")
+
     def test_command_suggester_completes_cleanup_prefix(self):
         suggester = mux.SuggestFromList(mux.COMMAND_SUGGESTIONS)
 
