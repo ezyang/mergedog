@@ -5,6 +5,7 @@ description = "Autonomous shepherd for OSS PR contributions to pytorch/pytorch"
 requires-python = ">=3.11"
 dependencies = [
     "ghstack>=0.15.0",
+    "mcp>=1.28.1",
     "textual>=8.2.5",
 ]
 
