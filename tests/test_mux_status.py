@@ -748,7 +748,7 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(
             app._shepherd_args([]),
-            ["--max-fix-commits=0"],
+            ["--max-fix-commits=0", "--no-ignore-sev"],
         )
 
     def test_shepherd_args_preserves_explicit_fix_cap(self):
@@ -760,7 +760,28 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(
             app._shepherd_args(["--max-fix-commits=2"]),
-            ["--max-fix-commits=2"],
+            ["--no-ignore-sev", "--max-fix-commits=2"],
+        )
+
+    def test_shepherd_args_ignores_sev_by_default(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = True
+        app.max_fix_commits = mux.MAX_FIX_COMMITS
+        app.gchat_to = None
+        app.repo_slug = None
+
+        self.assertEqual(app._shepherd_args([]), ["--ignore-sev"])
+
+    def test_shepherd_args_preserves_explicit_sev_choice(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        app.ignore_sev = True
+        app.max_fix_commits = mux.MAX_FIX_COMMITS
+        app.gchat_to = None
+        app.repo_slug = None
+
+        self.assertEqual(
+            app._shepherd_args(["--no-ignore-sev"]),
+            ["--no-ignore-sev"],
         )
 
     def test_fix_cap_command_toggles_mux_default(self):
@@ -909,7 +930,9 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "[123] started")
         terminate_group.assert_called_once_with(old_proc)
-        spawn.assert_called_once_with(mux._pr_job(123), ["--rebase"])
+        spawn.assert_called_once_with(
+            mux._pr_job(123), ["--no-ignore-sev", "--rebase"]
+        )
         self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
 
     def test_cleanup_prunes_successful_completed_jobs(self):

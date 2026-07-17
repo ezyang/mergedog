@@ -54,7 +54,7 @@ Each PR gets its own subprocess; the mux shows a live table of PR status,
 accepts commands, and auto-prunes PRs that merge or close.
 
 ```
-python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev] [--max-fix-commits N] [--root DIR]
+python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume-known] [--ignore-sev|--no-ignore-sev] [--max-fix-commits N] [--root DIR]
 ```
 
 - With no PR arguments, the mux restarts every job in the resume list
@@ -62,7 +62,7 @@ python -m mergedog.mux [<pr>...] [--repo OWNER/NAME] [--resume-known|--no-resume
 - `--resume-known` also includes resumable jobs when PRs are provided.
 - `--no-resume-known` starts only the PRs provided on the command line, or no
   jobs if none are provided.
-- `--ignore-sev` tells all spawned shepherds to skip the `ci: sev` check.
+- Shepherds skip the `ci: sev` check by default; `--no-ignore-sev` enables it.
 - `--max-fix-commits N` changes the fix-commit safety cap for all spawned
   shepherds. The default is 5; use 0 to disable the cap.
 - `--root DIR` redirects all on-disk state to a different directory (also
@@ -189,7 +189,7 @@ These work on the PR shepherd entry point:
 |---|---|
 | `--rebase` | Upfront merge/rebase onto `origin/main` before polling CI |
 | `--accept-divergence` | Proceed even if PR head differs from the approval commit |
-| `--ignore-sev` | Don't park on open `ci: sev` issues |
+| `--ignore-sev` / `--no-ignore-sev` | Skip open `ci: sev` issues (default) or park on them |
 | `--reassess` | Re-invoke Claude for failures previously judged spurious |
 | `--max-fix-commits N` | Halt after N `[MERGEDOG]` fix commits; 0 disables the cap |
 | `--extra-context TEXT` | Operator hint injected into Claude's fix prompt (trusted) |

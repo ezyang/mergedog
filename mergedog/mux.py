@@ -1261,7 +1261,7 @@ class MuxApp(App):
         initial: list[JobKey | int],
         *,
         parked: dict[JobKey, int] | None = None,
-        ignore_sev: bool = False,
+        ignore_sev: bool = True,
         max_fix_commits: int = MAX_FIX_COMMITS,
         gchat_to: str | None = None,
         repo_slug: str = REPO_SLUG,
@@ -1329,8 +1329,8 @@ class MuxApp(App):
     def _shepherd_args(self, extra: list[str]) -> list[str]:
         """Apply mux-wide defaults to a shepherd argv tail."""
         out = list(extra)
-        if self.ignore_sev and "--ignore-sev" not in out:
-            out = ["--ignore-sev", *out]
+        if not any(a in ("--ignore-sev", "--no-ignore-sev") for a in out):
+            out = ["--ignore-sev" if self.ignore_sev else "--no-ignore-sev", *out]
         max_fix_commits = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
         if max_fix_commits != MAX_FIX_COMMITS and not any(
             a == "--max-fix-commits" or a.startswith("--max-fix-commits=")
@@ -2610,11 +2610,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--ignore-sev",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Mux-wide default: pass --ignore-sev to every spawned "
-            "shepherd so they don't park on open ``ci: sev`` issues. "
-            "Toggle at runtime with the ``ignore-sev on|off`` command."
+            "Mux-wide default for whether shepherds ignore open ``ci: sev`` "
+            "issues (default: ignore). Toggle at runtime with the "
+            "``ignore-sev on|off`` command."
         ),
     )
     parser.add_argument(

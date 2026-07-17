@@ -50,6 +50,22 @@ class TestExternalFailureHaltMessage(unittest.TestCase):
 
 
 class TestSingleMain(unittest.TestCase):
+    def test_ignores_ci_sev_by_default(self):
+        with mock.patch("mergedog.notify.configure"), mock.patch(
+            "mergedog.shepherd.shepherd"
+        ) as shepherd:
+            cli._single_main(["186672"])
+
+        self.assertTrue(shepherd.call_args.kwargs["ignore_sev"])
+
+    def test_can_respect_ci_sev(self):
+        with mock.patch("mergedog.notify.configure"), mock.patch(
+            "mergedog.shepherd.shepherd"
+        ) as shepherd:
+            cli._single_main(["186672", "--no-ignore-sev"])
+
+        self.assertFalse(shepherd.call_args.kwargs["ignore_sev"])
+
     def test_subprocess_failure_halts_without_traceback(self):
         exc = subprocess.CalledProcessError(
             1,

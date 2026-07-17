@@ -73,12 +73,11 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--ignore-sev",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Don't park on open ``ci: sev`` issues. By default mergedog "
-            "waits before any action that would trigger fresh CI (claude "
-            "fix invocations, pushes, ciflow/trunk label) so we don't "
-            "stampede already-broken trunk."
+            "Don't park on open ``ci: sev`` issues (default). Use "
+            "--no-ignore-sev to wait before actions that trigger fresh CI."
         ),
     )
     parser.add_argument(

@@ -157,10 +157,10 @@ def _wait_for_no_active_sev(
     """If pytorch CI has an open SEV, block until it clears.
 
     A CI SEV here is any open issue on pytorch/pytorch tagged
-    ``ci: sev`` -- dev-infra's signal that trunk is degraded. Default
-    behavior is to wait it out so we don't stampede broken CI with
-    new pushes. ``ignore_sev`` (operator override via ``--ignore-sev``)
-    skips the wait entirely. The persistent ci_sev.ignored config
+    ``ci: sev`` -- dev-infra's signal that trunk is degraded. By default,
+    ``ignore_sev`` skips the wait entirely; ``--no-ignore-sev`` restores
+    waiting before actions that trigger fresh CI. The persistent
+    ci_sev.ignored config
     suppresses individual SEV issue numbers and is re-read while parked
     so already-parked shepherds can resume after the mux updates it.
 
@@ -2270,7 +2270,7 @@ def shepherd(
     pr: int,
     rebase: bool = False,
     accept_divergence: bool = False,
-    ignore_sev: bool = False,
+    ignore_sev: bool = True,
     reassess: bool = False,
     max_fix_commits: int | None = None,
     extra_context: str | None = None,
