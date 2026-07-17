@@ -1368,6 +1368,20 @@ class TestScheduledLand(unittest.TestCase):
         )
         self.assertTrue(scheduled.auto_merge)
 
+    def test_record_load_drops_merge_posted_before_land_time(self):
+        scheduled = mux._scheduled_land_from_record(
+            {
+                "land_at": "2026-07-15T00:00:00-07:00",
+                "prep_at": "2026-07-14T00:00:00-07:00",
+                "prep_started_at": "2026-07-14T00:00:09-07:00",
+                "merge_posted_at": "2026-07-08T15:20:05Z",
+            }
+        )
+
+        self.assertIsNotNone(scheduled)
+        assert scheduled is not None
+        self.assertEqual(scheduled.merge_posted_at, "")
+
     def test_prep_rebase_restarts_once_when_due(self):
         now = datetime.now().astimezone()
         scheduled = mux.ScheduledLand(
@@ -1473,6 +1487,29 @@ class TestScheduledLand(unittest.TestCase):
             app._scheduled_lands[mux._pr_job(123)].merge_posted_at,
             "2026-07-15T09:01:00Z",
         )
+
+    def test_existing_merge_command_before_land_time_is_ignored(self):
+        with (
+            mock.patch.object(mux, "PROJECT", mock.Mock(merge_command="@bot merge")),
+            mock.patch.object(mux.github, "viewer_login", return_value="bot"),
+            mock.patch.object(
+                mux.github,
+                "get_pr_comments",
+                return_value=[
+                    {
+                        "author": "bot",
+                        "body": "@bot merge",
+                        "created_at": "2026-07-08T15:20:05Z",
+                    }
+                ],
+            ),
+        ):
+            self.assertIsNone(
+                mux._own_merge_command_comment_iso(
+                    123,
+                    not_before=datetime.fromisoformat("2026-07-15T00:00:00-07:00"),
+                )
+            )
 
     def test_auto_merge_releases_to_manual_queue_after_conflict_resolution(self):
         now = datetime.now().astimezone()

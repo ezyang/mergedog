@@ -319,6 +319,12 @@ def _scheduled_land_from_record(value: object) -> ScheduledLand | None:
         return None
     prep_started_at = value.get("prep_started_at")
     merge_posted_at = value.get("merge_posted_at")
+    if isinstance(merge_posted_at, str) and merge_posted_at:
+        try:
+            if _parse_datetime(merge_posted_at) < land_at:
+                merge_posted_at = ""
+        except ValueError:
+            merge_posted_at = ""
     fix_commits_baseline = value.get("fix_commits_baseline")
     return ScheduledLand(
         land_at=land_at,
@@ -875,10 +881,13 @@ def _scheduled_status_ready_to_merge(structured: dict | None) -> bool:
     return False
 
 
-def _own_merge_command_comment_iso(pr: int) -> str | None:
+def _own_merge_command_comment_iso(
+    pr: int, *, not_before: datetime | None = None
+) -> str | None:
     command = PROJECT.merge_command
     if not command:
         return None
+    threshold = _ensure_aware(not_before) if not_before is not None else None
     viewer = github.viewer_login()
     comments = github.get_pr_comments(pr)
     for comment in reversed(comments):
@@ -888,7 +897,15 @@ def _own_merge_command_comment_iso(pr: int) -> str | None:
         if str(comment.get("body") or "").strip() != command:
             continue
         created_at = comment.get("created_at")
-        return created_at if isinstance(created_at, str) else ""
+        if not isinstance(created_at, str):
+            return ""
+        if threshold is not None:
+            try:
+                if _parse_datetime(created_at) < threshold:
+                    continue
+            except ValueError:
+                continue
+        return created_at
     return None
 
 
@@ -1676,7 +1693,9 @@ class MuxApp(App):
                 continue
 
             try:
-                existing = _own_merge_command_comment_iso(pr)
+                existing = _own_merge_command_comment_iso(
+                    pr, not_before=scheduled.land_at
+                )
             except Exception as e:
                 self.notify(
                     f"[{pr}] scheduled merge check failed: {e}",
