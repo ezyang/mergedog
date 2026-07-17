@@ -1326,7 +1326,7 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
                 mock.patch.object(mux, "_spawn") as spawn,
-                mock.patch.object(mux.github, "add_label") as add_label,
+                mock.patch.object(app, "_set_mergedog_label_async") as set_label,
             ):
                 spawn.return_value = (
                     _FakeProc(None),
@@ -1339,7 +1339,7 @@ class TestMuxJobPersistence(unittest.TestCase):
         self.assertEqual(app._parked_jobs, {})
         # Un-parking a job that was already tracked must not re-stamp the
         # label -- it only joins the mux once.
-        add_label.assert_not_called()
+        set_label.assert_not_called()
 
 
 class TestScheduledLand(unittest.TestCase):
@@ -1583,7 +1583,7 @@ class TestMergedogMuxLabel(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
                 mock.patch.object(mux, "_spawn") as spawn,
-                mock.patch.object(mux.github, "add_label") as add_label,
+                mock.patch.object(app, "_set_mergedog_label_async") as set_label,
             ):
                 spawn.return_value = (_FakeProc(None), object(), Path("123.log"))
                 app._dispatch_command("add 123")
@@ -1595,7 +1595,7 @@ class TestMergedogMuxLabel(unittest.TestCase):
                 )
                 app._dispatch_command("add 123")
 
-        add_label.assert_called_once_with(123, mux.MERGEDOG_LABEL, loud=False)
+        set_label.assert_called_once_with(mux._pr_job(123), present=True)
 
     def test_remove_strips_label(self):
         app = self._bare_app()
@@ -1603,11 +1603,11 @@ class TestMergedogMuxLabel(unittest.TestCase):
         app.procs = {job: (_FakeProc(0), object(), Path("123.log"))}
         with (
             mock.patch.object(app, "_prune_job"),
-            mock.patch.object(mux.github, "remove_label") as remove_label,
+            mock.patch.object(app, "_set_mergedog_label_async") as set_label,
         ):
             result = app._do_remove(123)
         self.assertEqual(result, "[123] removed")
-        remove_label.assert_called_once_with(123, mux.MERGEDOG_LABEL)
+        set_label.assert_called_once_with(job, present=False)
 
     def test_cancel_keeps_label(self):
         with tempfile.TemporaryDirectory() as d:

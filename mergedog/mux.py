@@ -1399,8 +1399,15 @@ class MuxApp(App):
             # so it is visible on GitHub as long-term tracked. Restarts and
             # rebases re-enter _do_add_job but _add_mux_job returns False for
             # an already-tracked job, so we don't re-hit the API each time.
-            self._set_mergedog_label(job, present=True)
+            self._set_mergedog_label_async(job, present=True)
         return f"[{label}] started"
+
+    @work(thread=True, group="mergedog-label")
+    def _set_mergedog_label_async(
+        self, job: JobKey | int, *, present: bool
+    ) -> None:
+        """Update mux membership on GitHub without blocking the TUI loop."""
+        self._set_mergedog_label(job, present=present)
 
     def _set_mergedog_label(self, job: JobKey | int, *, present: bool) -> None:
         """Best-effort add/remove of the ``mergedog`` mux-membership label.
@@ -1898,7 +1905,7 @@ class MuxApp(App):
                 self._prune_job(job)
                 # Explicit removal from mux is the only thing that strips the
                 # ``mergedog`` label -- completion and crashes leave it on.
-                self._set_mergedog_label(job, present=False)
+                self._set_mergedog_label_async(job, present=False)
                 return f"[{label}] removed"
             return f"[{label}] unknown"
         if entry[0].poll() is None:
@@ -1906,7 +1913,7 @@ class MuxApp(App):
         self._prune_job(job)
         # Explicit removal from mux is the only thing that strips the
         # ``mergedog`` label -- completion and crashes leave it on.
-        self._set_mergedog_label(job, present=False)
+        self._set_mergedog_label_async(job, present=False)
         return f"[{label}] removed"
 
     def _do_remove(self, pr: int) -> str:
