@@ -915,7 +915,10 @@ def _is_ghstack(pr_data: dict) -> bool:
 
 
 def _resolve_ghstack_parent_dependency(
-    pr: int, child_head_ref: str
+    pr: int,
+    child_head_ref: str,
+    *,
+    fallback_on_error: _GhstackParentDependency | None = None,
 ) -> _GhstackParentDependency | None:
     """Return the immediate ghstack parent for ``pr``, if it has one.
 
@@ -933,13 +936,13 @@ def _resolve_ghstack_parent_dependency(
             f"(exit {e.code}); continuing without decentralized stack "
             "propagation"
         )
-        return None
+        return fallback_on_error
     except Exception as e:
         log(
             f"WARNING: could not resolve ghstack parent for PR #{pr}: {e}; "
             "continuing without decentralized stack propagation"
         )
-        return None
+        return fallback_on_error
 
     idx = next((i for i, m in enumerate(members) if m.pr == pr), None)
     if idx is None:
@@ -2865,10 +2868,42 @@ def _shepherd_body(
 
             if ghstack_parent is not None:
                 parent_status = _refresh_ghstack_parent_status(ghstack_parent)
-                _maybe_use_landed_ghstack_parent_base(
+                parent_landed = _maybe_use_landed_ghstack_parent_base(
                     ghstack_parent, parent_status
                 )
-                if parent_status.stale:
+                if parent_status.stale and not parent_landed:
+                    refreshed_parent = _resolve_ghstack_parent_dependency(
+                        pr,
+                        branch,
+                        fallback_on_error=ghstack_parent,
+                    )
+                    if refreshed_parent is None:
+                        log(
+                            f"PR #{pr} no longer has stack parent "
+                            f"PR #{ghstack_parent.parent_pr}; continuing "
+                            "independently"
+                        )
+                        ghstack_parent = None
+                    elif (
+                        refreshed_parent.parent_pr != ghstack_parent.parent_pr
+                        or refreshed_parent.parent_head_ref
+                        != ghstack_parent.parent_head_ref
+                        or refreshed_parent.parent_orig_ref
+                        != ghstack_parent.parent_orig_ref
+                    ):
+                        log(
+                            f"stack parent changed from PR "
+                            f"#{ghstack_parent.parent_pr} to PR "
+                            f"#{refreshed_parent.parent_pr}"
+                        )
+                        ghstack_parent = refreshed_parent
+                        parent_status = _refresh_ghstack_parent_status(
+                            ghstack_parent
+                        )
+                        _maybe_use_landed_ghstack_parent_base(
+                            ghstack_parent, parent_status
+                        )
+                if ghstack_parent is not None and parent_status.stale:
                     log_state_key = (
                         f"{parent_status.reason}; "
                         f"parent {parent_status.parent_done}/"
@@ -2926,7 +2961,8 @@ def _shepherd_body(
                     last_status = None
                     ghstack_parent.last_log_state = None
                     continue
-                ghstack_parent.last_log_state = None
+                if ghstack_parent is not None:
+                    ghstack_parent.last_log_state = None
 
             # Track stability: any change in (status, check_count) restarts
             # the quiescence timer. We only gate on it for the "passed"

@@ -231,6 +231,38 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
         self.assertIsNone(dep)
         log.assert_called_once()
 
+    def test_stack_resolution_halt_preserves_existing_dependency_on_refresh(self):
+        existing = _dep()
+        with mock.patch(
+            "mergedog.stack.resolve_stack", side_effect=SystemExit(1)
+        ), mock.patch.object(shepherd, "log"):
+            dep = shepherd._resolve_ghstack_parent_dependency(
+                101,
+                "gh/u/101/head",
+                fallback_on_error=existing,
+            )
+
+        self.assertIs(dep, existing)
+
+    def test_refresh_can_remove_obsolete_parent(self):
+        members = [
+            mock.Mock(
+                pr=101,
+                head_ref="gh/u/101/head",
+                orig_ref="gh/u/101/orig",
+            )
+        ]
+        with mock.patch(
+            "mergedog.stack.resolve_stack", return_value=(members, {})
+        ):
+            dep = shepherd._resolve_ghstack_parent_dependency(
+                101,
+                "gh/u/101/head",
+                fallback_on_error=_dep(),
+            )
+
+        self.assertIsNone(dep)
+
 
 class TestPublishGhstackParentRebase(unittest.TestCase):
     def test_landed_parent_base_marks_parent_ready(self):
