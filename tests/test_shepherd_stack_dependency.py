@@ -221,8 +221,8 @@ class TestCheckTrustedGhstackParent(unittest.TestCase):
 
 class TestResolveGhstackParentDependency(unittest.TestCase):
     def test_stack_resolution_halt_falls_back_to_isolated_mode(self):
-        with mock.patch(
-            "mergedog.stack.resolve_stack", side_effect=SystemExit(1)
+        with mock.patch.object(
+            shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
         ), mock.patch.object(shepherd, "log") as log:
             dep = shepherd._resolve_ghstack_parent_dependency(
                 101, "gh/u/101/head"
@@ -233,8 +233,8 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
 
     def test_stack_resolution_halt_preserves_existing_dependency_on_refresh(self):
         existing = _dep()
-        with mock.patch(
-            "mergedog.stack.resolve_stack", side_effect=SystemExit(1)
+        with mock.patch.object(
+            shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
         ), mock.patch.object(shepherd, "log"):
             dep = shepherd._resolve_ghstack_parent_dependency(
                 101,
@@ -245,15 +245,10 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
         self.assertIs(dep, existing)
 
     def test_refresh_can_remove_obsolete_parent(self):
-        members = [
-            mock.Mock(
-                pr=101,
-                head_ref="gh/u/101/head",
-                orig_ref="gh/u/101/orig",
-            )
-        ]
-        with mock.patch(
-            "mergedog.stack.resolve_stack", return_value=(members, {})
+        with mock.patch.object(
+            shepherd.repo, "fetch_stack_refs"
+        ), mock.patch.object(
+            shepherd.repo, "walk_orig_stack", return_value=[101]
         ):
             dep = shepherd._resolve_ghstack_parent_dependency(
                 101,
@@ -262,6 +257,27 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
             )
 
         self.assertIsNone(dep)
+
+    def test_uses_actual_orig_parent_instead_of_stack_listing_order(self):
+        parent_data = {
+            "number": 100,
+            "headRefName": "gh/u/100/head",
+        }
+        with mock.patch.object(
+            shepherd.repo, "fetch_stack_refs"
+        ) as fetch, mock.patch.object(
+            shepherd.repo, "walk_orig_stack", return_value=[100, 101]
+        ), mock.patch.object(
+            shepherd.github, "get_pr", return_value=parent_data
+        ):
+            dep = shepherd._resolve_ghstack_parent_dependency(
+                101, "gh/u/101/head"
+            )
+
+        self.assertEqual(dep, _dep())
+        fetch.assert_called_once_with(
+            [("gh/u/101/head", "gh/u/101/orig")]
+        )
 
 
 class TestPublishGhstackParentRebase(unittest.TestCase):

@@ -920,16 +920,40 @@ def _resolve_ghstack_parent_dependency(
     *,
     fallback_on_error: _GhstackParentDependency | None = None,
 ) -> _GhstackParentDependency | None:
-    """Return the immediate ghstack parent for ``pr``, if it has one.
+    """Return the actual immediate ghstack parent for ``pr``, if it has one.
 
-    Single-PR mode remains best-effort for odd ghstack shapes: if stack
-    discovery fails, keep shepherding the PR with the historical isolated
-    behavior instead of refusing to run.
+    Use the child ``/orig`` ancestry rather than the full stack listing. A PR
+    can be listed at the bottom of a larger ghstack while being based directly
+    on main, in which case its preceding list entry is not a dependency.
+
+    Single-PR mode remains best-effort for odd ghstack shapes: on initial
+    discovery failure, keep shepherding the PR with the historical isolated
+    behavior. During a refresh, preserve the last known dependency instead.
     """
     try:
-        from mergedog.stack import resolve_stack
+        from mergedog.stack import StackMember
 
-        members, _ = resolve_stack(pr)
+        if not (
+            child_head_ref.startswith("gh/")
+            and child_head_ref.endswith("/head")
+        ):
+            raise ValueError(f"invalid ghstack head ref {child_head_ref!r}")
+        child_orig_ref = child_head_ref[: -len("/head")] + "/orig"
+        repo.fetch_stack_refs([(child_head_ref, child_orig_ref)])
+        nums = repo.walk_orig_stack(child_orig_ref)
+
+        idx = next(
+            (i for i, member_pr in enumerate(nums) if member_pr == pr), None
+        )
+        if idx is None:
+            log(
+                f"WARNING: PR #{pr} was not present in its /orig ancestry; "
+                "continuing without decentralized stack propagation"
+            )
+            return fallback_on_error
+        if idx == 0:
+            return None
+        parent = StackMember.from_pr_data(github.get_pr(nums[idx - 1]))
     except SystemExit as e:
         log(
             f"WARNING: could not resolve ghstack parent for PR #{pr} "
@@ -943,24 +967,12 @@ def _resolve_ghstack_parent_dependency(
             "continuing without decentralized stack propagation"
         )
         return fallback_on_error
-
-    idx = next((i for i, m in enumerate(members) if m.pr == pr), None)
-    if idx is None:
-        log(
-            f"WARNING: PR #{pr} was not present in resolved ghstack; "
-            "continuing without decentralized stack propagation"
-        )
-        return None
-    if idx == 0:
-        return None
-    parent = members[idx - 1]
-    child = members[idx]
     return _GhstackParentDependency(
         parent_pr=parent.pr,
         parent_head_ref=parent.head_ref,
         parent_orig_ref=parent.orig_ref,
-        child_head_ref=child.head_ref or child_head_ref,
-        child_orig_ref=child.orig_ref,
+        child_head_ref=child_head_ref,
+        child_orig_ref=child_orig_ref,
     )
 
 
