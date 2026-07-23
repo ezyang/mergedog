@@ -953,12 +953,15 @@ class TestMuxCommands(unittest.TestCase):
         with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
             result = app._dispatch_command("cleanup")
 
-        self.assertEqual(result, "cleaning up 1 completed job(s)")
-        cleanup_jobs.assert_called_once_with([completed])
-        self.assertEqual(app._cleanup_jobs, {completed})
+        self.assertEqual(
+            result,
+            "cleaning up 1 completed job(s); checking 1 halted job(s)",
+        )
+        cleanup_jobs.assert_called_once_with([completed, failed], {failed})
+        self.assertEqual(app._cleanup_jobs, {completed, failed})
         self.assertEqual(
             app._cleanup_status[completed],
-            "cleanup: queued (1/1)",
+            "cleanup: queued (1/2)",
         )
 
     def test_clean_alias_prunes_successful_completed_jobs(self):
@@ -976,7 +979,7 @@ class TestMuxCommands(unittest.TestCase):
             result = app._dispatch_command("clean")
 
         self.assertEqual(result, "cleaning up 1 completed job(s)")
-        cleanup_jobs.assert_called_once_with([completed])
+        cleanup_jobs.assert_called_once_with([completed], set())
 
     def test_cleanup_without_completed_jobs_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -988,8 +991,10 @@ class TestMuxCommands(unittest.TestCase):
         with mock.patch.object(app, "_cleanup_completed_jobs") as cleanup_jobs:
             result = app._dispatch_command("cleanup")
 
-        self.assertEqual(result, "no completed jobs to cleanup")
-        cleanup_jobs.assert_not_called()
+        self.assertEqual(result, "checking 1 halted job(s)")
+        cleanup_jobs.assert_called_once_with(
+            [mux._pr_job(456)], {mux._pr_job(456)}
+        )
 
     def test_cleanup_while_cleanup_is_running_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -1008,6 +1013,65 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "cleanup already in progress")
         cleanup_jobs.assert_not_called()
+
+    def test_cleanup_probes_halted_job_and_removes_closed_pr(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        halted = mux._pr_job(123)
+        app._cleanup_jobs = {halted}
+        app._cleanup_status = {halted: "cleanup: queued (1/1)"}
+        app.call_from_thread = lambda fn, *args: fn(*args)
+        app._refresh = mock.Mock()
+
+        with (
+            mock.patch.object(mux.github, "get_pr_state", return_value="CLOSED"),
+            mock.patch.object(mux, "_cleanup_job_files") as cleanup_files,
+            mock.patch.object(app, "_forget_job_record") as forget,
+        ):
+            app._cleanup_completed_jobs.__wrapped__(app, [halted], {halted})
+
+        cleanup_files.assert_called_once_with(halted)
+        forget.assert_called_once_with(halted)
+        self.assertNotIn(halted, app._cleanup_jobs)
+
+    def test_cleanup_leaves_open_halted_job_untouched(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        halted = mux._pr_job(123)
+        app._cleanup_jobs = {halted}
+        app._cleanup_status = {halted: "cleanup: queued (1/1)"}
+        app.call_from_thread = lambda fn, *args: fn(*args)
+        app._refresh = mock.Mock()
+
+        with (
+            mock.patch.object(mux.github, "get_pr_state", return_value="OPEN"),
+            mock.patch.object(mux, "_cleanup_job_files") as cleanup_files,
+            mock.patch.object(app, "_forget_job_record") as forget,
+        ):
+            app._cleanup_completed_jobs.__wrapped__(app, [halted], {halted})
+
+        cleanup_files.assert_not_called()
+        forget.assert_not_called()
+        self.assertNotIn(halted, app._cleanup_jobs)
+
+    def test_cleanup_leaves_halted_job_when_probe_fails(self):
+        app = mux.MuxApp.__new__(mux.MuxApp)
+        halted = mux._pr_job(123)
+        app._cleanup_jobs = {halted}
+        app._cleanup_status = {halted: "cleanup: queued (1/1)"}
+        app.call_from_thread = lambda fn, *args: fn(*args)
+        app._refresh = mock.Mock()
+
+        with (
+            mock.patch.object(
+                mux.github, "get_pr_state", side_effect=RuntimeError("offline")
+            ),
+            mock.patch.object(mux, "_cleanup_job_files") as cleanup_files,
+            mock.patch.object(app, "_forget_job_record") as forget,
+        ):
+            app._cleanup_completed_jobs.__wrapped__(app, [halted], {halted})
+
+        cleanup_files.assert_not_called()
+        forget.assert_not_called()
+        self.assertNotIn(halted, app._cleanup_jobs)
 
     def test_cancel_removes_job_from_resume_list_but_keeps_row(self):
         with tempfile.TemporaryDirectory() as d:

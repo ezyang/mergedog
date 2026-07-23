@@ -103,7 +103,7 @@ TUI commands (type in the input bar at the bottom):
 | `rebase all` | Kill all current session shepherds and respawn with `--rebase` |
 | `reassess <pr>` | Re-invoke Claude for previously-spurious failures |
 | `mark-spurious <pr>` | Snapshot current failed/cancelled checks as spurious and restart |
-| `cleanup` or `clean` | Forget successful completed shepherds |
+| `cleanup` or `clean` | Forget completed shepherds and HALTs whose PR is closed |
 | `log <pr>` | Print the log file path |
 | `ignore-sev [on\|off]` | Toggle full SEV bypass for future spawns |
 | `ignore-sev add <issue>` | Persistently ignore one `ci: sev` issue |

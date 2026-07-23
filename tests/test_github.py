@@ -479,6 +479,27 @@ class TestPrMergeCommit(unittest.TestCase):
             self.assertIsNone(github.get_pr_merge_commit_sha(1))
 
 
+class TestPrState(unittest.TestCase):
+    def test_returns_pr_state(self):
+        with mock.patch.object(
+            github, "_gh_json", return_value={"state": "CLOSED"}
+        ) as gh_json:
+            self.assertEqual(github.get_pr_state(123), "CLOSED")
+
+        self.assertEqual(
+            gh_json.call_args.args[0],
+            [
+                "pr",
+                "view",
+                "123",
+                "--repo",
+                github.REPO,
+                "--json",
+                "state",
+            ],
+        )
+
+
 class TestPrPollFields(unittest.TestCase):
     def test_combines_status_and_head_fields(self):
         with mock.patch.object(

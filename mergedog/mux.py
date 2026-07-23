@@ -23,7 +23,7 @@ Commands typed at the bottom (enter to submit):
     mark-spurious <pr>                mark current failed/cancelled checks
                                       spurious and restart the shepherd
     cancel <pr>                       SIGTERM a shepherd (keeps state)
-    cleanup | clean                   forget successful completed shepherds
+    cleanup | clean                   forget completed or closed-PR shepherds
     remove <pr>                       SIGTERM and forget (wipes worktree)
     log <pr>                          show the path to its log file
     help                              show phase meanings and commands
@@ -1925,14 +1925,26 @@ class MuxApp(App):
     def _do_cleanup(self, rest: list[str]) -> str:
         if rest and rest != ["all"]:
             return "usage: cleanup [all]"
-        jobs = self._completed_jobs()
+        completed = self._completed_jobs()
+        cleanup_jobs = getattr(self, "_cleanup_jobs", set())
+        halted = [
+            job
+            for job in self._dead_jobs()
+            if job[0] == PR_JOB and job not in cleanup_jobs
+        ]
+        jobs = sorted(set(completed) | set(halted))
         if not jobs:
-            if getattr(self, "_cleanup_jobs", set()):
+            if cleanup_jobs:
                 return "cleanup already in progress"
-            return "no completed jobs to cleanup"
+            return "no completed or closed halted jobs to cleanup"
         self._begin_cleanup_jobs(jobs)
-        self._cleanup_completed_jobs(jobs)
-        return f"cleaning up {len(jobs)} completed job(s)"
+        self._cleanup_completed_jobs(jobs, set(halted))
+        parts = []
+        if completed:
+            parts.append(f"cleaning up {len(completed)} completed job(s)")
+        if halted:
+            parts.append(f"checking {len(halted)} halted job(s)")
+        return "; ".join(parts)
 
     def _begin_cleanup_jobs(self, jobs: list[JobKey]) -> None:
         cleanup_jobs = getattr(self, "_cleanup_jobs", None)
@@ -1949,10 +1961,26 @@ class MuxApp(App):
             cleanup_status[job] = f"cleanup: queued ({index}/{total})"
 
     @work(thread=True, group="cleanup")
-    def _cleanup_completed_jobs(self, jobs: list[JobKey]) -> None:
+    def _cleanup_completed_jobs(
+        self, jobs: list[JobKey], halted: set[JobKey]
+    ) -> None:
         total = len(jobs)
         for index, job in enumerate(jobs, start=1):
             label = _job_label(job)
+            if job in halted:
+                self.call_from_thread(
+                    self._set_cleanup_status,
+                    job,
+                    f"cleanup: checking PR [{label}] state ({index}/{total})",
+                )
+                try:
+                    state = github.get_pr_state(job[1])
+                except Exception:
+                    self.call_from_thread(self._skip_cleanup_job, job)
+                    continue
+                if state not in {"CLOSED", "MERGED"}:
+                    self.call_from_thread(self._skip_cleanup_job, job)
+                    continue
             self.call_from_thread(
                 self._set_cleanup_status,
                 job,
@@ -1971,6 +1999,11 @@ class MuxApp(App):
 
     def _finish_cleanup_job(self, job: JobKey) -> None:
         self._forget_job_record(job)
+        getattr(self, "_cleanup_jobs", set()).discard(job)
+        getattr(self, "_cleanup_status", {}).pop(job, None)
+        self._refresh()
+
+    def _skip_cleanup_job(self, job: JobKey) -> None:
         getattr(self, "_cleanup_jobs", set()).discard(job)
         getattr(self, "_cleanup_status", {}).pop(job, None)
         self._refresh()

@@ -784,6 +784,14 @@ def get_pr_merge_commit_sha(pr: int) -> str | None:
     return oid if isinstance(oid, str) and oid else None
 
 
+def get_pr_state(pr: int) -> str | None:
+    data = _gh_json(
+        ["pr", "view", str(pr), "--repo", REPO, "--json", "state"]
+    )
+    state = data.get("state")
+    return state if isinstance(state, str) else None
+
+
 def viewer_login() -> str:
     """The GitHub login of the user the local ``gh`` CLI is authenticated as."""
     return _gh(["api", "user", "--jq", ".login"]).stdout.strip()
