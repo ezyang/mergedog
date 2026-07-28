@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 
 from mergedog import github
+from mergedog.comments import MERGEDOG_NOTICE
 from mergedog.log import log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG
 from mergedog.project import get_project_policy
@@ -133,6 +134,8 @@ def _format_handoff_comment(
         head: list[str] = [
             "## mergedog handoff (after merge failure)",
             "",
+            MERGEDOG_NOTICE,
+            "",
             f"{PROJECT.mergebot_login} reported `Merge failed`. "
             "mergedog re-inspected "
             "CI and is handing back off to you. **Please review the latest "
@@ -143,6 +146,8 @@ def _format_handoff_comment(
     else:
         head = [
             "## mergedog handoff",
+            "",
+            MERGEDOG_NOTICE,
             "",
             "All CI is green (or skipped). Ready for human review and "
             + (

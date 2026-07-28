@@ -3,6 +3,7 @@ from unittest import mock
 
 from mergedog import github
 from mergedog import handoff
+from mergedog.comments import MERGEDOG_NOTICE
 from mergedog.taint import taint
 
 
@@ -18,6 +19,8 @@ class TestHandoffComments(unittest.TestCase):
 
         self.assertIn(f"<!-- mergedog:handoff head={'a' * 40} -->", body)
         self.assertIn(f"Current PR head: `{'a' * 40}`.", body)
+        self.assertIn(MERGEDOG_NOTICE, body)
+        self.assertIn("the PR author does not need to act", body)
 
     def test_handoff_comment_leads_with_pushed_changes(self):
         body = handoff._format_handoff_comment(

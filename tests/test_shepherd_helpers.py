@@ -670,6 +670,10 @@ class TestInlineHunkComments(unittest.TestCase):
             f"https://github.com/{shepherd.REPO_SLUG}/commit/{sha}",
             post_comment.call_args.kwargs["body"],
         )
+        self.assertIn(
+            "the PR author does not need to act",
+            post_comment.call_args.kwargs["body"],
+        )
 
     def test_skips_existing_inline_hunk_marker(self):
         sha = "a" * 40
