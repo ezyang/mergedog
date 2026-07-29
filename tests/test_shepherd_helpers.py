@@ -670,7 +670,7 @@ class TestInlineHunkComments(unittest.TestCase):
             f"https://github.com/{shepherd.REPO_SLUG}/commit/{sha}",
             post_comment.call_args.kwargs["body"],
         )
-        self.assertIn(
+        self.assertNotIn(
             "the PR author does not need to act",
             post_comment.call_args.kwargs["body"],
         )

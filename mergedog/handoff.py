@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 
 from mergedog import github
-from mergedog.comments import MERGEDOG_NOTICE
+from mergedog.comments import MERGEDOG_DISCLOSURE
 from mergedog.log import log, set_approved, set_merging
 from mergedog.paths import REPO_SLUG
 from mergedog.project import get_project_policy
@@ -102,6 +102,7 @@ def _format_handoff_comment(
     suppressed_failures: list[str] | None = None,
     drci_summary: str | None = None,
     recovering: bool = False,
+    include_disclosure: bool = True,
 ) -> str:
     """Build the markdown body posted on the PR at handoff.
 
@@ -134,8 +135,6 @@ def _format_handoff_comment(
         head: list[str] = [
             "## mergedog handoff (after merge failure)",
             "",
-            MERGEDOG_NOTICE,
-            "",
             f"{PROJECT.mergebot_login} reported `Merge failed`. "
             "mergedog re-inspected "
             "CI and is handing back off to you. **Please review the latest "
@@ -147,8 +146,6 @@ def _format_handoff_comment(
         head = [
             "## mergedog handoff",
             "",
-            MERGEDOG_NOTICE,
-            "",
             "All CI is green (or skipped). Ready for human review and "
             + (
                 f"`{PROJECT.merge_command}`."
@@ -157,6 +154,8 @@ def _format_handoff_comment(
             ),
             "",
         ]
+    if include_disclosure:
+        head[2:2] = [MERGEDOG_DISCLOSURE, ""]
     if n == 0:
         if head_sha:
             head.extend(["", f"Current PR head: `{head_sha}`."])
@@ -395,11 +394,12 @@ def post_handoff_comment(
     # "already handed off" check) -- the prior comment said "ready to
     # merge", which is now stale, and the human needs the new framing.
     head_sha = str(pr_data.get("headRefOid") or "") or None
+    comments = github.get_pr_comments(pr)
     if (
         not force
         and not recovering
-        and github.has_mergedog_handoff_comment(
-            pr, head_sha=head_sha, author=author
+        and github.has_mergedog_handoff_comment_from_comments(
+            comments, head_sha=head_sha, author=author
         )
     ):
         log(f"handoff comment already present on PR #{pr}; not re-posting")
@@ -411,6 +411,9 @@ def post_handoff_comment(
         suppressed_failures=suppressed_failures,
         drci_summary=drci_summary,
         recovering=recovering,
+        include_disclosure=not github.has_mergedog_disclosure_from_comments(
+            comments, author=author
+        ),
     )
     try:
         github.post_pr_comment(pr, body)

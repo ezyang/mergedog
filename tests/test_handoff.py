@@ -3,7 +3,11 @@ from unittest import mock
 
 from mergedog import github
 from mergedog import handoff
-from mergedog.comments import MERGEDOG_NOTICE
+from mergedog.comments import (
+    MERGEDOG_DISCLOSURE,
+    MERGEDOG_DISCLOSURE_MARKER,
+    MERGEDOG_NOTICE,
+)
 from mergedog.taint import taint
 
 
@@ -21,6 +25,53 @@ class TestHandoffComments(unittest.TestCase):
         self.assertIn(f"Current PR head: `{'a' * 40}`.", body)
         self.assertIn(MERGEDOG_NOTICE, body)
         self.assertIn("the PR author does not need to act", body)
+
+    def test_post_handoff_omits_disclosure_already_present_in_pr(self):
+        comments = [
+            {
+                "author": "mergedog",
+                "body": MERGEDOG_NOTICE,
+            }
+        ]
+        with (
+            mock.patch.object(
+                github, "get_pr_comments", return_value=comments
+            ) as get_comments,
+            mock.patch.object(github, "post_pr_comment") as post_comment,
+        ):
+            posted = handoff.post_handoff_comment(
+                101,
+                {"number": 101, "headRefOid": "a" * 40},
+                [],
+                author="mergedog",
+            )
+
+        self.assertTrue(posted)
+        get_comments.assert_called_once_with(101)
+        body = post_comment.call_args.args[1]
+        self.assertNotIn(MERGEDOG_DISCLOSURE_MARKER, body)
+        self.assertNotIn(MERGEDOG_NOTICE, body)
+
+    def test_other_authors_cannot_suppress_disclosure(self):
+        comments = [
+            {
+                "author": "someone-else",
+                "body": MERGEDOG_DISCLOSURE,
+            }
+        ]
+        with (
+            mock.patch.object(github, "get_pr_comments", return_value=comments),
+            mock.patch.object(github, "post_pr_comment") as post_comment,
+        ):
+            posted = handoff.post_handoff_comment(
+                101,
+                {"number": 101, "headRefOid": "a" * 40},
+                [],
+                author="mergedog",
+            )
+
+        self.assertTrue(posted)
+        self.assertIn(MERGEDOG_DISCLOSURE, post_comment.call_args.args[1])
 
     def test_handoff_comment_leads_with_pushed_changes(self):
         body = handoff._format_handoff_comment(

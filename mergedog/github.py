@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote
 
+from mergedog.comments import MERGEDOG_DISCLOSURE_MARKER, MERGEDOG_NOTICE
 from mergedog.log import log
 from mergedog.net import github_api_env_extra, is_transient_network_error
 from mergedog.paths import (
@@ -1238,7 +1239,19 @@ def has_mergedog_handoff_comment(
     login) so a spoofed marker from another commenter can't suppress the
     handoff.
     """
-    for c in get_pr_comments(pr):
+    return has_mergedog_handoff_comment_from_comments(
+        get_pr_comments(pr), head_sha=head_sha, author=author
+    )
+
+
+def has_mergedog_handoff_comment_from_comments(
+    comments: list[dict],
+    *,
+    head_sha: str | None = None,
+    author: str | None = None,
+) -> bool:
+    """Check handoff idempotency using an already-fetched comment list."""
+    for c in comments:
         if not _is_own_comment(c, author):
             continue
         body = c.get("body") or ""
@@ -1248,6 +1261,20 @@ def has_mergedog_handoff_comment(
         if head_sha is None or marker_head == head_sha:
             return True
     return False
+
+
+def has_mergedog_disclosure_from_comments(
+    comments: list[dict], *, author: str | None = None
+) -> bool:
+    """True if mergedog already disclosed its role in the PR conversation."""
+    return any(
+        _is_own_comment(comment, author)
+        and (
+            MERGEDOG_DISCLOSURE_MARKER in str(comment.get("body") or "")
+            or MERGEDOG_NOTICE in str(comment.get("body") or "")
+        )
+        for comment in comments
+    )
 
 
 def latest_mergedog_handoff_iso(pr: int, *, author: str | None = None) -> str | None:

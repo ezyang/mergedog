@@ -1,5 +1,6 @@
-"""Shared text for comments mergedog posts on pull requests."""
+"""Disclosure text for mergedog's PR conversation comments."""
 
+MERGEDOG_DISCLOSURE_MARKER = "<!-- mergedog:disclosure -->"
 MERGEDOG_NOTICE = (
     "> [!NOTE]\n"
     "> This PR is being shepherded by "
@@ -7,3 +8,4 @@ MERGEDOG_NOTICE = (
     "by a maintainer. It watches CI and may push fixes; the PR author does "
     "not need to act unless a maintainer asks."
 )
+MERGEDOG_DISCLOSURE = f"{MERGEDOG_DISCLOSURE_MARKER}\n{MERGEDOG_NOTICE}"
