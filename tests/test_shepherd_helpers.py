@@ -1553,6 +1553,28 @@ class TestPublishGhstackFix(unittest.TestCase):
         wait_head.assert_called_once_with(123, head_sha)
 
 
+class TestInvokeCiFixer(unittest.TestCase):
+    def test_snapshots_actual_worktree_head(self):
+        worktree = Path("/tmp/wt")
+        result = LLMResult(True, "fix", "transcript")
+
+        with (
+            mock.patch.object(
+                shepherd.repo, "head_sha", return_value="orig"
+            ) as head_sha,
+            mock.patch.object(
+                shepherd.claude_mod, "invoke_fixer", return_value=result
+            ) as invoke_fixer,
+        ):
+            self.assertEqual(
+                shepherd._invoke_ci_fixer(worktree, "prompt"),
+                ("orig", result),
+            )
+
+        head_sha.assert_called_once_with(worktree)
+        invoke_fixer.assert_called_once_with(worktree, "prompt")
+
+
 class TestLogRestoredState(unittest.TestCase):
     def _logged_lines(self, trust):
         with mock.patch.object(shepherd, "log") as logged:

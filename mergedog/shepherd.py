@@ -1509,6 +1509,13 @@ def _publish_ghstack_fix(
     return new_head_sha
 
 
+def _invoke_ci_fixer(
+    worktree: Path, prompt: str
+) -> tuple[str, claude_mod.LLMResult]:
+    sha_before = repo.head_sha(worktree)
+    return sha_before, claude_mod.invoke_fixer(worktree, prompt)
+
+
 def _run_operator_fix(
     *,
     pr: int,
@@ -3171,9 +3178,8 @@ def _shepherd_body(
                     trunk_revert_context=trunk_ctx,
                 )
                 session_failed_jobs = [name for name, _ in failed]
-                sha_before = current
                 started_at = utc_now_iso()
-                result = claude_mod.invoke_fixer(worktree, prompt)
+                sha_before, result = _invoke_ci_fixer(worktree, prompt)
                 ran_cleanly, new_sha, transcript = result
                 newly_ignored_during_llm = _apply_merge_i_ignored_checks(
                     trust,
