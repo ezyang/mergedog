@@ -1687,6 +1687,12 @@ class TestClassifyFailureBody(unittest.TestCase):
             "retryable infra flake",
         )
         self.assertEqual(
+            shepherd._classify_failure_body(
+                "Please re-issue the merge command to merge the latest commit."
+            ),
+            "retryable infra flake",
+        )
+        self.assertEqual(
             shepherd._classify_failure_body("something else"),
             "unclassified",
         )

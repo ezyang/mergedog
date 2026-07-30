@@ -26,6 +26,16 @@ class TestHandoffComments(unittest.TestCase):
         self.assertIn(MERGEDOG_NOTICE, body)
         self.assertIn("the PR author does not need to act", body)
 
+    def test_stale_head_merge_failure_is_retryable(self):
+        body = (
+            "## Merge failed\n"
+            "**Reason**: Commit 76a1aae was HEAD when comment 5111308688 "
+            "was posted but now the latest commit on the PR is 6d6cada. "
+            "Please re-issue the merge command to merge the latest commit."
+        )
+
+        self.assertTrue(handoff.is_retryable_merge_failure(body))
+
     def test_post_handoff_omits_disclosure_already_present_in_pr(self):
         comments = [
             {

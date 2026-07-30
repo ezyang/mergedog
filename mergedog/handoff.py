@@ -431,6 +431,7 @@ PYTORCHMERGEBOT_LOGIN = PROJECT.mergebot_login
 _RETRYABLE_FAILURE_PATTERNS = [
     "HTTP Error 504",
     "Gateway Timeout",
+    "Please re-issue the merge command to merge the latest commit.",
 ]
 
 
