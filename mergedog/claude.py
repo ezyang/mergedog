@@ -371,6 +371,7 @@ def _ensure_lintrunner_setup() -> Path | None:
             proc = subprocess.run(
                 [str(binary), "init"],
                 cwd=str(REPO_DIR),
+                check=False,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -434,6 +435,7 @@ def _run_lintrunner_amend(worktree: Path) -> str | None:
     proc = subprocess.run(
         [str(lintrunner), "-a", "-r", "HEAD~1", "--skip", skip],
         cwd=str(worktree),
+        check=False,
         env=env,
         capture_output=True,
         text=True,

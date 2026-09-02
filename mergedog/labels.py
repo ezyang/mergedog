@@ -174,6 +174,7 @@ def _invoke_claude_for_labels(prompt: str) -> list[str]:
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
             env=os.environ.copy(),
         )
     except subprocess.TimeoutExpired:

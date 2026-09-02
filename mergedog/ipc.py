@@ -10,6 +10,7 @@ and the lock file contains the socket path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -49,14 +50,10 @@ def acquire_lock() -> int:
 
 def release_lock(fd: int) -> None:
     """Release the mux lock and clean up socket + lock files."""
-    try:
+    with contextlib.suppress(Exception):
         fcntl.flock(fd, fcntl.LOCK_UN)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         os.close(fd)
-    except Exception:
-        pass
     MUX_SOCKET.unlink(missing_ok=True)
     MUX_LOCK_FILE.unlink(missing_ok=True)
 
@@ -108,7 +105,5 @@ async def send_command(command: str, *, timeout: float = 30.0) -> str:
         return data.get("message", "")
     finally:
         writer.close()
-        try:
+        with contextlib.suppress(Exception):
             await writer.wait_closed()
-        except Exception:
-            pass

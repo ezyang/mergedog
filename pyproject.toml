@@ -34,6 +34,7 @@ ignore = [
     "SIM117",  # nested with-statements read fine in tests
     "PLW0603", # module-level state is used deliberately for process globals
     "RUF012",  # Textual class attributes (CSS, BINDINGS) are mutable by convention
+    "PLW2901", # `line = line.strip()` inside loops is idiomatic here
 ]
 
 [tool.ruff.lint.isort]

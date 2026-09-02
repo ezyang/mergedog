@@ -53,6 +53,7 @@ def notify_halt(msg: str) -> None:
             ],
             capture_output=True,
             timeout=30,
+            check=False,
         )
         if proc.returncode != 0:
             stderr = proc.stderr.decode(errors="replace").strip()

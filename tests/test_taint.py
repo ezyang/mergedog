@@ -158,7 +158,7 @@ class TestKnownLaunderingGaps:
 
     def test_percent_format_launders(self):
         t = taint("evil", "test")
-        assert not isinstance("prefix %s" % t, TaintedStr)
+        assert not isinstance("prefix %s" % t, TaintedStr)  # noqa: UP031
 
 
 class TestFormatUntainted:

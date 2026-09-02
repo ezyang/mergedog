@@ -5,6 +5,7 @@ One process per PR. Synchronous. Halts on any sign of an untrusted change.
 
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import hashlib
 import re
@@ -80,7 +81,7 @@ def _fetch_current_pr_head_for_trust(pr: int, trust: TrustDB, current_sha: str) 
 
 
 def _write_ci_sev_status(pr: int, message: str) -> None:
-    try:
+    with contextlib.suppress(Exception):
         write_status(
             pr,
             phase="waiting_ci_sev",
@@ -88,8 +89,6 @@ def _write_ci_sev_status(pr: int, message: str) -> None:
             waiting_on="ci_sev",
             message=message,
         )
-    except Exception:
-        pass
 
 
 def _ci_sev_number(sev: dict) -> int | None:
@@ -692,10 +691,8 @@ def _actionable_lint_failure_names(failed: list[tuple[str, str]]) -> list[str]:
 
 
 def _write_status_best_effort(pr: int, **fields) -> None:
-    try:
+    with contextlib.suppress(Exception):
         write_status(pr, **fields)
-    except Exception:
-        pass
 
 
 def _ci_status_message(status: str, failed: int) -> str:
@@ -880,9 +877,7 @@ def _is_ghstack(pr_data: dict) -> bool:
     body = pr_data.get("body", "") or ""
     if branch.startswith("gh/"):
         return True
-    if "ghstack-source-id" in body:
-        return True
-    return False
+    return "ghstack-source-id" in body
 
 
 def _resolve_ghstack_parent_dependency(
@@ -1295,9 +1290,9 @@ def _needs_approval(run: dict) -> bool:
     """
     if run.get("status") in _APPROVAL_PENDING_STATUSES:
         return True
-    if run.get("status") == "completed" and run.get("conclusion") == "action_required":
-        return True
-    return False
+    return (
+        run.get("status") == "completed" and run.get("conclusion") == "action_required"
+    )
 
 
 def _wait_for_pr_head(pr: int, expected_sha: str) -> None:
@@ -2545,23 +2540,22 @@ def _shepherd_body(
                 "recovery"
             )
 
-    if operator_fix_context is not None:
-        if _run_operator_fix(
-            pr=pr,
-            pr_data=pr_data,
-            worktree=worktree,
-            branch=branch,
-            trust=trust,
-            operator_context=operator_fix_context,
-            is_ghstack=is_ghstack,
-            fork_remote=fork_remote,
-            ignore_sev=ignore_sev,
-            trusted_pr=trusted_pr,
-            sessions=sessions,
-            pushed_changes=pushed_changes,
-            viewer=viewer,
-        ):
-            fix_commits_pushed = trust.fix_commits_pushed
+    if operator_fix_context is not None and _run_operator_fix(
+        pr=pr,
+        pr_data=pr_data,
+        worktree=worktree,
+        branch=branch,
+        trust=trust,
+        operator_context=operator_fix_context,
+        is_ghstack=is_ghstack,
+        fork_remote=fork_remote,
+        ignore_sev=ignore_sev,
+        trusted_pr=trusted_pr,
+        sessions=sessions,
+        pushed_changes=pushed_changes,
+        viewer=viewer,
+    ):
+        fix_commits_pushed = trust.fix_commits_pushed
 
     run_state_cache: dict[int, tuple[str | None, str | None]] = {}
     last_approval_refresh_at = time.time()

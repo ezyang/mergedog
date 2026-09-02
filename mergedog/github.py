@@ -800,10 +800,7 @@ def is_self_pr(pr_data: dict, viewer: str) -> bool:
     login semantics.
     """
     author = pr_data.get("author") or {}
-    if isinstance(author, dict):
-        login = author.get("login") or ""
-    else:
-        login = str(author)
+    login = author.get("login") or "" if isinstance(author, dict) else str(author)
     return bool(login) and login.lower() == viewer.lower()
 
 

@@ -9,6 +9,7 @@ failure (which kicks the shepherd into a recovery cycle).
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -726,7 +727,7 @@ def _write_post_handoff_ci_status(
         handoff_comment_ok=handoff_comment_ok,
         suppression_warning=suppression_warning,
     )
-    try:
+    with contextlib.suppress(Exception):
         _write_status_with_handoff_fields(
             pr,
             phase="polling_ci",
@@ -745,8 +746,6 @@ def _write_post_handoff_ci_status(
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
         )
-    except Exception:
-        pass
 
 
 def _write_handoff_status(
@@ -794,7 +793,7 @@ def _write_handoff_status(
             else None
         )
         message = "waiting for maintainer approval"
-    try:
+    with contextlib.suppress(Exception):
         _write_status_with_handoff_fields(
             pr,
             phase="watching_merge" if merging else "ready",
@@ -816,8 +815,6 @@ def _write_handoff_status(
             handoff_comment_ok=handoff_comment_ok,
             suppression_warning=suppression_warning,
         )
-    except Exception:
-        pass
 
 
 def _merging_progress_line(

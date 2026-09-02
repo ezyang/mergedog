@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -57,6 +58,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TextIO
 
 from mergedog.bootstrap import promote_early_env
 
@@ -67,6 +69,41 @@ from textual import work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.suggester import SuggestFromList  # noqa: E402
 from textual.widgets import DataTable, Input, Static  # noqa: E402
+
+from mergedog import github  # noqa: E402
+from mergedog.cli import _parse_pr  # noqa: E402
+from mergedog.config import (  # noqa: E402
+    add_ignored_ci_sev,
+    clear_ignored_ci_sevs,
+    format_ci_sev_ignored_numbers,
+    get_ci_sev_config,
+    parse_ci_sev_number,
+    remove_ignored_ci_sev,
+)
+from mergedog.handoff import is_cla_merge_failure  # noqa: E402
+from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
+from mergedog.paths import (  # noqa: E402
+    LOGS_DIR,
+    MUX_JOBS_FILE,
+    MUX_PRS_FILE,
+    MUX_SOCKET,
+    REPO_SLUG,
+    atomic_write_text,
+    context_file,
+    ensure_dirs,
+    log_file,
+    state_file,
+    status_file,
+    worktree_dir,
+)
+from mergedog.project import get_project_policy  # noqa: E402
+from mergedog.shepherd import (  # noqa: E402
+    EXIT_PR_NOT_ACTIONABLE,
+    MAX_FIX_COMMITS,
+    MERGEDOG_LABEL,
+)
+from mergedog.state import TrustDB  # noqa: E402
+from mergedog.status import read_status  # noqa: E402
 
 COMMAND_SUGGESTIONS = [
     "add ",
@@ -157,41 +194,6 @@ class HistoryInput(Input):
         self._history_index = len(self._history)
         self._saved_line = ""
 
-
-from mergedog import github  # noqa: E402
-from mergedog.cli import _parse_pr  # noqa: E402
-from mergedog.config import (  # noqa: E402
-    add_ignored_ci_sev,
-    clear_ignored_ci_sevs,
-    format_ci_sev_ignored_numbers,
-    get_ci_sev_config,
-    parse_ci_sev_number,
-    remove_ignored_ci_sev,
-)
-from mergedog.handoff import is_cla_merge_failure  # noqa: E402
-from mergedog.ipc import acquire_lock, release_lock  # noqa: E402
-from mergedog.paths import (  # noqa: E402
-    LOGS_DIR,
-    MUX_JOBS_FILE,
-    MUX_PRS_FILE,
-    MUX_SOCKET,
-    REPO_SLUG,
-    atomic_write_text,
-    context_file,
-    ensure_dirs,
-    log_file,
-    state_file,
-    status_file,
-    worktree_dir,
-)
-from mergedog.project import get_project_policy  # noqa: E402
-from mergedog.shepherd import (  # noqa: E402
-    EXIT_PR_NOT_ACTIONABLE,
-    MAX_FIX_COMMITS,
-    MERGEDOG_LABEL,
-)
-from mergedog.state import TrustDB  # noqa: E402
-from mergedog.status import read_status  # noqa: E402
 
 PROJECT = get_project_policy()
 CI_PROGRESS_TOTAL_ESTIMATE = PROJECT.ci_progress_total_estimate
@@ -727,10 +729,8 @@ def _cleanup_job_files(job: JobKey | int) -> None:
     """Remove per-PR on-disk state for a forgotten mux job."""
     _, pr = _coerce_job(job)
     for path in (state_file(pr), context_file(pr), status_file(pr)):
-        try:
+        with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
-        except Exception:
-            pass
     try:
         from mergedog import repo as repo_mod
 
@@ -838,9 +838,7 @@ def _schedule_can_defer_review(structured: dict | None) -> bool:
         return False
     if _status_int_field(structured, "fix_attempts") > 0:
         return False
-    if _status_int_field(structured, "conflict_resolution_count") > 0:
-        return False
-    return True
+    return _status_int_field(structured, "conflict_resolution_count") <= 0
 
 
 def _scheduled_manual_blocker(structured: dict | None) -> str | None:
@@ -871,14 +869,12 @@ def _scheduled_status_ready_to_merge(structured: dict | None) -> bool:
     # as phase=ready. Require the handoff-specific field so we don't merge
     # from the pre-handoff "ready: CI is green" status before the summary
     # comment exists.
-    if (
+    return (
         phase == "ready"
         and "handoff_comment_ok" in structured
         and structured.get("approved") is True
         and "merge" in _status_text_field(structured, "user_action")
-    ):
-        return True
-    return False
+    )
 
 
 def _own_merge_command_comment_iso(
@@ -1231,12 +1227,12 @@ def _resolve_initial_jobs(
 def _spawn(
     job: JobKey | int,
     extra: list[str],
-) -> tuple[subprocess.Popen, object, Path]:
+) -> tuple[subprocess.Popen, TextIO, Path]:
     job = _coerce_job(job)
     _, pr = job
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _job_log_file(job)
-    f = open(log_path, "a", buffering=1, encoding="utf-8")
+    f = open(log_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
     try:
         f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         command = [sys.executable, "-m", "mergedog"]
@@ -1270,14 +1266,10 @@ def _terminate_group(p: subprocess.Popen, *, grace: float = 5.0) -> None:
     try:
         p.wait(timeout=grace)
     except subprocess.TimeoutExpired:
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(p.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             p.wait(timeout=grace)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 class MuxApp(App):
@@ -1309,7 +1301,7 @@ class MuxApp(App):
         scheduled: dict[JobKey, ScheduledLand] | None = None,
     ) -> None:
         super().__init__()
-        self.procs: dict[JobKey, tuple[subprocess.Popen, object, Path]] = {}
+        self.procs: dict[JobKey, tuple[subprocess.Popen, TextIO, Path]] = {}
         self._job_started_at: dict[JobKey, float] = {}
         self._pr_titles: dict[JobKey, TitleEntry | str] = {}
         self._cleanup_jobs: set[JobKey] = set()
@@ -1429,10 +1421,8 @@ class MuxApp(App):
         except Exception as e:
             return f"[{label}] spawn failed: {e}"
         if old_entry is not None:
-            try:
-                old_entry[1].close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                old_entry[1].close()
         _record_job_started(self, job, started_at)
         self._pr_titles.pop(job, None)
         self._unresumable_jobs.discard(job)
@@ -1568,10 +1558,8 @@ class MuxApp(App):
                 continue
             p = self.procs[job][0]
             if p.poll() is None:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(p.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
         # Now reap. ``_terminate_group`` is a no-op for already-exited
         # processes, and the second SIGTERM it sends to stragglers is
         # harmless.
@@ -1590,10 +1578,8 @@ class MuxApp(App):
             else:
                 _record_job_started(self, job, started_at)
                 if old_entry is not None:
-                    try:
-                        old_entry[1].close()  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    with contextlib.suppress(Exception):
+                        old_entry[1].close()
                 # Match _do_add_job: a respawned job is live again, so it
                 # sheds any recorded halt code and cancelled status.
                 self._unresumable_jobs.discard(job)
@@ -2235,10 +2221,8 @@ class MuxApp(App):
         job = _coerce_job(job)
         entry = self.procs.pop(job, None)
         if entry is not None:
-            try:
-                entry[1].close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                entry[1].close()
         _remove_mux_job(job)
         self._pr_titles.pop(job, None)
         getattr(self, "_job_started_at", {}).pop(job, None)
@@ -2547,10 +2531,8 @@ class MuxApp(App):
     @work(thread=False)
     async def _start_ipc_server(self) -> None:
         sock_path = str(MUX_SOCKET)
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
         server = await asyncio.start_unix_server(
             self._handle_ipc_connection,
             path=sock_path,
@@ -2582,10 +2564,8 @@ class MuxApp(App):
                 pass
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            except Exception:
-                pass
 
     def on_unmount(self) -> None:
         unresumable_jobs = getattr(self, "_unresumable_jobs", set())
@@ -2624,16 +2604,12 @@ class MuxApp(App):
             release_lock(self._lock_fd)
         for _job, (p, _f, _) in self.procs.items():
             if p.poll() is None:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(p.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
         for _job, (p, f, _) in self.procs.items():
             _terminate_group(p, grace=2.0)
-            try:
-                f.close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                f.close()
 
 
 def main() -> int:

@@ -73,6 +73,7 @@ def _classify(text: str) -> bool | None:
         proc = subprocess.run(
             ["claude", "-p", prompt, "--model", "haiku", "--output-format", "text"],
             capture_output=True,
+            check=False,
             text=True,
             timeout=_TIMEOUT_SEC,
             env=os.environ.copy(),
