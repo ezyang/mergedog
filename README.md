@@ -127,7 +127,8 @@ PRs?", "rebase everything", or "why did 182500 fail?" and Claude
 translates that into mux commands and log reads.  It shows you the
 deterministic command it ran, so you gradually learn the CLI.
 
-Requires `claude` on your PATH and a running mux instance.  Honors
+Requires `claude` on your PATH, a running mux instance, and the `mcp`
+extra (`uv sync --extra mcp`).  Honors
 `--root` / `MERGEDOG_ROOT` if you're using a non-default root.
 
 ### Single PR (one-off)

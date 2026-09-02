@@ -11,6 +11,11 @@ dependencies = [
 [project.scripts]
 mergedog = "mergedog.cli:main"
 
+[project.optional-dependencies]
+mcp = [
+    "mcp>=1.0,<2",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -21,6 +26,7 @@ packages = ["mergedog"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "ruff>=0.16",
 ]
 
 [tool.ruff]
