@@ -17,6 +17,8 @@ Commands typed at the bottom (enter to submit):
     restart dead                      re-spawn only crashed shepherds
     rebase <pr>                       start/restart a shepherd with --rebase
     rebase all                        re-run every session job with --rebase
+    reassess <pr>                     restart, re-judging failures previously
+                                      marked spurious
     hold <pr> <land-at>               keep PR green during a freeze, prep
                                       rebase before <land-at>, and land then
     unhold <pr>                       clear a scheduled land
@@ -1217,8 +1219,7 @@ def _resolve_initial_jobs(
         except argparse.ArgumentTypeError as e:
             skipped.append((raw, e))
 
-    seen: set[JobKey] = set()
-    initial = [job for job in initial if not (job in seen or seen.add(job))]
+    initial = list(dict.fromkeys(initial))
     for job in initial:
         parked.pop(job, None)
     return initial, parked, skipped

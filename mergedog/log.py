@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import NoReturn
 
 # Module-level signifiers the shepherd toggles based on PR state.
 # Surfaced into every log line so the mux's last-line-of-the-log readout
@@ -55,7 +56,7 @@ def log(msg: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-def die(msg: str, code: int = 1) -> None:
+def die(msg: str, code: int = 1) -> NoReturn:
     from mergedog import notify
 
     notify.notify_halt(msg)
@@ -76,7 +77,7 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
-def complete(msg: str, *, code: int = 0, outcome: str = "DONE") -> None:
+def complete(msg: str, *, code: int = 0, outcome: str = "DONE") -> NoReturn:
     set_outcome(outcome)
     if _status_pr is not None:
         try:

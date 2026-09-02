@@ -18,6 +18,7 @@ import signal
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 try:
     import re2
@@ -36,7 +37,8 @@ _RULESET_PATH = Path(__file__).parent / "ruleset.toml"
 @dataclass(frozen=True)
 class Rule:
     name: str
-    pattern: object
+    # ``re.Pattern`` or a compiled ``re2`` pattern; both expose ``.search``.
+    pattern: Any
     priority: int
 
 
