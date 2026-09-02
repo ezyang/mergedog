@@ -2,7 +2,6 @@ import unittest
 
 from mergedog.stack import parse_stack_from_body, parse_stack_from_discussion
 
-
 _GHSTACK_BODY = """\
 Stack from [ghstack](https://github.com/ezyang/ghstack) (oldest at bottom):
 * #150

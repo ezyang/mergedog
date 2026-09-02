@@ -54,9 +54,7 @@ def _query_one_for(table, hint=None):
 
 class TestMuxInput(unittest.TestCase):
     def test_ctrl_z_suspends_mux(self):
-        bindings = {
-            key: action for key, action, _description in mux.MuxApp.BINDINGS
-        }
+        bindings = {key: action for key, action, _description in mux.MuxApp.BINDINGS}
 
         self.assertEqual(bindings["ctrl+z"], "suspend_process")
 
@@ -85,9 +83,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             )
 
             with (
-                mock.patch.object(
-                    mux, "context_file", return_value=context_path
-                ),
+                mock.patch.object(mux, "context_file", return_value=context_path),
                 mock.patch.object(
                     mux, "_read_pr_worktree_title", return_value="commit title"
                 ) as fallback,
@@ -108,9 +104,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             )
 
             with (
-                mock.patch.object(
-                    mux, "context_file", return_value=context_path
-                ),
+                mock.patch.object(mux, "context_file", return_value=context_path),
                 mock.patch.object(mux, "log_file", return_value=log_path),
                 mock.patch.object(
                     mux, "_read_pr_worktree_title", return_value="commit title"
@@ -150,7 +144,9 @@ class TestMuxStructuredStatus(unittest.TestCase):
 
             def git(*args):
                 subprocess.run(
-                    ["git", *args], cwd=repo, check=True,
+                    ["git", *args],
+                    cwd=repo,
+                    check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -249,9 +245,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             table = _FakeTable()
 
             with (
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -390,9 +384,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_completed_not_actionable_status_is_retained(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "[12:00:00] PR is no longer open; shepherd complete\n"
-            )
+            log_path.write_text("[12:00:00] PR is no longer open; shepherd complete\n")
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {
                 mux._pr_job(123): (
@@ -412,9 +404,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_refresh_keeps_completed_rows_until_cleanup(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "[12:00:00] PR is no longer open; shepherd complete\n"
-            )
+            log_path.write_text("[12:00:00] PR is no longer open; shepherd complete\n")
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {
                 mux._pr_job(123): (
@@ -447,9 +437,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_refresh_shows_cleanup_progress(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "[12:00:00] PR is no longer open; shepherd complete\n"
-            )
+            log_path.write_text("[12:00:00] PR is no longer open; shepherd complete\n")
             job = mux._pr_job(123)
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {
@@ -460,9 +448,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 )
             }
             app._cleanup_jobs = {job}
-            app._cleanup_status = {
-                job: "cleanup: removing worktree for [123] (1/1)"
-            }
+            app._cleanup_status = {job: "cleanup: removing worktree for [123] (1/1)"}
             app._pr_titles = {job: "Test PR"}
             table = _FakeTable()
             hint = _FakeHint()
@@ -507,9 +493,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "message": "waiting for CI",
             }
             with (
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -541,9 +525,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 "message": "ready for human merge",
             }
             with (
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -590,9 +572,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_format_status_reports_cleanup_progress(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "[12:00:00] PR is no longer open; shepherd complete\n"
-            )
+            log_path.write_text("[12:00:00] PR is no longer open; shepherd complete\n")
             job = mux._pr_job(123)
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {
@@ -603,9 +583,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
                 )
             }
             app._cleanup_jobs = {job}
-            app._cleanup_status = {
-                job: "cleanup: removing worktree for [123] (1/1)"
-            }
+            app._cleanup_status = {job: "cleanup: removing worktree for [123] (1/1)"}
             app._pr_titles = {job: "Test PR"}
 
             with mock.patch.object(mux, "read_status") as read_status:
@@ -622,9 +600,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_format_status_ignores_nonterminal_sidecar_after_error(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "subprocess.CalledProcessError: gh pr view failed\n"
-            )
+            log_path.write_text("subprocess.CalledProcessError: gh pr view failed\n")
             job = mux._pr_job(123)
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {job: (_FakeProc(1), object(), log_path)}
@@ -644,8 +620,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
         self.assertEqual(rows[0]["phase"], "🔴")
         self.assertEqual(
             rows[0]["status"],
-            "HALT: shepherd exited: subprocess.CalledProcessError: "
-            "gh pr view failed",
+            "HALT: shepherd exited: subprocess.CalledProcessError: gh pr view failed",
         )
         self.assertTrue(rows[0]["shepherd_status_stale"])
         self.assertEqual(rows[0]["shepherd_status"], sidecar)
@@ -656,7 +631,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
             log_path.write_text(
                 "[12:00:00] invoking codex (fix-CI mode)...\n"
                 "Traceback (most recent call last):\n"
-                "  File \"mergedog/claude.py\", line 274, in _run_llm_streaming\n"
+                '  File "mergedog/claude.py", line 274, in _run_llm_streaming\n'
                 "    proc = subprocess.Popen(...)\n"
                 "OSError: [Errno 7] Argument list too long: 'codex'\n"
             )
@@ -687,9 +662,7 @@ class TestMuxStructuredStatus(unittest.TestCase):
     def test_format_status_keeps_halted_sidecar_after_error(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = Path(d) / "123.log"
-            log_path.write_text(
-                "[12:00:00] HALT: PR head moved to untrusted commit\n"
-            )
+            log_path.write_text("[12:00:00] HALT: PR head moved to untrusted commit\n")
             job = mux._pr_job(123)
             app = mux.MuxApp.__new__(mux.MuxApp)
             app.procs = {job: (_FakeProc(1), object(), log_path)}
@@ -820,9 +793,7 @@ class TestMuxCommands(unittest.TestCase):
         app.ignore_sev = False
         cfg = mock.Mock(ignored_numbers=(187193,))
 
-        with mock.patch.object(
-            mux, "add_ignored_ci_sev", return_value=cfg
-        ) as add:
+        with mock.patch.object(mux, "add_ignored_ci_sev", return_value=cfg) as add:
             result = app._dispatch_command("ignore-sev add #187193")
 
         self.assertEqual(
@@ -859,9 +830,7 @@ class TestMuxCommands(unittest.TestCase):
             result = app._dispatch_command("restart dead --ignore-sev")
 
         self.assertEqual(result, "restarting dead 1 job(s)")
-        restart_dead.assert_called_once_with(
-            [mux._pr_job(456)], ["--ignore-sev"]
-        )
+        restart_dead.assert_called_once_with([mux._pr_job(456)], ["--ignore-sev"])
 
     def test_restart_dead_ignores_completed_jobs(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -884,9 +853,10 @@ class TestMuxCommands(unittest.TestCase):
     def test_fix_command_restarts_with_operator_context(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
 
-        with mock.patch.object(app, "_do_cancel_job") as cancel, mock.patch.object(
-            app, "_do_add", return_value="[123] started"
-        ) as add:
+        with (
+            mock.patch.object(app, "_do_cancel_job") as cancel,
+            mock.patch.object(app, "_do_add", return_value="[123] started") as add,
+        ):
             result = app._dispatch_command("fix 123 Return type should be TypeGuard")
 
         self.assertEqual(result, "[123] started")
@@ -903,9 +873,7 @@ class TestMuxCommands(unittest.TestCase):
             old_proc = _FakeProc(None)
 
             app = mux.MuxApp.__new__(mux.MuxApp)
-            app.procs = {
-                mux._pr_job(123): (old_proc, object(), Path("123.log"))
-            }
+            app.procs = {mux._pr_job(123): (old_proc, object(), Path("123.log"))}
             app._unresumable_jobs = set()
             app._pr_titles = {}
             app.ignore_sev = False
@@ -930,9 +898,7 @@ class TestMuxCommands(unittest.TestCase):
 
         self.assertEqual(result, "[123] started")
         terminate_group.assert_called_once_with(old_proc)
-        spawn.assert_called_once_with(
-            mux._pr_job(123), ["--no-ignore-sev", "--rebase"]
-        )
+        spawn.assert_called_once_with(mux._pr_job(123), ["--no-ignore-sev", "--rebase"])
         self.assertEqual(jobs_data, [{"kind": "pr", "pr": 123}])
 
     def test_cleanup_prunes_successful_completed_jobs(self):
@@ -992,9 +958,7 @@ class TestMuxCommands(unittest.TestCase):
             result = app._dispatch_command("cleanup")
 
         self.assertEqual(result, "checking 1 halted job(s)")
-        cleanup_jobs.assert_called_once_with(
-            [mux._pr_job(456)], {mux._pr_job(456)}
-        )
+        cleanup_jobs.assert_called_once_with([mux._pr_job(456)], {mux._pr_job(456)})
 
     def test_cleanup_while_cleanup_is_running_is_noop(self):
         app = mux.MuxApp.__new__(mux.MuxApp)
@@ -1080,9 +1044,7 @@ class TestMuxCommands(unittest.TestCase):
             jobs_file = root / "mux-jobs.json"
 
             app = mux.MuxApp.__new__(mux.MuxApp)
-            app.procs = {
-                mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))
-            }
+            app.procs = {mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))}
             app._unresumable_jobs = set()
 
             with (
@@ -1108,9 +1070,7 @@ class TestMuxCommands(unittest.TestCase):
             jobs_file = root / "mux-jobs.json"
 
             app = mux.MuxApp.__new__(mux.MuxApp)
-            app.procs = {
-                mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))
-            }
+            app.procs = {mux._pr_job(123): (_FakeProc(None), object(), Path("123.log"))}
             app._unresumable_jobs = set()
             app._pr_titles = {}
             app.ignore_sev = False
@@ -1233,9 +1193,7 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, parked, skipped = mux._resolve_initial_jobs(
-                    [], resume_known=True
-                )
+                jobs, parked, skipped = mux._resolve_initial_jobs([], resume_known=True)
 
         self.assertEqual(jobs, [mux._pr_job(123)])
         self.assertEqual(parked, {})
@@ -1299,9 +1257,7 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, parked, skipped = mux._resolve_initial_jobs(
-                    [], resume_known=True
-                )
+                jobs, parked, skipped = mux._resolve_initial_jobs([], resume_known=True)
 
         self.assertEqual(jobs, [mux._pr_job(123)])
         self.assertEqual(parked, {mux._pr_job(456): 1})
@@ -1312,9 +1268,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             root = Path(d)
             prs_file = root / "mux-prs.json"
             jobs_file = root / "mux-jobs.json"
-            jobs_file.write_text(
-                json.dumps([{"kind": "pr", "pr": 456, "rc": 1}])
-            )
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 456, "rc": 1}]))
 
             with (
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
@@ -1346,9 +1300,7 @@ class TestMuxJobPersistence(unittest.TestCase):
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
             ):
-                jobs, parked, skipped = mux._resolve_initial_jobs(
-                    [], resume_known=True
-                )
+                jobs, parked, skipped = mux._resolve_initial_jobs([], resume_known=True)
 
         self.assertEqual(jobs, [mux._pr_job(123), mux._pr_job(456)])
         self.assertEqual(parked, {})
@@ -1372,9 +1324,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             with (
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -1393,9 +1343,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             root = Path(d)
             prs_file = root / "mux-prs.json"
             jobs_file = root / "mux-jobs.json"
-            jobs_file.write_text(
-                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
-            )
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123, "rc": 1}]))
             log_path = root / "123.log"
             log_path.write_text("[12:00:00] starting\n")
             job = mux._pr_job(123)
@@ -1409,9 +1357,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             with (
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -1442,9 +1388,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             with (
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
                 mock.patch.object(mux, "MUX_JOBS_FILE", jobs_file),
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",
@@ -1463,9 +1407,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             root = Path(d)
             prs_file = root / "mux-prs.json"
             jobs_file = root / "mux-jobs.json"
-            jobs_file.write_text(
-                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
-            )
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123, "rc": 1}]))
             job = mux._pr_job(123)
 
             app = mux.MuxApp.__new__(mux.MuxApp)
@@ -1525,9 +1467,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             root = Path(d)
             prs_file = root / "mux-prs.json"
             jobs_file = root / "mux-jobs.json"
-            jobs_file.write_text(
-                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
-            )
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123, "rc": 1}]))
 
             with (
                 mock.patch.object(mux, "MUX_PRS_FILE", prs_file),
@@ -1594,9 +1534,7 @@ class TestMuxJobPersistence(unittest.TestCase):
             jobs_file = root / "mux-jobs.json"
             # A parked job is still a tracked mux member, so it already has
             # the ``mergedog`` label. Persist it accordingly.
-            jobs_file.write_text(
-                json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
-            )
+            jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123, "rc": 1}]))
 
             app = mux.MuxApp.__new__(mux.MuxApp)
             parked = mux._pr_job(123)
@@ -1678,7 +1616,9 @@ class TestScheduledLand(unittest.TestCase):
 
         with (
             mock.patch.object(app, "_persist_mux_records") as persist,
-            mock.patch.object(app, "_restart_scheduled_job", return_value="[123] started") as restart,
+            mock.patch.object(
+                app, "_restart_scheduled_job", return_value="[123] started"
+            ) as restart,
         ):
             app._process_scheduled_lands_once()
 
@@ -1853,9 +1793,7 @@ class TestMergedogMuxLabel(unittest.TestCase):
             ):
                 self.assertTrue(mux._add_mux_job(mux._pr_job(123)))
                 self.assertFalse(mux._add_mux_job(mux._pr_job(123)))
-                jobs_file.write_text(
-                    json.dumps([{"kind": "pr", "pr": 123, "rc": 1}])
-                )
+                jobs_file.write_text(json.dumps([{"kind": "pr", "pr": 123, "rc": 1}]))
                 # Re-adding a parked (still-tracked) job is not a fresh join.
                 self.assertFalse(mux._add_mux_job(mux._pr_job(123)))
 
@@ -1956,13 +1894,12 @@ class TestMergedogMuxLabel(unittest.TestCase):
         )
         self.assertEqual(prs_data, [123, 456])
 
+
 class TestMuxCiColumns(unittest.TestCase):
     def test_progress_bar_blank_without_ci_counts(self):
         self.assertEqual(mux._ci_progress_bar(None).plain, "")
         self.assertEqual(mux._ci_progress_bar({"phase": "ready"}).plain, "")
-        self.assertEqual(
-            mux._ci_progress_bar({"ci_done": 0, "ci_total": 0}).plain, ""
-        )
+        self.assertEqual(mux._ci_progress_bar({"ci_done": 0, "ci_total": 0}).plain, "")
 
     def test_progress_bar_is_cyan_and_partial_while_running(self):
         bar = mux._ci_progress_bar(
@@ -2020,12 +1957,8 @@ class TestMuxCiColumns(unittest.TestCase):
 
     def test_intervention_cell_blank_until_nonzero(self):
         self.assertEqual(mux._intervention_cell(None).plain, "")
-        self.assertEqual(
-            mux._intervention_cell({"intervention_count": 0}).plain, ""
-        )
-        self.assertEqual(
-            mux._intervention_cell({"intervention_count": 3}).plain, "3"
-        )
+        self.assertEqual(mux._intervention_cell({"intervention_count": 0}).plain, "")
+        self.assertEqual(mux._intervention_cell({"intervention_count": 3}).plain, "3")
 
     def test_suppressed_cell_blank_until_nonzero(self):
         self.assertEqual(mux._suppressed_cell(None).plain, "")
@@ -2054,9 +1987,7 @@ class TestMuxCiColumns(unittest.TestCase):
                 "intervention_count": 2,
             }
             with (
-                mock.patch.object(
-                    app, "query_one", side_effect=_query_one_for(table)
-                ),
+                mock.patch.object(app, "query_one", side_effect=_query_one_for(table)),
                 mock.patch.object(
                     mux,
                     "_stack_display_layout",

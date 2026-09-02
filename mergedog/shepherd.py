@@ -2,6 +2,7 @@
 
 One process per PR. Synchronous. Halts on any sign of an untrusted change.
 """
+
 from __future__ import annotations
 
 import faulthandler
@@ -58,14 +59,11 @@ from mergedog.state import TrustDB
 from mergedog.status import utc_now_iso, write_status
 from mergedog.trust_seed import latest_trusted_approval, seed_trust_from_reviews
 
-
 SEV_POLL_INTERVAL_SEC = 5 * 60  # SEVs are minutes-to-hours; don't spam ``gh``
 SEV_CONFIG_POLL_INTERVAL_SEC = 15
 
 
-def _fetch_current_pr_head_for_trust(
-    pr: int, trust: TrustDB, current_sha: str
-) -> bool:
+def _fetch_current_pr_head_for_trust(pr: int, trust: TrustDB, current_sha: str) -> bool:
     if not trust.head_repo_clone_url or not trust.head_branch:
         return False
     local_ref = f"refs/remotes/mergedog-trust/{pr}"
@@ -180,28 +178,17 @@ def _wait_for_no_active_sev(
                 if last_ids is not None:
                     log(f"ci: sev {refs} is configured ignored; resuming")
                     return True
-                log(
-                    f"ci: sev {refs} is configured ignored; "
-                    f"continuing before {reason}"
-                )
+                log(f"ci: sev {refs} is configured ignored; continuing before {reason}")
                 return False
             if last_ids is not None:
                 log("CI SEV cleared; resuming")
                 return True
             return False
         ids = tuple(
-            sorted(
-                n
-                for sev in active_sevs
-                if (n := _ci_sev_number(sev)) is not None
-            )
+            sorted(n for sev in active_sevs if (n := _ci_sev_number(sev)) is not None)
         )
         head = active_sevs[0]
-        others = (
-            f" (+{len(active_sevs) - 1} more)"
-            if len(active_sevs) > 1
-            else ""
-        )
+        others = f" (+{len(active_sevs) - 1} more)" if len(active_sevs) > 1 else ""
         message = (
             f"parked on ci: sev #{head.get('number')} "
             f"{head.get('title', '?')!r}{others}; "
@@ -517,9 +504,7 @@ def _sparse_green_needs_base_refresh(
     ) and not _has_workflow_gate_for_more_checks(run_state_cache)
 
 
-def describe_log_state(
-    failed: list[tuple[str, str]], failing_check_count: int
-) -> str:
+def describe_log_state(failed: list[tuple[str, str]], failing_check_count: int) -> str:
     """Short diagnostic for the failed-job logs we got back from gh.
 
     Disambiguates the two ways ``_failed_logs_are_content_free`` can fire:
@@ -612,10 +597,7 @@ def _apply_spurious_overrides(
         return checks
     out: list[dict] = []
     for c in checks:
-        if (
-            c.get("name") in spurious_names
-            and c.get("bucket") in {"fail", "cancel"}
-        ):
+        if c.get("name") in spurious_names and c.get("bucket") in {"fail", "cancel"}:
             c = {**c, "bucket": "skipping"}
         out.append(c)
     return out
@@ -639,8 +621,7 @@ def _current_spurious_failure_names(
     return {
         c.get("name")
         for c in checks
-        if c.get("bucket") in {"fail", "cancel"}
-        and c.get("name") in spurious_names
+        if c.get("bucket") in {"fail", "cancel"} and c.get("name") in spurious_names
     }
 
 
@@ -662,15 +643,11 @@ def _apply_merge_i_ignored_checks(
     since_iso: str,
     note: str = "from merge -i",
 ) -> set[str]:
-    ignored = mergebot_ignored_check_names(
-        comments, checks, since_iso=since_iso
-    )
+    ignored = mergebot_ignored_check_names(comments, checks, since_iso=since_iso)
     # Keep lint active so the normal log/fixer path can inspect concrete
     # lintrunner diagnostics instead of inheriting mergebot's broad ignore.
     ignored_lint = {
-        name
-        for name in ignored - spurious_check_names
-        if "lint" in name.lower()
+        name for name in ignored - spurious_check_names if "lint" in name.lower()
     }
     if ignored_lint:
         log(
@@ -733,9 +710,7 @@ def _ci_status_message(status: str, failed: int) -> str:
         return "waiting for CI"
     if status == "failed":
         failures = (
-            f"{failed} active failure"
-            if failed == 1
-            else f"{failed} active failures"
+            f"{failed} active failure" if failed == 1 else f"{failed} active failures"
         )
         return f"CI failed: {failures}"
     if status == "passed":
@@ -838,15 +813,13 @@ def _count_trusted_mergedog_subjects_since_ack(
     if not trusted_shas:
         return 0
     try:
-        ack_index = len(trusted_shas) - 1 - trusted_shas[::-1].index(
-            human_ack_sha
-        )
+        ack_index = len(trusted_shas) - 1 - trusted_shas[::-1].index(human_ack_sha)
     except ValueError:
         return 0
 
     count = 0
     seen: set[str] = set()
-    for sha in trusted_shas[ack_index + 1:]:
+    for sha in trusted_shas[ack_index + 1 :]:
         if not sha or sha in seen:
             continue
         seen.add(sha)
@@ -892,9 +865,7 @@ def _refresh_status_prefix(
     over a UI nicety.
     """
     try:
-        labels, decision, head_sha, merge_state, state = (
-            github.get_pr_poll_fields(pr)
-        )
+        labels, decision, head_sha, merge_state, state = github.get_pr_poll_fields(pr)
     except Exception:
         return None, None, None, None, None, None
     merging = github.MERGING_LABEL in labels
@@ -933,18 +904,13 @@ def _resolve_ghstack_parent_dependency(
     try:
         from mergedog.stack import StackMember
 
-        if not (
-            child_head_ref.startswith("gh/")
-            and child_head_ref.endswith("/head")
-        ):
+        if not (child_head_ref.startswith("gh/") and child_head_ref.endswith("/head")):
             raise ValueError(f"invalid ghstack head ref {child_head_ref!r}")
         child_orig_ref = child_head_ref[: -len("/head")] + "/orig"
         repo.fetch_stack_refs([(child_head_ref, child_orig_ref)])
         nums = repo.walk_orig_stack(child_orig_ref)
 
-        idx = next(
-            (i for i, member_pr in enumerate(nums) if member_pr == pr), None
-        )
+        idx = next((i for i, member_pr in enumerate(nums) if member_pr == pr), None)
         if idx is None:
             log(
                 f"WARNING: PR #{pr} was not present in its /orig ancestry; "
@@ -1026,9 +992,7 @@ def _refresh_ghstack_parent_status(
 
     parent_head_sha = github.get_pr_head_sha(dep.parent_pr)
     checks = github.get_pr_checks_all(dep.parent_pr, head_sha=parent_head_sha)
-    parent_trust, parent_trust_db = _check_trusted_ghstack_parent(
-        dep, parent_head_sha
-    )
+    parent_trust, parent_trust_db = _check_trusted_ghstack_parent(dep, parent_head_sha)
     if parent_trust:
         effective_checks = _apply_spurious_overrides(
             checks, set(parent_trust_db.spurious_check_names)
@@ -1166,10 +1130,7 @@ def _publish_ghstack_parent_rebase(
                 "human intervention (no pr_data/sessions available for "
                 "LLM resolution)"
             )
-        log(
-            "stack parent replay produced conflicts; "
-            f"asking {_llm_label()} to resolve"
-        )
+        log(f"stack parent replay produced conflicts; asking {_llm_label()} to resolve")
         ctx_path, _ = _refresh_context_file(pr_data, trusted=True)
         prompt = render_cherry_pick_conflict_prompt(
             url=pr_data.get("url", ""),
@@ -1301,9 +1262,7 @@ def _refresh_context_file(
         comments=comments,
         trusted=trusted,
     )
-    if trusted and injection.looks_like_injection(
-        text, source=f"PR #{pr} sidecar"
-    ):
+    if trusted and injection.looks_like_injection(text, source=f"PR #{pr} sidecar"):
         log(
             f"PR #{pr}: sidecar flagged by injection screen; "
             "degrading to bot-comments-only context"
@@ -1499,19 +1458,13 @@ def _publish_ghstack_fix(
     _wait_for_no_active_sev(
         "re-publishing via ghstack submit", ignore_sev=ignore_sev, pr=pr
     )
-    new_head_sha = _ghstack_submit_trusted(
-        worktree, head_ref, trust, fix_message
-    )
-    log(
-        f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}"
-    )
+    new_head_sha = _ghstack_submit_trusted(worktree, head_ref, trust, fix_message)
+    log(f"ghstack submitted; new {head_ref} = {new_head_sha[:12]}")
     _wait_for_pr_head(pr, new_head_sha)
     return new_head_sha
 
 
-def _invoke_ci_fixer(
-    worktree: Path, prompt: str
-) -> tuple[str, claude_mod.LLMResult]:
+def _invoke_ci_fixer(worktree: Path, prompt: str) -> tuple[str, claude_mod.LLMResult]:
     sha_before = repo.head_sha(worktree)
     return sha_before, claude_mod.invoke_fixer(worktree, prompt)
 
@@ -1685,9 +1638,7 @@ def _rebase_ghstack_onto_main(
                 )
             )
         if new_orig_sha is None:
-            die(
-                f"{_llm_label()} aborted the rebase; halting for human intervention"
-            )
+            die(f"{_llm_label()} aborted the rebase; halting for human intervention")
 
     assert new_orig_sha is not None
     if repo.is_ancestor_in_worktree(worktree, new_orig_sha, "origin/main"):
@@ -1787,9 +1738,7 @@ def _record_pushed_change(
     )
 
 
-def _inline_hunk_key(
-    sha: str, target: repo.DiffHunkCommentTarget
-) -> str:
+def _inline_hunk_key(sha: str, target: repo.DiffHunkCommentTarget) -> str:
     h = hashlib.sha256()
     h.update(sha.encode())
     h.update(b"\0")
@@ -1883,9 +1832,7 @@ def _screen_failed_job_logs(
     """
     out: list[tuple[str, str]] = []
     for name, text in failed:
-        if injection.looks_like_injection(
-            text, source=f"PR #{pr} CI log {name!r}"
-        ):
+        if injection.looks_like_injection(text, source=f"PR #{pr} CI log {name!r}"):
             log(
                 f"PR #{pr}: withholding CI log for {name!r} "
                 "(flagged by injection screen)"
@@ -2070,15 +2017,10 @@ def _sync_fix_budget(
         # On self-authored PRs the trust seed is the moving PR head. Keep the
         # first trusted head as the review baseline so restarts do not hide
         # mergedog interventions that still need operator review.
-        trust.fix_budget_ack_sha = (
-            trust.trusted_shas[0] if trust.trusted_shas else ack
-        )
+        trust.fix_budget_ack_sha = trust.trusted_shas[0] if trust.trusted_shas else ack
         trust.save()
     elif trust.fix_commits_pushed:
-        log(
-            f"restored fix-commit count from previous run: "
-            f"{trust.fix_commits_pushed}"
-        )
+        log(f"restored fix-commit count from previous run: {trust.fix_commits_pushed}")
     return trust.fix_commits_pushed
 
 
@@ -2135,8 +2077,13 @@ def _recover_from_merge_conflict(
     repo.fetch_origin()
     if is_ghstack:
         advanced = _rebase_ghstack_onto_main(
-            pr, worktree, branch, trust, ignore_sev=ignore_sev,
-            pr_data=pr_data, sessions=sessions,
+            pr,
+            worktree,
+            branch,
+            trust,
+            ignore_sev=ignore_sev,
+            pr_data=pr_data,
+            sessions=sessions,
         )
         if not advanced and repo.would_merge_conflict(worktree, "origin/main"):
             log(
@@ -2145,16 +2092,26 @@ def _recover_from_merge_conflict(
                 "origin/main"
             )
             _rebase_ghstack_onto_main(
-                pr, worktree, branch, trust, ignore_sev=ignore_sev,
-                pr_data=pr_data, sessions=sessions,
+                pr,
+                worktree,
+                branch,
+                trust,
+                ignore_sev=ignore_sev,
+                pr_data=pr_data,
+                sessions=sessions,
                 target_ref="origin/main",
                 target_reason="origin/main (merge conflict fallback)",
             )
     else:
         assert fork_remote is not None
         new_sha = _merge_main_resolving_conflicts(
-            worktree, trust, branch, pr_data, sessions,
-            ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+            worktree,
+            trust,
+            branch,
+            pr_data,
+            sessions,
+            ignore_sev=ignore_sev,
+            trusted_pr=trusted_pr,
         )
         if new_sha is None and repo.would_merge_conflict(worktree, "origin/main"):
             log(
@@ -2162,24 +2119,28 @@ def _recover_from_merge_conflict(
                 "but origin/main still conflicts; merging origin/main"
             )
             new_sha = _merge_main_resolving_conflicts(
-                worktree, trust, branch, pr_data, sessions,
-                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                worktree,
+                trust,
+                branch,
+                pr_data,
+                sessions,
+                ignore_sev=ignore_sev,
+                trusted_pr=trusted_pr,
                 target_ref="origin/main",
                 target_reason="origin/main (merge conflict fallback)",
             )
         if new_sha is not None:
-            log(
-                f"pushing merge commit {new_sha[:12]} to "
-                f"{fork_remote}/{branch}"
-            )
+            log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
             _safe_push(
-                pr, worktree, fork_remote, branch, new_sha,
+                pr,
+                worktree,
+                fork_remote,
+                branch,
+                new_sha,
                 reason="pushing merge-main commit after conflict",
                 ignore_sev=ignore_sev,
             )
-            _record_pushed_change(
-                pushed_changes, worktree, new_sha, change_summary
-            )
+            _record_pushed_change(pushed_changes, worktree, new_sha, change_summary)
 
 
 def _refresh_base_and_push(
@@ -2210,30 +2171,42 @@ def _refresh_base_and_push(
     """
     if is_ghstack:
         _rebase_ghstack_onto_main(
-            pr, worktree, branch, trust,
-            ignore_sev=ignore_sev, pr_data=pr_data, sessions=sessions,
-            target_ref=target_ref, target_reason=target_reason,
+            pr,
+            worktree,
+            branch,
+            trust,
+            ignore_sev=ignore_sev,
+            pr_data=pr_data,
+            sessions=sessions,
+            target_ref=target_ref,
+            target_reason=target_reason,
         )
     else:
         assert fork_remote is not None
         merge_sha = _merge_main_resolving_conflicts(
-            worktree, trust, branch, pr_data, sessions,
-            ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-            target_ref=target_ref, target_reason=target_reason,
+            worktree,
+            trust,
+            branch,
+            pr_data,
+            sessions,
+            ignore_sev=ignore_sev,
+            trusted_pr=trusted_pr,
+            target_ref=target_ref,
+            target_reason=target_reason,
         )
         if merge_sha is None:
             die(no_advance_message)
-        log(
-            f"pushing refreshed base {merge_sha[:12]} "
-            f"to {fork_remote}/{branch}"
-        )
+        log(f"pushing refreshed base {merge_sha[:12]} to {fork_remote}/{branch}")
         _safe_push(
-            pr, worktree, fork_remote, branch, merge_sha,
-            reason=push_reason, ignore_sev=ignore_sev,
+            pr,
+            worktree,
+            fork_remote,
+            branch,
+            merge_sha,
+            reason=push_reason,
+            ignore_sev=ignore_sev,
         )
-        _record_pushed_change(
-            pushed_changes, worktree, merge_sha, change_summary
-        )
+        _record_pushed_change(pushed_changes, worktree, merge_sha, change_summary)
     spurious_check_names.clear()
     trust.spurious_check_names = []
     trust.save()
@@ -2252,9 +2225,7 @@ def _log_restored_state(trust: TrustDB) -> None:
         restored.append(f"  trusted SHAs: {len(trust.trusted_shas)}")
     if trust.spurious_check_names:
         names = ", ".join(trust.spurious_check_names)
-        restored.append(
-            f"  spurious judgments (reassess to clear): {names}"
-        )
+        restored.append(f"  spurious judgments (reassess to clear): {names}")
     if trust.last_observed_failure_iso:
         kind = _classify_failure_body(trust.last_observed_failure_body)
         restored.append(
@@ -2263,9 +2234,7 @@ def _log_restored_state(trust: TrustDB) -> None:
             f"comments will not re-trigger recovery"
         )
     if trust.merge_auto_retries:
-        restored.append(
-            f"  merge auto-retries used: {trust.merge_auto_retries}"
-        )
+        restored.append(f"  merge auto-retries used: {trust.merge_auto_retries}")
     if trust.pending_publish_orig_sha:
         restored.append(
             f"  interrupted ghstack publish of /orig "
@@ -2478,20 +2447,35 @@ def _shepherd_body(
         if is_ghstack:
             log("user requested upfront rebase of /orig onto origin/main")
             _rebase_ghstack_onto_main(
-                pr, worktree, branch, trust, ignore_sev=ignore_sev,
-                pr_data=pr_data, sessions=sessions,
+                pr,
+                worktree,
+                branch,
+                trust,
+                ignore_sev=ignore_sev,
+                pr_data=pr_data,
+                sessions=sessions,
             )
         else:
             log("user requested upfront rebase onto origin/main")
             new_sha = _merge_main_resolving_conflicts(
-                worktree, trust, branch, pr_data, sessions,
-                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                worktree,
+                trust,
+                branch,
+                pr_data,
+                sessions,
+                ignore_sev=ignore_sev,
+                trusted_pr=trusted_pr,
             )
             if new_sha is not None:
                 log(f"pushing merge commit {new_sha[:12]} to {fork_remote}/{branch}")
                 _safe_push(
-                    pr, worktree, fork_remote, branch, new_sha,
-                    reason="pushing merge-main commit", ignore_sev=ignore_sev,
+                    pr,
+                    worktree,
+                    fork_remote,
+                    branch,
+                    new_sha,
+                    reason="pushing merge-main commit",
+                    ignore_sev=ignore_sev,
                 )
                 _record_pushed_change(
                     pushed_changes,
@@ -2509,14 +2493,19 @@ def _shepherd_body(
     # re-inspects CI and claude judges from scratch.
     replay_kind = _classify_failure_body(trust.last_observed_failure_body)
     if replay_kind == "merge conflict":
-        log(
-            "prior merge-conflict failure detected on restart; "
-            "rebasing onto main"
-        )
+        log("prior merge-conflict failure detected on restart; rebasing onto main")
         _recover_from_merge_conflict(
-            pr, worktree, branch, trust, pr_data, sessions, pushed_changes,
-            is_ghstack=is_ghstack, fork_remote=fork_remote,
-            ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+            pr,
+            worktree,
+            branch,
+            trust,
+            pr_data,
+            sessions,
+            pushed_changes,
+            is_ghstack=is_ghstack,
+            fork_remote=fork_remote,
+            ignore_sev=ignore_sev,
+            trusted_pr=trusted_pr,
             change_summary="merged main into the PR branch after merge failure",
         )
         trust.last_observed_failure_body = ""
@@ -2527,9 +2516,7 @@ def _shepherd_body(
         # mergedog) already acted on it.
         newer_event = None
         try:
-            newer_event = latest_mergebot_event(
-                pr, trust.last_observed_failure_iso
-            )
+            newer_event = latest_mergebot_event(pr, trust.last_observed_failure_iso)
         except Exception as e:
             log(f"WARNING: could not check for newer mergebot events: {e}")
         if newer_event is not None:
@@ -2539,8 +2526,7 @@ def _shepherd_body(
                 "normal flow"
             )
         elif (
-            PROJECT.merge_command is not None
-            and auto_retries < MAX_MERGE_AUTO_RETRIES
+            PROJECT.merge_command is not None and auto_retries < MAX_MERGE_AUTO_RETRIES
         ):
             auto_retries += 1
             trust.merge_auto_retries = auto_retries
@@ -2636,9 +2622,7 @@ def _shepherd_body(
             if merging is not None:
                 last_merging = merging
             if TRUNK_LABEL is not None and observed_labels is not None:
-                observed_trunk_applied = _trunk_ci_requested_by_labels(
-                    observed_labels
-                )
+                observed_trunk_applied = _trunk_ci_requested_by_labels(observed_labels)
                 if observed_trunk_applied != trunk_applied:
                     if observed_trunk_applied:
                         if github.MERGING_LABEL in observed_labels:
@@ -2702,20 +2686,23 @@ def _shepherd_body(
             intervention_count = _count_mergedog_interventions_since_ack(
                 worktree, human_ack_sha, trust.trusted_shas
             )
-            if (
-                merging is False
-                and (merge_state or "").upper() == "DIRTY"
-            ):
+            if merging is False and (merge_state or "").upper() == "DIRTY":
                 recovery_attempts += 1
                 log(
-                    "GitHub reports branch conflicts before handoff; "
-                    "rebasing onto main"
+                    "GitHub reports branch conflicts before handoff; rebasing onto main"
                 )
                 _recover_from_merge_conflict(
-                    pr, worktree, branch, trust, pr_data, sessions,
+                    pr,
+                    worktree,
+                    branch,
+                    trust,
+                    pr_data,
+                    sessions,
                     pushed_changes,
-                    is_ghstack=is_ghstack, fork_remote=fork_remote,
-                    ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                    is_ghstack=is_ghstack,
+                    fork_remote=fork_remote,
+                    ignore_sev=ignore_sev,
+                    trusted_pr=trusted_pr,
                     change_summary=(
                         "merged main into the PR branch after GitHub "
                         "reported pre-handoff conflicts"
@@ -2750,9 +2737,7 @@ def _shepherd_body(
                 checks = github.get_pr_checks_all(pr, head_sha=current)
             else:
                 checks = list(check_poll_cache.checks or [])
-            effective_checks = _apply_spurious_overrides(
-                checks, spurious_check_names
-            )
+            effective_checks = _apply_spurious_overrides(checks, spurious_check_names)
             status = github.evaluate_checks(effective_checks)
             workflow_gate_for_more_checks = _has_workflow_gate_for_more_checks(
                 run_state_cache
@@ -2773,12 +2758,10 @@ def _shepherd_body(
             raw_failure_names = {
                 c.get("name")
                 for c in checks
-                if c.get("bucket") in {"fail", "cancel"}
-                and c.get("name")
+                if c.get("bucket") in {"fail", "cancel"} and c.get("name")
             }
             all_failures_spurious = (
-                bool(raw_failure_names)
-                and raw_failure_names <= spurious_check_names
+                bool(raw_failure_names) and raw_failure_names <= spurious_check_names
             )
             current_spurious_failures = _current_spurious_failure_names(
                 checks, spurious_check_names
@@ -2833,9 +2816,7 @@ def _shepherd_body(
                         fetched_at=check_poll_now,
                     )
 
-            done = sum(
-                1 for c in checks if c.get("bucket") not in {"pending", None}
-            )
+            done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
             failed_count = sum(
                 1 for c in checks if c.get("bucket") in {"fail", "cancel"}
             )
@@ -2916,9 +2897,7 @@ def _shepherd_body(
                             f"#{refreshed_parent.parent_pr}"
                         )
                         ghstack_parent = refreshed_parent
-                        parent_status = _refresh_ghstack_parent_status(
-                            ghstack_parent
-                        )
+                        parent_status = _refresh_ghstack_parent_status(ghstack_parent)
                         _maybe_use_landed_ghstack_parent_base(
                             ghstack_parent, parent_status
                         )
@@ -3052,9 +3031,7 @@ def _shepherd_body(
                     failed = github.get_failed_job_logs_for_runs(
                         workflow_failed_run_ids
                     )
-                failed = _filter_spurious_failed_jobs(
-                    failed, spurious_check_names
-                )
+                failed = _filter_spurious_failed_jobs(failed, spurious_check_names)
                 if is_ghstack and _is_ghstack_mergeability_failure(
                     [name for name, _ in failed]
                 ):
@@ -3125,9 +3102,7 @@ def _shepherd_body(
                 # --failed`` instead of being handed to claude. Capped at
                 # one retry per run_id, so a persistent failure that
                 # happens to match still falls through.
-                if _try_interventions(
-                    failed, checks, intervened_run_ids
-                ):
+                if _try_interventions(failed, checks, intervened_run_ids):
                     last_status = None
                     stable_observation = None
                     time.sleep(APPROVAL_SETTLE_SEC)
@@ -3156,9 +3131,7 @@ def _shepherd_body(
                     max_fix_attempts=max_fix_attempts_status,
                     conflict_resolution_count=_conflict_resolution_count(trust),
                 )
-                ctx_path, comments = _refresh_context_file(
-                    pr_data, trusted=trusted_pr
-                )
+                ctx_path, comments = _refresh_context_file(pr_data, trusted=trusted_pr)
                 trunk_ctx = repo.trunk_revert_context(worktree)
                 if trunk_ctx:
                     log(f"injecting trunk revert context into {_llm_label()} prompt")
@@ -3171,9 +3144,7 @@ def _shepherd_body(
                     failing_check_names=active_failed_check_names
                     or [name for name, _ in failed],
                     is_ghstack=is_ghstack,
-                    drci_summary=github.latest_drci_summary(
-                        comments, head_sha=current
-                    ),
+                    drci_summary=github.latest_drci_summary(comments, head_sha=current),
                     extra_context=extra_context or None,
                     trunk_revert_context=trunk_ctx,
                 )
@@ -3203,8 +3174,7 @@ def _shepherd_body(
                         on_commit="pushed fix commit {sha}",
                         on_clean_noop="superseded by merge -i ignore (no commit)",
                         extra=(
-                            " — failing jobs: "
-                            f"{', '.join(session_failed_jobs)}"
+                            f" — failing jobs: {', '.join(session_failed_jobs)}"
                             if session_failed_jobs
                             else ""
                         ),
@@ -3229,9 +3199,7 @@ def _shepherd_body(
                     transcript=transcript,
                     on_commit="pushed fix commit {sha}",
                     on_clean_noop="judged failures spurious (no commit)",
-                    extra=f" — {'; '.join(session_notes)}"
-                    if session_notes
-                    else "",
+                    extra=f" — {'; '.join(session_notes)}" if session_notes else "",
                 )
                 if not ran_cleanly:
                     if _llm_requested_rebase(result):
@@ -3242,8 +3210,13 @@ def _shepherd_body(
                                 f"refreshing stale base via {reason}"
                             )
                             _refresh_base_and_push(
-                                pr, worktree, branch, trust, pr_data,
-                                sessions, pushed_changes,
+                                pr,
+                                worktree,
+                                branch,
+                                trust,
+                                pr_data,
+                                sessions,
+                                pushed_changes,
                                 spurious_check_names,
                                 is_ghstack=is_ghstack,
                                 fork_remote=fork_remote,
@@ -3272,8 +3245,13 @@ def _shepherd_body(
                                 f"refreshing stale base via {reason}"
                             )
                             _refresh_base_and_push(
-                                pr, worktree, branch, trust, pr_data,
-                                sessions, pushed_changes,
+                                pr,
+                                worktree,
+                                branch,
+                                trust,
+                                pr_data,
+                                sessions,
+                                pushed_changes,
                                 spurious_check_names,
                                 is_ghstack=is_ghstack,
                                 fork_remote=fork_remote,
@@ -3310,9 +3288,7 @@ def _shepherd_body(
                             f"{', '.join(actionable_lints)}; halting for "
                             "human review"
                         )
-                    newly_spurious = _spurious_check_names_from_checks(
-                        effective_checks
-                    )
+                    newly_spurious = _spurious_check_names_from_checks(effective_checks)
                     if not newly_spurious:
                         die(
                             f"{_llm_label()} made no commit, but mergedog "
@@ -3357,12 +3333,19 @@ def _shepherd_body(
                     trust.spurious_check_names = []
                     fix_commits_pushed = _consume_fix_budget(trust)
                     new_head_sha = _publish_ghstack_fix(
-                        pr, worktree, branch, new_sha, trust,
+                        pr,
+                        worktree,
+                        branch,
+                        new_sha,
+                        trust,
                         ignore_sev=ignore_sev,
                     )
                     _post_llm_hunk_comments(
-                        pr, worktree, new_sha,
-                        commit_id=new_head_sha, author=viewer,
+                        pr,
+                        worktree,
+                        new_sha,
+                        commit_id=new_head_sha,
+                        author=viewer,
                     )
                     last_status = None
                     continue
@@ -3375,8 +3358,13 @@ def _shepherd_body(
                         )
                         repo.set_worktree_to_sha(worktree, sha_before)
                         _refresh_base_and_push(
-                            pr, worktree, branch, trust, pr_data,
-                            sessions, pushed_changes,
+                            pr,
+                            worktree,
+                            branch,
+                            trust,
+                            pr_data,
+                            sessions,
+                            pushed_changes,
                             spurious_check_names,
                             is_ghstack=False,
                             fork_remote=fork_remote,
@@ -3404,15 +3392,22 @@ def _shepherd_body(
                     # then runs once on (PR + fix + main) instead of
                     # testing the fix against a stale base.
                     merge_sha = _merge_main_resolving_conflicts(
-                        worktree, trust, branch, pr_data, sessions,
-                        ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                        worktree,
+                        trust,
+                        branch,
+                        pr_data,
+                        sessions,
+                        ignore_sev=ignore_sev,
+                        trusted_pr=trusted_pr,
                     )
                     final_sha = merge_sha if merge_sha is not None else new_sha
-                    log(
-                        f"pushing {final_sha[:12]} to {fork_remote}/{branch}"
-                    )
+                    log(f"pushing {final_sha[:12]} to {fork_remote}/{branch}")
                     _safe_push(
-                        pr, worktree, fork_remote, branch, final_sha,
+                        pr,
+                        worktree,
+                        fork_remote,
+                        branch,
+                        final_sha,
                         reason=f"pushing {_llm_label()} fix commit",
                         ignore_sev=ignore_sev,
                     )
@@ -3424,8 +3419,11 @@ def _shepherd_body(
                         source=f"{_llm_label()} fix-CI",
                     )
                     _post_llm_hunk_comments(
-                        pr, worktree, new_sha,
-                        commit_id=final_sha, author=viewer,
+                        pr,
+                        worktree,
+                        new_sha,
+                        commit_id=final_sha,
+                        author=viewer,
                     )
                     if merge_sha is not None and merge_sha != new_sha:
                         _record_pushed_change(
@@ -3458,9 +3456,7 @@ def _shepherd_body(
                         phase="polling_ci",
                         category="waiting",
                         waiting_on="ci_stability",
-                        message=(
-                            f"CI passed; waiting {remaining}s for stability"
-                        ),
+                        message=(f"CI passed; waiting {remaining}s for stability"),
                         intervention_count=intervention_count,
                         human_ack_sha=human_ack_sha,
                         approved=last_approved,
@@ -3471,9 +3467,7 @@ def _shepherd_body(
                         ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
-                        conflict_resolution_count=(
-                            _conflict_resolution_count(trust)
-                        ),
+                        conflict_resolution_count=(_conflict_resolution_count(trust)),
                     )
                     log(
                         f"{passed_message}; waiting {remaining}s for stability "
@@ -3482,11 +3476,7 @@ def _shepherd_body(
                     time.sleep(min(POLL_INTERVAL_SEC, remaining))
                     continue
 
-                if (
-                    _sparse_green_needs_base_refresh(
-                        status, checks, run_state_cache
-                    )
-                ):
+                if _sparse_green_needs_base_refresh(status, checks, run_state_cache):
                     log(
                         f"CI reported only {len(checks)} passed check"
                         f"{'' if len(checks) == 1 else 's'} and no pending "
@@ -3512,16 +3502,19 @@ def _shepherd_body(
                         ci_suppressed=suppressed_failed_count,
                         fix_attempts=fix_commits_pushed,
                         max_fix_attempts=max_fix_attempts_status,
-                        conflict_resolution_count=(
-                            _conflict_resolution_count(trust)
-                        ),
+                        conflict_resolution_count=(_conflict_resolution_count(trust)),
                     )
                     # Deliberately bypass the ci:sev gate for this recovery:
                     # the problem is that no real CI wave exists to wait on.
                     repo.fetch_origin()
                     _refresh_base_and_push(
-                        pr, worktree, branch, trust, pr_data,
-                        sessions, pushed_changes,
+                        pr,
+                        worktree,
+                        branch,
+                        trust,
+                        pr_data,
+                        sessions,
+                        pushed_changes,
                         spurious_check_names,
                         is_ghstack=is_ghstack,
                         fork_remote=fork_remote,
@@ -3585,15 +3578,11 @@ def _shepherd_body(
                 ready_waiting_on = "contributor"
             elif ready_for_merge:
                 ready_message = f"ready for human merge: {ci_green_phrase}"
-                ready_user_action = (
-                    "review mergedog handoff and merge when satisfied"
-                )
+                ready_user_action = "review mergedog handoff and merge when satisfied"
                 ready_category = "ready"
                 ready_waiting_on = None
             else:
-                ready_message = (
-                    f"waiting for maintainer approval: {ci_green_phrase}"
-                )
+                ready_message = f"waiting for maintainer approval: {ci_green_phrase}"
                 ready_user_action = (
                     "approve the PR after reviewing mergedog interventions"
                     if approval_actionable
@@ -3749,13 +3738,19 @@ def _shepherd_body(
             recovery_attempts += 1
             log("post-handoff merge conflict detected; rebasing onto main")
             _recover_from_merge_conflict(
-                pr, worktree, branch, trust, pr_data, sessions,
+                pr,
+                worktree,
+                branch,
+                trust,
+                pr_data,
+                sessions,
                 pushed_changes,
-                is_ghstack=is_ghstack, fork_remote=fork_remote,
-                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
+                is_ghstack=is_ghstack,
+                fork_remote=fork_remote,
+                ignore_sev=ignore_sev,
+                trusted_pr=trusted_pr,
                 change_summary=(
-                    "merged main into the PR branch after GitHub "
-                    "reported conflicts"
+                    "merged main into the PR branch after GitHub reported conflicts"
                 ),
             )
             last_status = None
@@ -3806,17 +3801,21 @@ def _shepherd_body(
 
         if fail_body and is_merge_conflict_failure(fail_body):
             log(
-                "pytorchmergebot merge failed due to merge conflict; "
-                "rebasing onto main"
+                "pytorchmergebot merge failed due to merge conflict; rebasing onto main"
             )
             _recover_from_merge_conflict(
-                pr, worktree, branch, trust, pr_data, sessions,
+                pr,
+                worktree,
+                branch,
+                trust,
+                pr_data,
+                sessions,
                 pushed_changes,
-                is_ghstack=is_ghstack, fork_remote=fork_remote,
-                ignore_sev=ignore_sev, trusted_pr=trusted_pr,
-                change_summary=(
-                    "merged main into the PR branch after merge failure"
-                ),
+                is_ghstack=is_ghstack,
+                fork_remote=fork_remote,
+                ignore_sev=ignore_sev,
+                trusted_pr=trusted_pr,
+                change_summary=("merged main into the PR branch after merge failure"),
             )
             trust.last_observed_failure_body = ""
             trust.save()

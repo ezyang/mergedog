@@ -1,4 +1,5 @@
 """Tiny logging helper. Prints to stderr with a timestamp prefix."""
+
 from __future__ import annotations
 
 import sys

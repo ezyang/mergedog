@@ -50,24 +50,26 @@ class TestGhstackParentStatus(unittest.TestCase):
             "gh/u/101/orig": "C_ORIG",
         }
         checks = [{"name": "linux", "bucket": "pending"}]
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "parent_sha", return_value="P_OLD"
-        ), mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "parent_sha", return_value="P_OLD"),
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha({"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}),
             ),
-        ), mock.patch.object(
-            shepherd.github, "get_pr_checks_all", return_value=checks
-        ), mock.patch.object(
-            shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
-        ), mock.patch.object(
-            shepherd.github, "evaluate_checks", return_value="pending"
-        ), mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            mock.patch.object(
+                shepherd.github, "get_pr_checks_all", return_value=checks
+            ),
+            mock.patch.object(
+                shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
+            ),
+            mock.patch.object(
+                shepherd.github, "evaluate_checks", return_value="pending"
+            ),
+            mock.patch.object(
+                shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            ),
         ):
             status = shepherd._refresh_ghstack_parent_status(dep)
 
@@ -84,24 +86,26 @@ class TestGhstackParentStatus(unittest.TestCase):
             "gh/u/101/orig": "C_ORIG",
         }
         checks = [{"name": "linux", "bucket": "pending"}]
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "parent_sha", return_value="P_OLD"
-        ), mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_NEW": "SAME_TREE", "P_OLD": "SAME_TREE"}
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "parent_sha", return_value="P_OLD"),
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha({"P_NEW": "SAME_TREE", "P_OLD": "SAME_TREE"}),
             ),
-        ), mock.patch.object(
-            shepherd.github, "get_pr_checks_all", return_value=checks
-        ), mock.patch.object(
-            shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
-        ), mock.patch.object(
-            shepherd.github, "evaluate_checks", return_value="pending"
-        ), mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            mock.patch.object(
+                shepherd.github, "get_pr_checks_all", return_value=checks
+            ),
+            mock.patch.object(
+                shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
+            ),
+            mock.patch.object(
+                shepherd.github, "evaluate_checks", return_value="pending"
+            ),
+            mock.patch.object(
+                shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            ),
         ):
             status = shepherd._refresh_ghstack_parent_status(dep)
 
@@ -122,24 +126,26 @@ class TestGhstackParentStatus(unittest.TestCase):
             "gh/u/101/orig": "C_ORIG",
         }
         checks = [{"name": "linux", "bucket": "pass", "completedAt": old}]
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "parent_sha", return_value="P_OLD"
-        ), mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "parent_sha", return_value="P_OLD"),
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha({"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}),
             ),
-        ), mock.patch.object(
-            shepherd.github, "get_pr_checks_all", return_value=checks
-        ), mock.patch.object(
-            shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
-        ), mock.patch.object(
-            shepherd.github, "evaluate_checks", return_value="passed"
-        ), mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            mock.patch.object(
+                shepherd.github, "get_pr_checks_all", return_value=checks
+            ),
+            mock.patch.object(
+                shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
+            ),
+            mock.patch.object(
+                shepherd.github, "evaluate_checks", return_value="passed"
+            ),
+            mock.patch.object(
+                shepherd.TrustDB, "load_or_create", return_value=_Trust()
+            ),
         ):
             status = shepherd._refresh_ghstack_parent_status(dep)
 
@@ -155,24 +161,24 @@ class TestGhstackParentStatus(unittest.TestCase):
             "gh/u/101/head": "C_HEAD",
             "gh/u/101/orig": "C_ORIG",
         }
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "parent_sha", return_value="P_OLD"
-        ), mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "parent_sha", return_value="P_OLD"),
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha({"P_NEW": "P_NEW_TREE", "P_OLD": "P_OLD_TREE"}),
             ),
-        ), mock.patch.object(
-            shepherd.github, "get_pr_checks_all", return_value=[]
-        ), mock.patch.object(
-            shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
-        ), mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=_Trust(trusted=False)
-        ), mock.patch.object(
-            shepherd, "trust_mergebot_rebase_if_equivalent", return_value=False
+            mock.patch.object(shepherd.github, "get_pr_checks_all", return_value=[]),
+            mock.patch.object(
+                shepherd.github, "get_pr_head_sha", return_value="P_HEAD"
+            ),
+            mock.patch.object(
+                shepherd.TrustDB, "load_or_create", return_value=_Trust(trusted=False)
+            ),
+            mock.patch.object(
+                shepherd, "trust_mergebot_rebase_if_equivalent", return_value=False
+            ),
         ):
             status = shepherd._refresh_ghstack_parent_status(dep)
 
@@ -192,12 +198,8 @@ class TestCheckTrustedGhstackParent(unittest.TestCase):
         trust.head_repo_clone_url = shepherd.REPO_SSH_URL
         trust.save = mock.Mock()
 
-        with mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=trust
-        ):
-            trusted, returned = shepherd._check_trusted_ghstack_parent(
-                dep, "P_HEAD"
-            )
+        with mock.patch.object(shepherd.TrustDB, "load_or_create", return_value=trust):
+            trusted, returned = shepherd._check_trusted_ghstack_parent(dep, "P_HEAD")
 
         self.assertTrue(trusted)
         self.assertIs(returned, trust)
@@ -208,9 +210,7 @@ class TestCheckTrustedGhstackParent(unittest.TestCase):
         trust = _Trust()
         trust.save = mock.Mock()
 
-        with mock.patch.object(
-            shepherd.TrustDB, "load_or_create", return_value=trust
-        ):
+        with mock.patch.object(shepherd.TrustDB, "load_or_create", return_value=trust):
             trusted, _ = shepherd._check_trusted_ghstack_parent(dep, "P_HEAD")
 
         self.assertTrue(trusted)
@@ -221,21 +221,25 @@ class TestCheckTrustedGhstackParent(unittest.TestCase):
 
 class TestResolveGhstackParentDependency(unittest.TestCase):
     def test_stack_resolution_halt_falls_back_to_isolated_mode(self):
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
-        ), mock.patch.object(shepherd, "log") as log:
-            dep = shepherd._resolve_ghstack_parent_dependency(
-                101, "gh/u/101/head"
-            )
+        with (
+            mock.patch.object(
+                shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
+            ),
+            mock.patch.object(shepherd, "log") as log,
+        ):
+            dep = shepherd._resolve_ghstack_parent_dependency(101, "gh/u/101/head")
 
         self.assertIsNone(dep)
         log.assert_called_once()
 
     def test_stack_resolution_halt_preserves_existing_dependency_on_refresh(self):
         existing = _dep()
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
-        ), mock.patch.object(shepherd, "log"):
+        with (
+            mock.patch.object(
+                shepherd.repo, "fetch_stack_refs", side_effect=SystemExit(1)
+            ),
+            mock.patch.object(shepherd, "log"),
+        ):
             dep = shepherd._resolve_ghstack_parent_dependency(
                 101,
                 "gh/u/101/head",
@@ -245,10 +249,9 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
         self.assertIs(dep, existing)
 
     def test_refresh_can_remove_obsolete_parent(self):
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs"
-        ), mock.patch.object(
-            shepherd.repo, "walk_orig_stack", return_value=[101]
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs"),
+            mock.patch.object(shepherd.repo, "walk_orig_stack", return_value=[101]),
         ):
             dep = shepherd._resolve_ghstack_parent_dependency(
                 101,
@@ -263,21 +266,17 @@ class TestResolveGhstackParentDependency(unittest.TestCase):
             "number": 100,
             "headRefName": "gh/u/100/head",
         }
-        with mock.patch.object(
-            shepherd.repo, "fetch_stack_refs"
-        ) as fetch, mock.patch.object(
-            shepherd.repo, "walk_orig_stack", return_value=[100, 101]
-        ), mock.patch.object(
-            shepherd.github, "get_pr", return_value=parent_data
+        with (
+            mock.patch.object(shepherd.repo, "fetch_stack_refs") as fetch,
+            mock.patch.object(
+                shepherd.repo, "walk_orig_stack", return_value=[100, 101]
+            ),
+            mock.patch.object(shepherd.github, "get_pr", return_value=parent_data),
         ):
-            dep = shepherd._resolve_ghstack_parent_dependency(
-                101, "gh/u/101/head"
-            )
+            dep = shepherd._resolve_ghstack_parent_dependency(101, "gh/u/101/head")
 
         self.assertEqual(dep, _dep())
-        fetch.assert_called_once_with(
-            [("gh/u/101/head", "gh/u/101/orig")]
-        )
+        fetch.assert_called_once_with([("gh/u/101/head", "gh/u/101/orig")])
 
 
 class TestPublishGhstackParentRebase(unittest.TestCase):
@@ -295,17 +294,20 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
             reason="parent CI is pending",
         )
 
-        with mock.patch.object(
-            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
-        ), mock.patch.object(
-            shepherd.repo, "fetch_origin"
-        ) as fetch_origin, mock.patch.object(
-            shepherd.repo, "is_ancestor", return_value=True
-        ) as is_ancestor, mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_LANDED": "P_LANDED_TREE", "P_OLD": "P_OLD_TREE"}
+        with (
+            mock.patch.object(
+                shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+            ),
+            mock.patch.object(shepherd.repo, "fetch_origin") as fetch_origin,
+            mock.patch.object(
+                shepherd.repo, "is_ancestor", return_value=True
+            ) as is_ancestor,
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha(
+                    {"P_LANDED": "P_LANDED_TREE", "P_OLD": "P_OLD_TREE"}
+                ),
             ),
         ):
             changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
@@ -321,7 +323,9 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         fetch_origin.assert_called_once()
         is_ancestor.assert_called_once_with("P_LANDED", "origin/main")
 
-    def test_landed_parent_base_clears_stale_when_child_already_matches_landed_tree(self):
+    def test_landed_parent_base_clears_stale_when_child_already_matches_landed_tree(
+        self,
+    ):
         dep = _dep()
         status = shepherd._GhstackParentStatus(
             stale=True,
@@ -335,17 +339,16 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
             reason="parent CI is pending",
         )
 
-        with mock.patch.object(
-            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
-        ), mock.patch.object(
-            shepherd.repo, "fetch_origin"
-        ), mock.patch.object(
-            shepherd.repo, "is_ancestor", return_value=True
-        ), mock.patch.object(
-            shepherd.repo,
-            "tree_sha",
-            side_effect=_tree_sha(
-                {"P_LANDED": "SAME_TREE", "P_OLD": "SAME_TREE"}
+        with (
+            mock.patch.object(
+                shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+            ),
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(shepherd.repo, "is_ancestor", return_value=True),
+            mock.patch.object(
+                shepherd.repo,
+                "tree_sha",
+                side_effect=_tree_sha({"P_LANDED": "SAME_TREE", "P_OLD": "SAME_TREE"}),
             ),
         ):
             changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
@@ -369,12 +372,12 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
             reason="parent is green-stable",
         )
 
-        with mock.patch.object(
-            shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
-        ), mock.patch.object(
-            shepherd.repo, "fetch_origin"
-        ), mock.patch.object(
-            shepherd.repo, "is_ancestor", return_value=False
+        with (
+            mock.patch.object(
+                shepherd.github, "get_pr_merge_commit_sha", return_value="P_LANDED"
+            ),
+            mock.patch.object(shepherd.repo, "fetch_origin"),
+            mock.patch.object(shepherd.repo, "is_ancestor", return_value=False),
         ):
             changed = shepherd._maybe_use_landed_ghstack_parent_base(dep, status)
 
@@ -407,23 +410,18 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         }
         trust = _Trust()
         worktree = Path("/tmp/worktree")
-        with mock.patch.object(
-            shepherd, "_wait_for_no_active_sev", return_value=False
-        ), mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "set_worktree_to_sha"
-        ) as set_worktree, mock.patch.object(
-            shepherd.repo, "ghstack_cherry_pick"
-        ) as cherry_pick, mock.patch.object(
-            shepherd.repo, "head_sha", return_value="C_NEW_ORIG"
-        ), mock.patch.object(
-            shepherd.repo, "ghstack_submit"
-        ) as submit, mock.patch.object(
-            shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
-        ), mock.patch.object(
-            shepherd, "_wait_for_pr_head"
-        ) as wait_head:
+        with (
+            mock.patch.object(shepherd, "_wait_for_no_active_sev", return_value=False),
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "set_worktree_to_sha") as set_worktree,
+            mock.patch.object(shepherd.repo, "ghstack_cherry_pick") as cherry_pick,
+            mock.patch.object(shepherd.repo, "head_sha", return_value="C_NEW_ORIG"),
+            mock.patch.object(shepherd.repo, "ghstack_submit") as submit,
+            mock.patch.object(
+                shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
+            ),
+            mock.patch.object(shepherd, "_wait_for_pr_head") as wait_head,
+        ):
             changed = shepherd._publish_ghstack_parent_rebase(
                 101,
                 worktree,
@@ -436,9 +434,7 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         self.assertTrue(changed)
         set_worktree.assert_called_once_with(worktree, "P_NEW")
         cherry_pick.assert_called_once_with(worktree, 101)
-        submit.assert_called_once_with(
-            worktree, "Propagate parent update downstream"
-        )
+        submit.assert_called_once_with(worktree, "Propagate parent update downstream")
         self.assertEqual(trust.trusted_shas, ["C_NEW_HEAD"])
         self.assertEqual(trust.spurious_check_names, [])
         self.assertEqual(trust.pending_publish_orig_sha, "")
@@ -466,22 +462,17 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         }
         trust = _Trust()
         worktree = Path("/tmp/worktree")
-        with mock.patch.object(
-            shepherd, "_wait_for_no_active_sev", return_value=False
-        ), mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "set_worktree_to_sha"
-        ) as set_worktree, mock.patch.object(
-            shepherd.repo, "ghstack_cherry_pick"
-        ), mock.patch.object(
-            shepherd.repo, "head_sha", return_value="C_NEW_ORIG"
-        ), mock.patch.object(
-            shepherd.repo, "ghstack_submit"
-        ), mock.patch.object(
-            shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
-        ), mock.patch.object(
-            shepherd, "_wait_for_pr_head"
+        with (
+            mock.patch.object(shepherd, "_wait_for_no_active_sev", return_value=False),
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "set_worktree_to_sha") as set_worktree,
+            mock.patch.object(shepherd.repo, "ghstack_cherry_pick"),
+            mock.patch.object(shepherd.repo, "head_sha", return_value="C_NEW_ORIG"),
+            mock.patch.object(shepherd.repo, "ghstack_submit"),
+            mock.patch.object(
+                shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
+            ),
+            mock.patch.object(shepherd, "_wait_for_pr_head"),
         ):
             changed = shepherd._publish_ghstack_parent_rebase(
                 101,
@@ -514,13 +505,11 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
             "gh/u/101/head": "C_HEAD",
             "gh/u/101/orig": "C_OLD",
         }
-        with mock.patch.object(
-            shepherd, "_wait_for_no_active_sev", return_value=False
-        ), mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "ghstack_submit"
-        ) as submit:
+        with (
+            mock.patch.object(shepherd, "_wait_for_no_active_sev", return_value=False),
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "ghstack_submit") as submit,
+        ):
             changed = shepherd._publish_ghstack_parent_rebase(
                 101,
                 Path("/tmp/worktree"),
@@ -559,34 +548,30 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
         trust = _Trust()
         sessions = []
         worktree = Path("/tmp/worktree")
-        error = subprocess.CalledProcessError(
-            1, ["ghstack", "cherry-pick", "101"]
-        )
+        error = subprocess.CalledProcessError(1, ["ghstack", "cherry-pick", "101"])
 
-        with mock.patch.object(
-            shepherd, "_wait_for_no_active_sev", return_value=False
-        ), mock.patch.object(
-            shepherd.repo, "fetch_stack_refs", return_value=refs
-        ), mock.patch.object(
-            shepherd.repo, "set_worktree_to_sha"
-        ), mock.patch.object(
-            shepherd.repo, "ghstack_cherry_pick", side_effect=error
-        ), mock.patch.object(
-            shepherd.repo, "is_cherry_pick_in_progress", return_value=True
-        ), mock.patch.object(
-            shepherd, "_refresh_context_file", return_value=(Path("/tmp/ctx"), [])
-        ), mock.patch.object(
-            shepherd.repo, "head_sha", return_value="P_NEW"
-        ), mock.patch.object(
-            shepherd.claude_mod,
-            "invoke_cherry_pick_resolver",
-            return_value=(True, "C_NEW_ORIG", []),
-        ) as resolver, mock.patch.object(
-            shepherd.repo, "ghstack_submit"
-        ) as submit, mock.patch.object(
-            shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
-        ), mock.patch.object(
-            shepherd, "_wait_for_pr_head"
+        with (
+            mock.patch.object(shepherd, "_wait_for_no_active_sev", return_value=False),
+            mock.patch.object(shepherd.repo, "fetch_stack_refs", return_value=refs),
+            mock.patch.object(shepherd.repo, "set_worktree_to_sha"),
+            mock.patch.object(shepherd.repo, "ghstack_cherry_pick", side_effect=error),
+            mock.patch.object(
+                shepherd.repo, "is_cherry_pick_in_progress", return_value=True
+            ),
+            mock.patch.object(
+                shepherd, "_refresh_context_file", return_value=(Path("/tmp/ctx"), [])
+            ),
+            mock.patch.object(shepherd.repo, "head_sha", return_value="P_NEW"),
+            mock.patch.object(
+                shepherd.claude_mod,
+                "invoke_cherry_pick_resolver",
+                return_value=(True, "C_NEW_ORIG", []),
+            ) as resolver,
+            mock.patch.object(shepherd.repo, "ghstack_submit") as submit,
+            mock.patch.object(
+                shepherd.repo, "fetch_ghstack_head", return_value="C_NEW_HEAD"
+            ),
+            mock.patch.object(shepherd, "_wait_for_pr_head"),
         ):
             changed = shepherd._publish_ghstack_parent_rebase(
                 101,
@@ -601,9 +586,7 @@ class TestPublishGhstackParentRebase(unittest.TestCase):
 
         self.assertTrue(changed)
         resolver.assert_called_once()
-        submit.assert_called_once_with(
-            worktree, "Propagate parent update downstream"
-        )
+        submit.assert_called_once_with(worktree, "Propagate parent update downstream")
         self.assertEqual(trust.trusted_shas, ["C_NEW_HEAD"])
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0].mode, "cherry-pick-resolver")

@@ -3,6 +3,7 @@
 The human-readable log remains the audit trail. This module maintains the
 small machine-readable JSON file the mux can poll for richer state.
 """
+
 from __future__ import annotations
 
 import json

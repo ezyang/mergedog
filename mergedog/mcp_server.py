@@ -14,13 +14,13 @@ Tools:
     mergedog_state     Read a PR's trust-DB state
     mergedog_list_prs  List tracked mux PR jobs from the subscription file
 """
+
 from __future__ import annotations
 
 import json
 import sys
 
 from mergedog.bootstrap import promote_early_env
-
 
 promote_early_env(sys.argv[1:])
 

@@ -10,6 +10,7 @@ Sanitizing is not declassifying: every function here preserves TaintedStr,
 so tainted input yields tainted output and stripping taint still requires
 an explicit, justified untaint() call at the consumer.
 """
+
 from __future__ import annotations
 
 import re
@@ -17,15 +18,14 @@ import unicodedata
 
 from mergedog.taint import TaintedStr
 
-
 # Codepoint ranges that render to nothing (or to misleading visual order)
 # in the GitHub UI. Built from numeric ranges so the source is reviewable.
 _INVISIBLE_RANGES: tuple[tuple[int, int], ...] = (
-    (0x200B, 0x200D),    # zero-width space / non-joiner / joiner
-    (0x2060, 0x2060),    # word joiner
-    (0xFEFF, 0xFEFF),    # zero-width no-break space / BOM
-    (0x202A, 0x202E),    # bidi embedding / override
-    (0x2066, 0x2069),    # bidi isolates
+    (0x200B, 0x200D),  # zero-width space / non-joiner / joiner
+    (0x2060, 0x2060),  # word joiner
+    (0xFEFF, 0xFEFF),  # zero-width no-break space / BOM
+    (0x202A, 0x202E),  # bidi embedding / override
+    (0x2066, 0x2069),  # bidi isolates
     (0xE0000, 0xE007F),  # tag block (used in invisible-prompt attacks)
 )
 
@@ -44,9 +44,7 @@ _INVISIBLE_RE = re.compile(_build_invisible_class())
 
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
-_DETAILS_TAGS_RE = re.compile(
-    r"</?(details|summary)(\s[^>]*)?>", re.IGNORECASE
-)
+_DETAILS_TAGS_RE = re.compile(r"</?(details|summary)(\s[^>]*)?>", re.IGNORECASE)
 
 
 def _retaint_like(original: str, result: str) -> str:

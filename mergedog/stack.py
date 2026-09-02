@@ -14,6 +14,7 @@ We rely on ezyang's upstream fix that preserves this list across
 mid-stack ``ghstack submit`` runs -- without it, the listing can drift
 when only the bottom PR is re-submitted.
 """
+
 from __future__ import annotations
 
 import re
@@ -21,7 +22,6 @@ from dataclasses import dataclass
 
 from mergedog import github
 from mergedog.log import die
-
 
 _STACK_HEADER_RE = re.compile(r"Stack\s+from\s+\[?ghstack\]?", re.IGNORECASE)
 # Each line is one of:

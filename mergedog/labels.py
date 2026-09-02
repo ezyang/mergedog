@@ -5,6 +5,7 @@ to classify the PR, and applies the suggested labels. Runs when the PR does
 not yet carry sufficient release-note labels: either ``topic: not user facing``
 or both a ``release notes:`` label and a ``topic:`` label.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,10 +45,14 @@ def _get_cached_labels() -> list[dict] | None:
 def _fetch_and_cache_labels() -> list[dict]:
     labels = github.get_repo_labels()
     _LABEL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _LABEL_CACHE_PATH.write_text(json.dumps({
-        "fetched_at": time.time(),
-        "labels": labels,
-    }))
+    _LABEL_CACHE_PATH.write_text(
+        json.dumps(
+            {
+                "fetched_at": time.time(),
+                "labels": labels,
+            }
+        )
+    )
     return labels
 
 
@@ -57,7 +62,9 @@ def _get_relevant_labels() -> tuple[list[dict], list[dict], list[dict]]:
     if labels is None:
         labels = _fetch_and_cache_labels()
     ciflow = [lb for lb in labels if lb["name"].startswith("ciflow/")]
-    release_notes = [lb for lb in labels if lb["name"].startswith(_RELEASE_NOTES_PREFIX)]
+    release_notes = [
+        lb for lb in labels if lb["name"].startswith(_RELEASE_NOTES_PREFIX)
+    ]
     topic = [lb for lb in labels if lb["name"].startswith(_TOPIC_PREFIX)]
     return ciflow, release_notes, topic
 
@@ -152,9 +159,12 @@ def _invoke_claude_for_labels(prompt: str) -> list[str]:
     prompt = sanitize_untrusted_text(prompt)
     cmd = [
         "claude",
-        "-p", prompt,
-        "--model", "haiku",
-        "--output-format", "text",
+        "-p",
+        prompt,
+        "--model",
+        "haiku",
+        "--output-format",
+        "text",
     ]
     redacted = [c if c is not prompt else "<prompt>" for c in cmd]
     log("autolabel: $ " + " ".join(shlex.quote(c) for c in redacted))
@@ -202,9 +212,7 @@ def _validate_labels(
     result = [lb for lb in suggested if lb in valid_names]
     has_not_user_facing = _TOPIC_NOT_USER_FACING in result
     if has_not_user_facing:
-        result = [
-            lb for lb in result if not lb.startswith(_RELEASE_NOTES_PREFIX)
-        ]
+        result = [lb for lb in result if not lb.startswith(_RELEASE_NOTES_PREFIX)]
     return result
 
 

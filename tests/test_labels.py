@@ -18,24 +18,18 @@ class TestReleaseNoteAutolabelGate(unittest.TestCase):
         self.assertTrue(labels._pr_needs_autolabel(_pr_data()))
 
     def test_only_release_notes_label_needs_topic_label(self):
-        self.assertTrue(
-            labels._pr_needs_autolabel(_pr_data("release notes: nn"))
-        )
+        self.assertTrue(labels._pr_needs_autolabel(_pr_data("release notes: nn")))
 
     def test_only_topic_label_needs_release_notes_label(self):
         self.assertTrue(labels._pr_needs_autolabel(_pr_data("topic: nn")))
 
     def test_release_notes_and_topic_labels_are_sufficient(self):
         self.assertFalse(
-            labels._pr_needs_autolabel(
-                _pr_data("release notes: nn", "topic: nn")
-            )
+            labels._pr_needs_autolabel(_pr_data("release notes: nn", "topic: nn"))
         )
 
     def test_not_user_facing_topic_is_sufficient(self):
-        self.assertFalse(
-            labels._pr_needs_autolabel(_pr_data("topic: not user facing"))
-        )
+        self.assertFalse(labels._pr_needs_autolabel(_pr_data("topic: not user facing")))
 
 
 class TestAutolabelIfNeeded(unittest.TestCase):
@@ -55,15 +49,16 @@ class TestAutolabelIfNeeded(unittest.TestCase):
                 {"name": "topic: not user facing", "description": ""},
             ],
         )
-        with mock.patch.object(
-            labels, "_get_relevant_labels", return_value=repo_labels
-        ), mock.patch.object(
-            labels, "_get_changed_files", return_value=["torch/nn/foo.py"]
-        ), mock.patch.object(
-            labels, "_invoke_claude_for_labels", return_value=suggested
-        ) as invoke, mock.patch.object(
-            labels.github, "add_label"
-        ) as add_label:
+        with (
+            mock.patch.object(labels, "_get_relevant_labels", return_value=repo_labels),
+            mock.patch.object(
+                labels, "_get_changed_files", return_value=["torch/nn/foo.py"]
+            ),
+            mock.patch.object(
+                labels, "_invoke_claude_for_labels", return_value=suggested
+            ) as invoke,
+            mock.patch.object(labels.github, "add_label") as add_label,
+        ):
             labels.autolabel_if_needed(1, pr_data)
         invoke.assert_called_once()
         return add_label
@@ -86,9 +81,7 @@ class TestAutolabelIfNeeded(unittest.TestCase):
 
     def test_skips_when_labels_are_already_sufficient(self):
         with mock.patch.object(labels, "_invoke_claude_for_labels") as invoke:
-            labels.autolabel_if_needed(
-                1, _pr_data("release notes: nn", "topic: nn")
-            )
+            labels.autolabel_if_needed(1, _pr_data("release notes: nn", "topic: nn"))
 
         invoke.assert_not_called()
 

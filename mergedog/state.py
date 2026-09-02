@@ -12,6 +12,7 @@ The trust DB tracks the set of SHAs we consider safe to land:
 If GitHub ever reports a PR head SHA that is not in this set, we halt:
 the PR has been touched by someone other than mergedog after approval.
 """
+
 from __future__ import annotations
 
 import json
@@ -96,28 +97,18 @@ class TrustDB:
                 trusted_shas=list(data.get("trusted_shas", [])),
                 head_branch=data.get("head_branch", ""),
                 head_repo_clone_url=data.get("head_repo_clone_url", ""),
-                last_observed_failure_iso=data.get(
-                    "last_observed_failure_iso", ""
-                ),
-                last_observed_failure_body=data.get(
-                    "last_observed_failure_body", ""
-                ),
-                spurious_check_names=list(
-                    data.get("spurious_check_names", [])
-                ),
+                last_observed_failure_iso=data.get("last_observed_failure_iso", ""),
+                last_observed_failure_body=data.get("last_observed_failure_body", ""),
+                spurious_check_names=list(data.get("spurious_check_names", [])),
                 fix_commits_pushed=int(data.get("fix_commits_pushed", 0)),
                 fix_budget_ack_sha=data.get("fix_budget_ack_sha", ""),
                 merge_auto_retries=int(data.get("merge_auto_retries", 0)),
                 conflict_resolutions_pushed=int(
                     data.get("conflict_resolutions_pushed", 0)
                 ),
-                pending_publish_orig_sha=data.get(
-                    "pending_publish_orig_sha", ""
-                ),
+                pending_publish_orig_sha=data.get("pending_publish_orig_sha", ""),
                 extra_fields={
-                    k: v
-                    for k, v in data.items()
-                    if k not in cls._KNOWN_FIELDS
+                    k: v for k, v in data.items() if k not in cls._KNOWN_FIELDS
                 },
                 path=path,
             )
@@ -142,9 +133,7 @@ class TrustDB:
                 "fix_commits_pushed": self.fix_commits_pushed,
                 "fix_budget_ack_sha": self.fix_budget_ack_sha,
                 "merge_auto_retries": self.merge_auto_retries,
-                "conflict_resolutions_pushed": (
-                    self.conflict_resolutions_pushed
-                ),
+                "conflict_resolutions_pushed": (self.conflict_resolutions_pushed),
                 "pending_publish_orig_sha": self.pending_publish_orig_sha,
             },
             indent=2,

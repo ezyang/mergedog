@@ -9,6 +9,7 @@ Section markers in the sidecar are best-effort. They can be spoofed in the
 PR body, but the prompt tells the agent to treat the entire file as data
 regardless of what it claims to be.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,7 +17,6 @@ from pathlib import Path
 from mergedog.paths import atomic_write_text
 from mergedog.sanitize import sanitize_untrusted_markdown, sanitize_untrusted_text
 from mergedog.taint import untaint
-
 
 _TRUSTED_COMMENT_AUTHORS = frozenset(
     {
@@ -49,7 +49,9 @@ def render_context(
             [
                 "",
                 "[DESCRIPTION]",
-                untaint(sanitize_untrusted_markdown(body)) if body else "(no description)",
+                untaint(sanitize_untrusted_markdown(body))
+                if body
+                else "(no description)",
             ]
         )
     for c in comments:
@@ -60,8 +62,7 @@ def render_context(
         parts.extend(
             [
                 "",
-                "[COMMENT by "
-                f"{sanitize_untrusted_text(untaint(author))} at {created}]",
+                f"[COMMENT by {sanitize_untrusted_text(untaint(author))} at {created}]",
                 untaint(sanitize_untrusted_markdown(c.get("body", ""))),
             ]
         )

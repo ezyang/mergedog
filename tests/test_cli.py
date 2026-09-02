@@ -51,17 +51,19 @@ class TestExternalFailureHaltMessage(unittest.TestCase):
 
 class TestSingleMain(unittest.TestCase):
     def test_ignores_ci_sev_by_default(self):
-        with mock.patch("mergedog.notify.configure"), mock.patch(
-            "mergedog.shepherd.shepherd"
-        ) as shepherd:
+        with (
+            mock.patch("mergedog.notify.configure"),
+            mock.patch("mergedog.shepherd.shepherd") as shepherd,
+        ):
             cli._single_main(["186672"])
 
         self.assertTrue(shepherd.call_args.kwargs["ignore_sev"])
 
     def test_can_respect_ci_sev(self):
-        with mock.patch("mergedog.notify.configure"), mock.patch(
-            "mergedog.shepherd.shepherd"
-        ) as shepherd:
+        with (
+            mock.patch("mergedog.notify.configure"),
+            mock.patch("mergedog.shepherd.shepherd") as shepherd,
+        ):
             cli._single_main(["186672", "--no-ignore-sev"])
 
         self.assertFalse(shepherd.call_args.kwargs["ignore_sev"])
@@ -73,9 +75,11 @@ class TestSingleMain(unittest.TestCase):
             stderr="HTTP 401: Requires authentication\n",
         )
 
-        with mock.patch("mergedog.notify.configure"), mock.patch(
-            "mergedog.shepherd.shepherd", side_effect=exc
-        ), mock.patch("mergedog.log.die", side_effect=SystemExit(1)) as die:
+        with (
+            mock.patch("mergedog.notify.configure"),
+            mock.patch("mergedog.shepherd.shepherd", side_effect=exc),
+            mock.patch("mergedog.log.die", side_effect=SystemExit(1)) as die,
+        ):
             with self.assertRaises(SystemExit):
                 cli._single_main(["186672"])
 

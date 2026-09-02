@@ -1,4 +1,5 @@
 """Tests for the dynamic IFC taint-tracking system."""
+
 from __future__ import annotations
 
 import pytest
@@ -149,7 +150,7 @@ class TestKnownLaunderingGaps:
 
     def test_plain_template_format_launders(self):
         t = taint("evil", "test")
-        assert not isinstance("prefix {}".format(t), TaintedStr)
+        assert not isinstance(f"prefix {t}", TaintedStr)
 
     def test_plain_join_launders(self):
         t = taint("evil", "test")
@@ -181,7 +182,7 @@ class TestStrInterop:
     def test_equality_with_plain_str(self):
         t = taint("hello", "test")
         assert t == "hello"
-        assert "hello" == t
+        assert t == "hello"
 
     def test_hash_matches_plain_str(self):
         t = taint("hello", "test")

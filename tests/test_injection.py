@@ -1,4 +1,5 @@
 """Tests for the best-effort prompt-injection screen."""
+
 from __future__ import annotations
 
 import subprocess

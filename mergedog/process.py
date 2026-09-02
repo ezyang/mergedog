@@ -1,11 +1,12 @@
 """Thin subprocess wrappers."""
+
 from __future__ import annotations
 
 import os
 import shlex
 import subprocess
-from pathlib import Path
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from mergedog.log import log
 from mergedog.sanitize import sanitize_untrusted_text

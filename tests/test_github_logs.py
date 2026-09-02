@@ -1,5 +1,5 @@
-import threading
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -40,9 +40,7 @@ class TestStripPrefix(unittest.TestCase):
 def _make_log(prefix_lines: int, error_block: str, tail_lines: int) -> str:
     """Build a synthetic ``gh run view --log`` shaped string."""
     job_prefix = "job-x / build\tUNKNOWN STEP\t2026-05-04T18:00:00.0000000Z "
-    head = "\n".join(
-        f"{job_prefix}preamble line {i}" for i in range(prefix_lines)
-    )
+    head = "\n".join(f"{job_prefix}preamble line {i}" for i in range(prefix_lines))
     err = "\n".join(f"{job_prefix}{line}" for line in error_block.splitlines())
     tail = "\n".join(
         f"{job_prefix}post-job cleanup noise {i}" for i in range(tail_lines)
@@ -312,19 +310,25 @@ class TestLatestDrciSummary(unittest.TestCase):
 
     def test_picks_latest_pytorch_bot_with_trailer(self):
         comments = [
-            {"author": "pytorch-bot", "body": f"{self._HEADER}\nold\n\n{self._TRAILER}"},
+            {
+                "author": "pytorch-bot",
+                "body": f"{self._HEADER}\nold\n\n{self._TRAILER}",
+            },
             {"author": "ezyang", "body": "lgtm"},
-            {"author": "pytorch-bot", "body": f"{self._HEADER}\nnewer\n\n{self._TRAILER}"},
+            {
+                "author": "pytorch-bot",
+                "body": f"{self._HEADER}\nnewer\n\n{self._TRAILER}",
+            },
         ]
-        out = __import__("mergedog.github", fromlist=["latest_drci_summary"]).latest_drci_summary(comments)
+        out = __import__(
+            "mergedog.github", fromlist=["latest_drci_summary"]
+        ).latest_drci_summary(comments)
         self.assertIsNotNone(out)
         self.assertIn("newer", out)
 
     def test_returns_none_when_no_drci(self):
         self.assertIsNone(latest_drci_summary([]))
-        self.assertIsNone(
-            latest_drci_summary([{"author": "ezyang", "body": "hi"}])
-        )
+        self.assertIsNone(latest_drci_summary([{"author": "ezyang", "body": "hi"}]))
 
     def test_ignores_pytorch_bot_without_trailer(self):
         # pytorch-bot can in principle post non-dr.ci comments. Without the
@@ -346,13 +350,17 @@ class TestLatestDrciSummary(unittest.TestCase):
         comments = [{"author": "pytorch-bot", "body": body}]
         # Different head -> dropped.
         self.assertIsNone(
-            latest_drci_summary(comments, head_sha="cccccccccccccccccccccccccccccccccccccccc")
+            latest_drci_summary(
+                comments, head_sha="cccccccccccccccccccccccccccccccccccccccc"
+            )
         )
         # Matching head -> returned. We accept any prefix match so that
         # an abbreviated SHA in the body still resolves against a full
         # 40-char SHA from gh.
         self.assertIsNotNone(
-            latest_drci_summary(comments, head_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            latest_drci_summary(
+                comments, head_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
         )
 
     def test_drops_body_without_structural_header(self):

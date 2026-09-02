@@ -3,9 +3,9 @@
 We deliberately keep this layer small: every call shells out to ``gh`` and
 parses JSON. No third-party HTTP client.
 """
+
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
 import os
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -189,7 +190,7 @@ def _classify_gh_args(args: list[str]) -> dict[str, object]:
     path, _, query_text = endpoint.partition("?")
     query = parse_qs(query_text)
     repo_prefix = f"repos/{REPO}/"
-    rel = path[len(repo_prefix):] if path.startswith(repo_prefix) else path
+    rel = path[len(repo_prefix) :] if path.startswith(repo_prefix) else path
     parts = rel.split("/")
 
     if rel == "labels":
@@ -394,10 +395,7 @@ def _governor_throttle_gh(
                 return
         if not logged:
             op = str(_classify_gh_args(args).get("operation", "gh"))
-            log(
-                "GitHub API governor delaying "
-                f"{op} for {_format_wait(wait)}"
-            )
+            log(f"GitHub API governor delaying {op} for {_format_wait(wait)}")
             logged = True
         sleep_fn(min(wait, _GH_GOVERNOR_MAX_SLEEP_CHUNK_SEC))
 
@@ -564,9 +562,7 @@ def _find_working_gh_executable(current: str) -> str | None:
     return None
 
 
-def _raise_gh_failure(
-    proc: subprocess.CompletedProcess[str], args: list[str]
-) -> None:
+def _raise_gh_failure(proc: subprocess.CompletedProcess[str], args: list[str]) -> None:
     err = (proc.stderr or "").rstrip()
     if err:
         log(f"  ! gh {' '.join(args[:3])}")
@@ -617,17 +613,13 @@ def _gh(
             replacement = _find_working_gh_executable(_GH_COMMAND[0])
             if replacement is not None:
                 current = shutil.which(_GH_COMMAND[0]) or _GH_COMMAND[0]
-                log(
-                    f"  ! gh startup crash from {current}; "
-                    f"retrying with {replacement}"
-                )
+                log(f"  ! gh startup crash from {current}; retrying with {replacement}")
                 _GH_COMMAND = [replacement]
                 proc = _attempt(False, attempt)
         if _is_github_rate_limit_error(proc):
             wait = _governor_note_rate_limit()
             log(
-                "  ! GitHub API rate limit exhausted; "
-                f"retrying in {_format_wait(wait)}"
+                f"  ! GitHub API rate limit exhausted; retrying in {_format_wait(wait)}"
             )
             if wait > 0:
                 time.sleep(wait)
@@ -790,9 +782,7 @@ def get_pr_merge_commit_sha(pr: int) -> str | None:
 
 
 def get_pr_state(pr: int) -> str | None:
-    data = _gh_json(
-        ["pr", "view", str(pr), "--repo", REPO, "--json", "state"]
-    )
+    data = _gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "state"])
     state = data.get("state")
     return state if isinstance(state, str) else None
 
@@ -825,9 +815,7 @@ def get_pr_comments(pr: int) -> list[dict]:
     on the diff) are intentionally not included -- they're tied to specific
     commits and don't fit the sidecar format.
     """
-    data = _gh_json(
-        ["pr", "view", str(pr), "--repo", REPO, "--json", "comments"]
-    )
+    data = _gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "comments"])
     out: list[dict] = []
     for c in data.get("comments", []) or []:
         author = (c.get("author") or {}).get("login") or "?"
@@ -908,9 +896,7 @@ def latest_drci_summary(
 
 
 def get_pr_head_sha(pr: int) -> str:
-    data = _gh_json(
-        ["pr", "view", str(pr), "--repo", REPO, "--json", "headRefOid"]
-    )
+    data = _gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "headRefOid"])
     return data["headRefOid"]
 
 
@@ -1119,8 +1105,7 @@ def get_pr_review_comments(pr: int, per_page: int = 100) -> list[dict]:
         data = _gh_json(
             [
                 "api",
-                f"repos/{REPO}/pulls/{pr}/comments"
-                f"?per_page={per_page}&page={page}",
+                f"repos/{REPO}/pulls/{pr}/comments?per_page={per_page}&page={page}",
             ]
         )
         for c in data or []:
@@ -1202,9 +1187,7 @@ def list_active_ci_sevs() -> list[dict]:
     )
 
 
-_HANDOFF_MARKER_RE = re.compile(
-    r"<!--\s*mergedog:handoff(?:\s+head=([^\s>]+))?\s*-->"
-)
+_HANDOFF_MARKER_RE = re.compile(r"<!--\s*mergedog:handoff(?:\s+head=([^\s>]+))?\s*-->")
 
 
 def _mergedog_handoff_marker(body: str) -> tuple[bool, str | None]:
@@ -1291,9 +1274,7 @@ def latest_mergedog_handoff_iso(pr: int, *, author: str | None = None) -> str | 
     we restarted). ``author`` restricts to mergedog's own comments (see
     ``has_mergedog_handoff_comment``).
     """
-    return latest_mergedog_handoff_iso_from_comments(
-        get_pr_comments(pr), author=author
-    )
+    return latest_mergedog_handoff_iso_from_comments(get_pr_comments(pr), author=author)
 
 
 def latest_mergedog_handoff_iso_from_comments(
@@ -1403,9 +1384,7 @@ def get_pr_review_audit(pr: int) -> dict:
         ]
     )
     data = json.loads(proc.stdout)
-    pr_node = (
-        data.get("data", {}).get("repository", {}).get("pullRequest", {}) or {}
-    )
+    pr_node = data.get("data", {}).get("repository", {}).get("pullRequest", {}) or {}
     nodes = (pr_node.get("latestOpinionatedReviews") or {}).get("nodes") or []
     reviews = []
     for n in nodes:
@@ -1432,22 +1411,22 @@ def is_trusted_association(association: str | None) -> bool:
 # Order doesn't matter -- we pick the *last* occurrence across all of them.
 # Add new ones here as they show up in HALTed runs; tweaks are cheap.
 _LOG_FAILURE_MARKERS = (
-    "error:",                   # compiler/linker, plus most lower-level tools
-    "FAILED:",                  # ninja
-    "ninja: build stopped",     # ninja's terminal line
-    "##[error]",                # GitHub Actions error annotation
-    "fatal error",              # clang/gcc fatal
-    "Traceback (most recent",   # Python tracebacks
+    "error:",  # compiler/linker, plus most lower-level tools
+    "FAILED:",  # ninja
+    "ninja: build stopped",  # ninja's terminal line
+    "##[error]",  # GitHub Actions error annotation
+    "fatal error",  # clang/gcc fatal
+    "Traceback (most recent",  # Python tracebacks
     "AssertionError",
     "RuntimeError:",
     "Segmentation fault",
     "FATAL:",
     "Test Failed",
-    "FAILED test",              # pytest summary lines
+    "FAILED test",  # pytest summary lines
     "short test summary info",  # pytest section header before FAILED lines
-    " failed,",                 # pytest "= N failed, M passed =" final line
-    " failed =",                # pytest "= N failed =" final line (no passed)
-    "= FAILURES =",             # pytest FAILURES section header
+    " failed,",  # pytest "= N failed, M passed =" final line
+    " failed =",  # pytest "= N failed =" final line (no passed)
+    "= FAILURES =",  # pytest FAILURES section header
 )
 
 _PYTEST_FAILURES_RE = re.compile(r"(?m)^=+\s+FAILURES\s+=+\s*$")
@@ -1467,7 +1446,7 @@ def _strip_gh_log_prefix(line: str) -> str:
         # ``gh api repos/.../actions/jobs/<job>/logs`` returns raw lines
         # prefixed by only an RFC3339 timestamp.
         if "T" in head and (head.endswith("Z") or "+" in head):
-            return line[sp + 1:]
+            return line[sp + 1 :]
     parts = line.split("\t", 2)
     if len(parts) != 3:
         return line
@@ -1478,7 +1457,7 @@ def _strip_gh_log_prefix(line: str) -> str:
     head = rest[:sp]
     # RFC3339-ish timestamp: contains 'T' and ends with 'Z' (or has a '+' offset).
     if "T" in head and (head.endswith("Z") or "+" in head):
-        return rest[sp + 1:]
+        return rest[sp + 1 :]
     return rest
 
 
@@ -1512,7 +1491,7 @@ def _extract_pytest_failures(cleaned: str, max_chars: int) -> str | None:
         "... [head truncated] ...\n"
         + section[: max_chars // 4]
         + "\n... [middle truncated] ...\n"
-        + section[-(max_chars * 3 // 4):]
+        + section[-(max_chars * 3 // 4) :]
     )
 
 
@@ -1668,10 +1647,7 @@ def _fetch_failed_job_logs_parallel(
             for spec in specs
         ]
     with ThreadPoolExecutor(max_workers=len(specs)) as ex:
-        futures = [
-            ex.submit(_fetch_raw_job_log, spec, pr)
-            for spec in specs
-        ]
+        futures = [ex.submit(_fetch_raw_job_log, spec, pr) for spec in specs]
         raw_logs = [future.result() for future in futures]
     return [_trim_failed_job_log(raw, max_chars) for raw in raw_logs]
 
@@ -1726,11 +1702,9 @@ def get_failed_job_logs_for_runs(
             continue
         jobs_data = json.loads(jobs_proc.stdout)
         failed_jobs = [
-            j
-            for j in (jobs_data.get("jobs") or [])
-            if j.get("conclusion") == "failure"
+            j for j in (jobs_data.get("jobs") or []) if j.get("conclusion") == "failure"
         ]
-        for j in failed_jobs[:max_jobs - len(specs)]:
+        for j in failed_jobs[: max_jobs - len(specs)]:
             name = j.get("name", f"<run {run_id}>")
             job_id = j.get("id")
             specs.append((name, run_id, job_id))

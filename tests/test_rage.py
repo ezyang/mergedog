@@ -62,6 +62,7 @@ class TestRageReport(unittest.TestCase):
         self.assertIn("https://user:<REDACTED>@example.com/repo.git", report)
         self.assertIn('"github_token": "<REDACTED>"', report)
 
+
 class TestCreatePaste(unittest.TestCase):
     @mock.patch("shutil.which")
     @mock.patch("subprocess.run")

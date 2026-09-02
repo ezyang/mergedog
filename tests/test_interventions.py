@@ -4,7 +4,6 @@ from unittest.mock import patch
 from mergedog import interventions
 from mergedog.shepherd import _try_interventions
 
-
 _GRAPHQL_504_LOG = """\
 + python3 .github/scripts/trymerge.py --check-mergeability 182443
 Found 4 PRs in the stack for 182443: [182295, 182435, 182439, 182443]
@@ -56,10 +55,9 @@ class TestTryInterventions(unittest.TestCase):
         }
 
     def _run(self, failed, checks, seen, *, rerun_ok=(True, ""), attempt=1):
-        with patch(
-            "mergedog.github.rerun_failed_jobs", return_value=rerun_ok
-        ) as rerun, patch(
-            "mergedog.github.workflow_run_attempt", return_value=attempt
+        with (
+            patch("mergedog.github.rerun_failed_jobs", return_value=rerun_ok) as rerun,
+            patch("mergedog.github.workflow_run_attempt", return_value=attempt),
         ):
             triggered = _try_interventions(failed, checks, seen)
         return triggered, rerun
@@ -116,9 +114,7 @@ class TestTryInterventions(unittest.TestCase):
         failed = [("ghstack-mergeability-check", _GRAPHQL_504_LOG)]
         checks = [self._check("ghstack-mergeability-check", 12345)]
         seen: set[int] = set()
-        triggered, _ = self._run(
-            failed, checks, seen, rerun_ok=(False, "boom")
-        )
+        triggered, _ = self._run(failed, checks, seen, rerun_ok=(False, "boom"))
         self.assertFalse(triggered)
         self.assertNotIn(12345, seen)
 

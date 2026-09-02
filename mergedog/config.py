@@ -1,4 +1,5 @@
 """Persistent operator configuration for mergedog."""
+
 from __future__ import annotations
 
 import json
@@ -82,9 +83,7 @@ def get_ci_sev_config(path: Path = CONFIG_FILE) -> CiSevConfig:
     try:
         ignored = tuple(sorted({parse_ci_sev_number(v) for v in raw_ignored}))
     except ValueError as e:
-        raise ValueError(
-            f"{path}: ci_sev.ignored contains invalid issue: {e}"
-        ) from e
+        raise ValueError(f"{path}: ci_sev.ignored contains invalid issue: {e}") from e
     return CiSevConfig(ignored_numbers=ignored)
 
 
@@ -114,9 +113,7 @@ def add_ignored_ci_sev(number: int, *, path: Path = CONFIG_FILE) -> CiSevConfig:
     return set_ignored_ci_sev_numbers(ignored, path=path)
 
 
-def remove_ignored_ci_sev(
-    number: int, *, path: Path = CONFIG_FILE
-) -> CiSevConfig:
+def remove_ignored_ci_sev(number: int, *, path: Path = CONFIG_FILE) -> CiSevConfig:
     ignored = get_ignored_ci_sev_numbers(path)
     ignored.discard(parse_ci_sev_number(number))
     return set_ignored_ci_sev_numbers(ignored, path=path)

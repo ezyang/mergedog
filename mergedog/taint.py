@@ -102,6 +102,7 @@ Instead:
 Adding a bare ``untaint()`` without justification defeats the purpose
 of the entire system.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable

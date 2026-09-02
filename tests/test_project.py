@@ -1,8 +1,8 @@
 import unittest
 from unittest import mock
 
-from mergedog.bootstrap import promote_early_env
 from mergedog import project
+from mergedog.bootstrap import promote_early_env
 
 
 class TestProjectPolicy(unittest.TestCase):

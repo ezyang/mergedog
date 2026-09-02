@@ -7,6 +7,7 @@ the ``MERGEDOG_ROOT`` environment variable. The repo defaults to
 want to redirect mergedog should set env vars (or use entry-point CLI flags,
 which set them for you) before importing anything from this module.
 """
+
 from __future__ import annotations
 
 import os

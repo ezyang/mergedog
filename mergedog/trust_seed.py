@@ -5,6 +5,7 @@ which SHA on the PR represents the "human approved this" anchor, and
 either trusts the current PR head (if it matches or has already been
 trusted in a prior run) or halts.
 """
+
 from __future__ import annotations
 
 from mergedog import github
@@ -22,7 +23,8 @@ def latest_trusted_approval(reviews: list[dict]) -> dict | None:
     shepherd's fix-budget refresh anchor to this selection.
     """
     trusted_approvals = [
-        r for r in reviews
+        r
+        for r in reviews
         if r.get("state") == "APPROVED"
         and github.is_trusted_association(r.get("association"))
         and r.get("commit_id")
@@ -74,7 +76,8 @@ def seed_trust_from_reviews(
     log(f"PR review decision: {decision}")
 
     untrusted_approvals = [
-        r for r in audit["reviews"]
+        r
+        for r in audit["reviews"]
         if r.get("state") == "APPROVED"
         and not github.is_trusted_association(r.get("association"))
     ]

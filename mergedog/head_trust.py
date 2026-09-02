@@ -1,4 +1,5 @@
 """Trust helpers for PR head movements after approval."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -7,7 +8,6 @@ from mergedog import github, repo
 from mergedog.log import log
 from mergedog.project import get_project_policy
 from mergedog.state import TrustDB
-
 
 PROJECT = get_project_policy()
 

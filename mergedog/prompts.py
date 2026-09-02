@@ -1,10 +1,10 @@
 """Prompts handed to claude when shelling out for fixes."""
+
 from __future__ import annotations
 
 from mergedog.project import get_project_policy
 from mergedog.sanitize import sanitize_untrusted_text
 from mergedog.taint import assert_untainted, format_untainted, untaint
-
 
 _UNTRUSTED_CONTEXT_BLURB = """\
 A sidecar file at ``{context_path}`` contains the PR's title, description, \
@@ -366,9 +366,7 @@ def render_fix_prompt(
     )
     failing_checks_section = ""
     if failing_check_names:
-        body = "\n".join(
-            f"- {sanitize_untrusted_text(n)}" for n in failing_check_names
-        )
+        body = "\n".join(f"- {sanitize_untrusted_text(n)}" for n in failing_check_names)
         failing_checks_section = format_untainted(
             _FAILING_CHECKS_SECTION_TEMPLATE,
             failing_checks_body=body,
@@ -688,7 +686,9 @@ def render_rebase_conflict_prompt(
 ) -> str:
     return _render_conflict_prompt(
         REBASE_CONFLICT_PROMPT,
-        url=url, branch=branch, context_path=context_path,
+        url=url,
+        branch=branch,
+        context_path=context_path,
     )
 
 
@@ -700,7 +700,9 @@ def render_cherry_pick_conflict_prompt(
 ) -> str:
     return _render_conflict_prompt(
         CHERRY_PICK_CONFLICT_PROMPT,
-        url=url, branch=branch, context_path=context_path,
+        url=url,
+        branch=branch,
+        context_path=context_path,
     )
 
 
@@ -714,6 +716,8 @@ def render_merge_conflict_prompt(
     assert_untainted(merge_subject)
     return _render_conflict_prompt(
         MERGE_CONFLICT_PROMPT,
-        url=url, branch=branch, context_path=context_path,
+        url=url,
+        branch=branch,
+        context_path=context_path,
         subject=merge_subject,
     )

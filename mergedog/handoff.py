@@ -6,6 +6,7 @@ of what the configured LLM did during the run, then sits in
 until either the PR closes/merges or pytorchmergebot reports a merge
 failure (which kicks the shepherd into a recovery cycle).
 """
+
 from __future__ import annotations
 
 import re
@@ -87,9 +88,7 @@ class SuppressionDrciComparison:
         if self.not_listed:
             parts.append(f"{len(self.not_listed)} not listed")
         if self.not_marked_unrelated:
-            parts.append(
-                f"{len(self.not_marked_unrelated)} not marked unrelated"
-            )
+            parts.append(f"{len(self.not_marked_unrelated)} not marked unrelated")
         detail = f" ({', '.join(parts)} by Dr. CI)" if parts else ""
         return f"suppression list differs from Dr. CI{detail}"
 
@@ -147,11 +146,7 @@ def _format_handoff_comment(
             "## mergedog handoff",
             "",
             "All CI is green (or skipped). Ready for human review and "
-            + (
-                f"`{PROJECT.merge_command}`."
-                if PROJECT.merge_command
-                else "merge."
-            ),
+            + (f"`{PROJECT.merge_command}`." if PROJECT.merge_command else "merge."),
             "",
         ]
     if include_disclosure:
@@ -163,9 +158,7 @@ def _format_handoff_comment(
             head.extend(["", "### Autonomous changes pushed", ""])
             head.extend(_format_pushed_change_lines(changes))
         else:
-            head.append(
-                "No mergedog-authored commits were pushed during this run."
-            )
+            head.append("No mergedog-authored commits were pushed during this run.")
         head.extend(_format_ci_notes(suppressed, drci_summary))
         head.extend(
             [
@@ -261,14 +254,11 @@ def _format_ci_notes(
             lines.append("Suppressed by mergedog but not listed by Dr. CI:")
             lines.append("")
             lines.extend(
-                f"- `{sanitize_untrusted_text(name)}`"
-                for name in comparison.not_listed
+                f"- `{sanitize_untrusted_text(name)}`" for name in comparison.not_listed
             )
             lines.append("")
         if comparison.not_marked_unrelated:
-            lines.append(
-                "Suppressed by mergedog but not marked unrelated by Dr. CI:"
-            )
+            lines.append("Suppressed by mergedog but not marked unrelated by Dr. CI:")
             lines.append("")
             lines.extend(
                 f"- `{sanitize_untrusted_text(name)}`"
@@ -365,10 +355,7 @@ def _format_pushed_change_lines(changes: list[PushedChange]) -> list[str]:
         sha = change.sha[:12]
         sha_text = f"`{sha}`"
         if _GIT_SHA_RE.fullmatch(change.sha):
-            sha_text = (
-                f"[`{sha}`](https://github.com/{REPO_SLUG}/commit/"
-                f"{change.sha})"
-            )
+            sha_text = f"[`{sha}`](https://github.com/{REPO_SLUG}/commit/{change.sha})"
         line = f"- {sha_text} — {sanitize_untrusted_text(change.summary)}"
         if change.subject:
             line += f": {sanitize_untrusted_text(change.subject)}"
@@ -455,9 +442,7 @@ def _pr_has_merge_conflicts(pr_data: dict) -> bool:
     return (pr_data.get("mergeStateStatus") or "").upper() == "DIRTY"
 
 
-def latest_mergebot_event(
-    pr: int, since_iso: str
-) -> tuple[str, str, str] | None:
+def latest_mergebot_event(pr: int, since_iso: str) -> tuple[str, str, str] | None:
     """Classify pytorchmergebot's reply to a `@pytorchbot merge` request.
 
     Looks at pytorchmergebot comments newer than ``since_iso`` and returns
@@ -530,9 +515,8 @@ def mergebot_ignored_check_names(
                 continue
             ignored.update(name for name in failed_names if name in clean_body)
             continue
-        if (
-            _is_merge_i_command(clean_body)
-            and github.is_trusted_association(comment.get("author_association"))
+        if _is_merge_i_command(clean_body) and github.is_trusted_association(
+            comment.get("author_association")
         ):
             ignored.update(failed_names)
     return ignored
@@ -646,10 +630,10 @@ def _apply_suppressed_overrides(
         return checks
     out: list[dict] = []
     for c in checks:
-        if (
-            c.get("name") in suppressed_check_names
-            and c.get("bucket") in {"fail", "cancel"}
-        ):
+        if c.get("name") in suppressed_check_names and c.get("bucket") in {
+            "fail",
+            "cancel",
+        }:
             c = {**c, "bucket": "skipping"}
         out.append(c)
     return out
@@ -665,14 +649,10 @@ def _post_handoff_ci_status(
         checks = github.get_pr_checks_all(pr, head_sha=head_sha)
     except Exception:
         return None
-    effective_checks = _apply_suppressed_overrides(
-        checks, suppressed_check_names
-    )
+    effective_checks = _apply_suppressed_overrides(checks, suppressed_check_names)
     total = len(checks)
     done = sum(1 for c in checks if c.get("bucket") not in {"pending", None})
-    failed = sum(
-        1 for c in effective_checks if c.get("bucket") in {"fail", "cancel"}
-    )
+    failed = sum(1 for c in effective_checks if c.get("bucket") in {"fail", "cancel"})
     suppressed = sum(
         1
         for c in checks
@@ -730,10 +710,7 @@ def _write_post_handoff_ci_status(
 ) -> None:
     if status == "failed":
         failure_plural = "" if failed == 1 else "s"
-        message = (
-            f"CI regressed after handoff: {failed} active "
-            f"failure{failure_plural}"
-        )
+        message = f"CI regressed after handoff: {failed} active failure{failure_plural}"
         category = "action"
         waiting_on = None
         action = "inspecting_ci"
@@ -961,10 +938,7 @@ def watch_post_handoff(
                         suppression_warning=suppression_warning,
                     )
                     if ci_status == "failed":
-                        log(
-                            "CI regressed after handoff; returning to CI "
-                            "inspection"
-                        )
+                        log("CI regressed after handoff; returning to CI inspection")
                         return "ci_failed", None, None
                     time.sleep(_POLL_INTERVAL_SEC)
                     continue

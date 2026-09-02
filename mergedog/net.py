@@ -1,11 +1,11 @@
 """Network environment helpers for subprocesses that talk to GitHub."""
+
 from __future__ import annotations
 
 import os
 import re
 import subprocess
 from functools import lru_cache
-
 
 # Output that indicates a transient network/proxy failure worth retrying.
 # Shared by the gh and ghstack retry loops so the lists can't drift.

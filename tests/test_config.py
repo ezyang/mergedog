@@ -3,18 +3,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mergedog.claude import _build_llm_invocation
 from mergedog.config import (
+    LLMConfig,
     add_ignored_ci_sev,
     clear_ignored_ci_sevs,
     format_ci_sev_ignored_numbers,
     get_ci_sev_config,
-    LLMConfig,
+    get_llm_config,
     parse_ci_sev_number,
     remove_ignored_ci_sev,
-    get_llm_config,
     set_llm_config,
 )
-from mergedog.claude import _build_llm_invocation
 
 
 class TestLLMConfig(unittest.TestCase):

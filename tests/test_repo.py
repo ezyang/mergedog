@@ -1,6 +1,6 @@
-import unittest
 import subprocess
 import tempfile
+import unittest
 from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
@@ -83,8 +83,9 @@ class TestAttemptRebaseMain(unittest.TestCase):
 
 class TestPatchIdMatchesAny(unittest.TestCase):
     def test_matches_rebased_equivalent_commit(self):
-        with tempfile.TemporaryDirectory() as td, mock.patch.object(
-            repo, "REPO_DIR", Path(td)
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(repo, "REPO_DIR", Path(td)),
         ):
             root = Path(td)
             _git(root, "init", "-q")
@@ -109,8 +110,9 @@ class TestPatchIdMatchesAny(unittest.TestCase):
             self.assertTrue(repo.patch_id_matches_any(rebased, [trusted]))
 
     def test_rejects_different_patch(self):
-        with tempfile.TemporaryDirectory() as td, mock.patch.object(
-            repo, "REPO_DIR", Path(td)
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(repo, "REPO_DIR", Path(td)),
         ):
             root = Path(td)
             _git(root, "init", "-q")
@@ -183,7 +185,7 @@ class TestTrunkRevertContext(unittest.TestCase):
             "run",
             side_effect=[
                 _Proc("base\n"),
-                _Proc("abc Revert \"[CPU][Inductor] Improve cache\"\n"),
+                _Proc('abc Revert "[CPU][Inductor] Improve cache"\n'),
             ],
         ):
             ctx = repo.trunk_revert_context(Path("/tmp/worktree"))
@@ -198,32 +200,38 @@ class TestTrunkRevertContext(unittest.TestCase):
 
 class TestGhstackRetry(unittest.TestCase):
     def test_retries_transient_proxy_failure(self):
-        with mock.patch.object(
-            repo,
-            "run",
-            side_effect=[
-                _completed(
-                    1,
-                    stderr=(
-                        "requests.exceptions.ProxyError: "
-                        "Failed to establish a new connection: "
-                        "[Errno 111] Connection refused"
+        with (
+            mock.patch.object(
+                repo,
+                "run",
+                side_effect=[
+                    _completed(
+                        1,
+                        stderr=(
+                            "requests.exceptions.ProxyError: "
+                            "Failed to establish a new connection: "
+                            "[Errno 111] Connection refused"
+                        ),
                     ),
-                ),
-                _completed(0, stdout="Cherry-picked gh/u/1/orig\n"),
-            ],
-        ) as run, mock.patch.object(repo.time, "sleep") as sleep:
+                    _completed(0, stdout="Cherry-picked gh/u/1/orig\n"),
+                ],
+            ) as run,
+            mock.patch.object(repo.time, "sleep") as sleep,
+        ):
             repo.ghstack_cherry_pick(Path("/tmp/worktree"), 123)
 
         self.assertEqual(run.call_count, 2)
         sleep.assert_called_once_with(repo._GHSTACK_RETRY_DELAY_SEC)
 
     def test_does_not_retry_non_transient_failure(self):
-        with mock.patch.object(
-            repo,
-            "run",
-            return_value=_completed(1, stderr="fatal: bad revision\n"),
-        ) as run, mock.patch.object(repo.time, "sleep") as sleep:
+        with (
+            mock.patch.object(
+                repo,
+                "run",
+                return_value=_completed(1, stderr="fatal: bad revision\n"),
+            ) as run,
+            mock.patch.object(repo.time, "sleep") as sleep,
+        ):
             with self.assertRaises(subprocess.CalledProcessError):
                 repo.ghstack_cherry_pick(Path("/tmp/worktree"), 123)
 
@@ -318,9 +326,7 @@ class TestRebaseTargetAdvances(unittest.TestCase):
                 _Proc("base\n"),
             ],
         ):
-            self.assertFalse(
-                repo.rebase_target_advances(Path("/tmp/worktree"), "base")
-            )
+            self.assertFalse(repo.rebase_target_advances(Path("/tmp/worktree"), "base"))
 
 
 class TestWouldMergeConflict(unittest.TestCase):

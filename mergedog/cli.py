@@ -1,4 +1,5 @@
 """``mergedog`` command-line entry point."""
+
 from __future__ import annotations
 
 import argparse
@@ -127,7 +128,7 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         help=(
             "Operator-supplied hint string injected into claude's fix-CI "
             "prompt as a trusted section. Use to steer claude on this run "
-            "(e.g. \"the lint failure on file X is pre-existing; ignore\"). "
+            '(e.g. "the lint failure on file X is pre-existing; ignore"). '
             "Mutually exclusive with --extra-context-file."
         ),
     )
@@ -162,9 +163,8 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
 
-def _resolve_context(
-    text: str | None, file: Path | None, flag: str
-) -> str | None:
+
+def _resolve_context(text: str | None, file: Path | None, flag: str) -> str | None:
     if file is not None:
         try:
             return file.read_text()
@@ -356,9 +356,7 @@ def _config_main(argv: list[str]) -> int:
     if args.setting == "llm":
         if args.provider is None:
             if args.model is not None or args.clear_model:
-                parser.error(
-                    "mergedog config llm needs a provider when changing model"
-                )
+                parser.error("mergedog config llm needs a provider when changing model")
             cfg = get_llm_config()
         else:
             cfg = set_llm_config(

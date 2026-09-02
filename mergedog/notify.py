@@ -4,6 +4,7 @@ Sends a DM when a shepherd HALTs and needs human attention.  The ``meta``
 tool is not assumed to exist -- if it's missing or the send fails, the
 shepherd logs a warning and continues to exit normally.
 """
+
 from __future__ import annotations
 
 import shutil

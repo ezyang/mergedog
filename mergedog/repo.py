@@ -3,6 +3,7 @@
 mergedog owns its own SSH clone of pytorch/pytorch under ``~/.mergedog/repo``.
 Per-PR work happens in disposable worktrees under ``~/.mergedog/worktrees/<pr>``.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -11,9 +12,9 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator, Sequence
 
 from mergedog.log import die, log
 from mergedog.net import github_api_env_extra, is_transient_network_error
@@ -25,7 +26,6 @@ from mergedog.paths import (
 )
 from mergedog.process import run, run_streamed
 from mergedog.project import get_project_policy
-
 
 _GIT_LOCK_TIMEOUT_SEC = 2.0
 _GIT_LOCK_MAX_BACKOFF_SEC = 0.5
@@ -132,9 +132,7 @@ class DiffHunkCommentTarget:
     line: int
 
 
-_DIFF_HUNK_RE = re.compile(
-    r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@"
-)
+_DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 
 
 def _content_without_whitespace(lines: Sequence[str]) -> str:
@@ -277,7 +275,12 @@ def add_fork_remote(name: str, ssh_url: str) -> None:
 def fetch_pr_branch(remote: str, branch: str) -> str:
     """Fetch the contributor's branch and return the fetched SHA."""
     run(
-        ["git", "fetch", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+        [
+            "git",
+            "fetch",
+            remote,
+            f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}",
+        ],
         cwd=REPO_DIR,
         capture=False,
         loud=True,
@@ -477,9 +480,6 @@ def is_cherry_pick_in_progress(worktree: Path) -> bool:
     return proc.returncode == 0
 
 
-
-
-
 def fetch_stack_refs(
     head_orig_pairs: list[tuple[str, str]],
 ) -> dict[str, str]:
@@ -515,21 +515,18 @@ def fetch_stack_refs(
 
 
 def parent_sha(sha: str) -> str:
-    """Return the first parent of ``sha`` from the local object database.
-    """
-    return run(
-        ["git", "rev-parse", f"{sha}^"], cwd=REPO_DIR
-    ).stdout.strip()
+    """Return the first parent of ``sha`` from the local object database."""
+    return run(["git", "rev-parse", f"{sha}^"], cwd=REPO_DIR).stdout.strip()
 
 
 def tree_sha(sha: str) -> str:
     """Return the tree object for ``sha`` from the local object database."""
-    return run(
-        ["git", "rev-parse", f"{sha}^{{tree}}"], cwd=REPO_DIR
-    ).stdout.strip()
+    return run(["git", "rev-parse", f"{sha}^{{tree}}"], cwd=REPO_DIR).stdout.strip()
 
 
-def push_to_fork(worktree: Path, remote: str | None = None, branch: str | None = None) -> None:
+def push_to_fork(
+    worktree: Path, remote: str | None = None, branch: str | None = None
+) -> None:
     """Push the worktree's HEAD.
 
     When ``remote`` and ``branch`` are both provided, push explicitly to
@@ -568,14 +565,12 @@ def head_subject(worktree: Path) -> str:
 
 def commit_message(worktree: Path, ref: str = "HEAD") -> str:
     """Return the full commit message (subject + body) of ``ref``."""
-    return run(
-        ["git", "log", "-1", "--pretty=%B", ref], cwd=worktree
-    ).stdout.rstrip("\n")
+    return run(["git", "log", "-1", "--pretty=%B", ref], cwd=worktree).stdout.rstrip(
+        "\n"
+    )
 
 
-def diff_hunk_comment_targets(
-    worktree: Path, sha: str
-) -> list[DiffHunkCommentTarget]:
+def diff_hunk_comment_targets(worktree: Path, sha: str) -> list[DiffHunkCommentTarget]:
     """Return the top changed line of each nontrivial hunk in ``sha``'s patch."""
     diff = run(
         [
@@ -738,16 +733,14 @@ def select_rebase_target(worktree: Path) -> tuple[str, str]:
     known_good_ref = get_project_policy().known_good_ref
     if known_good_ref is None:
         main = _resolve_ref("origin/main")
-        if (
-            main is not None
-            and is_ancestor(merge_base, main)
-            and merge_base != main
-        ):
+        if main is not None and is_ancestor(merge_base, main) and merge_base != main:
             return "origin/main", "origin/main"
         return merge_base, "already at origin/main (staying put)"
 
     viable = _resolve_ref(known_good_ref)
-    viable_ahead = viable is not None and is_ancestor(merge_base, viable) and merge_base != viable
+    viable_ahead = (
+        viable is not None and is_ancestor(merge_base, viable) and merge_base != viable
+    )
 
     revert = _find_latest_revert(merge_base, "origin/main")
     revert_ahead_of_viable = (
@@ -813,11 +806,15 @@ MERGE_COMMIT_SUBJECT = f"{MERGEDOG_PREFIX} Merge main into PR branch"
 # ``[MERGEDOG]`` prefix, but a distinct subject makes ``git log`` and the
 # handoff comment immediately show whether human-style judgment was
 # applied during the merge.
-MERGE_RESOLVED_SUBJECT = f"{MERGEDOG_PREFIX} Merge main into PR branch (resolved conflicts)"
+MERGE_RESOLVED_SUBJECT = (
+    f"{MERGEDOG_PREFIX} Merge main into PR branch (resolved conflicts)"
+)
 CLEAN_MERGE_BODY = "Clean merge with origin/main; no conflicts."
 
 
-def attempt_merge_main(worktree: Path, ref: str = "origin/main") -> tuple[str, str | None]:
+def attempt_merge_main(
+    worktree: Path, ref: str = "origin/main"
+) -> tuple[str, str | None]:
     """Try to merge ``ref`` into HEAD.
 
     Returns ``(status, sha)`` where status is one of:
@@ -879,8 +876,7 @@ def would_merge_conflict(worktree: Path, ref: str = "origin/main") -> bool:
     if proc.returncode == 1:
         return True
     raise RuntimeError(
-        f"git merge-tree HEAD {ref} failed unexpectedly:\n"
-        f"{proc.stdout}\n{proc.stderr}"
+        f"git merge-tree HEAD {ref} failed unexpectedly:\n{proc.stdout}\n{proc.stderr}"
     )
 
 
@@ -1008,7 +1004,6 @@ def ghstack_cherry_pick(worktree: Path, pr: int, *, no_fetch: bool = True) -> No
     _run_ghstack(args, cwd=worktree)
 
 
-
 _PR_TRAILER_RE = re.compile(
     r"Pull[- ]Request(?:[- ][Rr]esolved)?:\s*https://github\.com/[^/]+/[^/]+/pull/(\d+)"
 )
@@ -1029,7 +1024,10 @@ def walk_orig_stack(orig_ref: str) -> list[int]:
     ).stdout.strip()
     log_output = run(
         [
-            "git", "log", "--reverse", "--format=%B---END---",
+            "git",
+            "log",
+            "--reverse",
+            "--format=%B---END---",
             f"{merge_base}..refs/remotes/origin/{orig_ref}",
         ],
         cwd=REPO_DIR,
@@ -1042,7 +1040,9 @@ def walk_orig_stack(orig_ref: str) -> list[int]:
     return prs
 
 
-def attempt_rebase_main(worktree: Path, ref: str = "origin/main") -> tuple[str, str | None]:
+def attempt_rebase_main(
+    worktree: Path, ref: str = "origin/main"
+) -> tuple[str, str | None]:
     """Try to rebase HEAD onto ``ref``.
 
     Returns ``(status, sha)`` where status is one of:
@@ -1080,9 +1080,7 @@ def is_rebase_in_progress(worktree: Path) -> bool:
     backend) or ``rebase-apply`` (am backend) under ``.git`` — we have to
     ask git for the directory rather than guess at the layout.
     """
-    git_dir = run(
-        ["git", "rev-parse", "--git-dir"], cwd=worktree
-    ).stdout.strip()
+    git_dir = run(["git", "rev-parse", "--git-dir"], cwd=worktree).stdout.strip()
     git_dir_path = Path(git_dir)
     if not git_dir_path.is_absolute():
         git_dir_path = worktree / git_dir_path

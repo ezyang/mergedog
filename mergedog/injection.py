@@ -17,6 +17,7 @@ Callers decide the degradation on a flag; the two current uses are:
     tells the agent to signal INCONCLUSIVE on missing evidence, which
     halts for human review)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -70,8 +71,7 @@ def _classify(text: str) -> bool | None:
     prompt = _CLASSIFIER_PROMPT.format(payload=text[:_MAX_SCREEN_CHARS])
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--model", "haiku",
-             "--output-format", "text"],
+            ["claude", "-p", prompt, "--model", "haiku", "--output-format", "text"],
             capture_output=True,
             text=True,
             timeout=_TIMEOUT_SEC,
@@ -81,10 +81,7 @@ def _classify(text: str) -> bool | None:
         log(f"injection screen unavailable ({e}); proceeding unscreened")
         return None
     if proc.returncode != 0:
-        log(
-            f"injection screen exited {proc.returncode}; "
-            "proceeding unscreened"
-        )
+        log(f"injection screen exited {proc.returncode}; proceeding unscreened")
         return None
     verdict = proc.stdout.strip().upper()
     if verdict.startswith("INJECTION"):

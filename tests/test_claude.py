@@ -22,8 +22,9 @@ class TestInvoke(unittest.TestCase):
 
     def test_llm_start_failure_is_returned_without_traceback(self):
         err = OSError(7, "Argument list too long", "codex")
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(
-            claude.subprocess, "Popen", side_effect=err
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(claude.subprocess, "Popen", side_effect=err),
         ):
             rc, transcript = claude._run_llm_streaming(
                 "prompt", Path(d), {}, LLMConfig("codex")

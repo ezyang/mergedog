@@ -1,4 +1,5 @@
 """Early argv handling for import-time mergedog settings."""
+
 from __future__ import annotations
 
 import os
@@ -16,9 +17,7 @@ def promote_early_env(argv: list[str]) -> None:
     while i < len(argv):
         a = argv[i]
         if a == "--root" and i + 1 < len(argv):
-            os.environ["MERGEDOG_ROOT"] = str(
-                Path(argv[i + 1]).expanduser().resolve()
-            )
+            os.environ["MERGEDOG_ROOT"] = str(Path(argv[i + 1]).expanduser().resolve())
             i += 2
             continue
         if a.startswith("--root="):

@@ -41,6 +41,7 @@ Commands typed at the bottom (enter to submit):
 
 Each shepherd's stdout/stderr is piped to ``~/.mergedog/logs/<pr>.log``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -66,7 +67,6 @@ from textual import work  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.suggester import SuggestFromList  # noqa: E402
 from textual.widgets import DataTable, Input, Static  # noqa: E402
-
 
 COMMAND_SUGGESTIONS = [
     "add ",
@@ -157,6 +157,7 @@ class HistoryInput(Input):
         self._history_index = len(self._history)
         self._saved_line = ""
 
+
 from mergedog import github  # noqa: E402
 from mergedog.cli import _parse_pr  # noqa: E402
 from mergedog.config import (  # noqa: E402
@@ -189,8 +190,8 @@ from mergedog.shepherd import (  # noqa: E402
     MAX_FIX_COMMITS,
     MERGEDOG_LABEL,
 )
-from mergedog.status import read_status  # noqa: E402
 from mergedog.state import TrustDB  # noqa: E402
+from mergedog.status import read_status  # noqa: E402
 
 PROJECT = get_project_policy()
 CI_PROGRESS_TOTAL_ESTIMATE = PROJECT.ci_progress_total_estimate
@@ -201,9 +202,7 @@ PR_JOB = "pr"
 SCHEDULED_LAND_KEY = "scheduled_land"
 DEFAULT_PREP_BEFORE = timedelta(days=1)
 _STACK_PARENT_RE = re.compile(r"\bstack parent(?: PR)? #(\d+)\b")
-_SHEPHERDING_TITLE_RE = re.compile(
-    r"\bshepherding PR #(?P<pr>\d+): (?P<title>.*)$"
-)
+_SHEPHERDING_TITLE_RE = re.compile(r"\bshepherding PR #(?P<pr>\d+): (?P<title>.*)$")
 _TITLE_SOURCE_NONE = 0
 _TITLE_SOURCE_WORKTREE = 1
 _TITLE_SOURCE_LOG = 2
@@ -276,9 +275,7 @@ def _parse_datetime(value: str) -> datetime:
     try:
         dt = datetime.fromisoformat(raw)
     except ValueError as e:
-        raise ValueError(
-            "expected ISO timestamp, e.g. 2026-07-15T09:00-07:00"
-        ) from e
+        raise ValueError("expected ISO timestamp, e.g. 2026-07-15T09:00-07:00") from e
     return _ensure_aware(dt)
 
 
@@ -352,8 +349,7 @@ def _schedule_now_iso() -> str:
 def _parse_hold_args(rest: list[str]) -> tuple[int, ScheduledLand] | str:
     if len(rest) < 2:
         return (
-            "usage: hold <pr> <land-at> "
-            "[--prep-before 1d|--no-prep] [--no-auto-merge]"
+            "usage: hold <pr> <land-at> [--prep-before 1d|--no-prep] [--no-auto-merge]"
         )
     pr = _parse_pr(rest[0])
     prep_before: timedelta | None = DEFAULT_PREP_BEFORE
@@ -425,9 +421,7 @@ def _format_scheduled_status(
     elif scheduled.prep_started_at:
         prefix = f"hold until {land}; prep rebase started"
     elif scheduled.prep_at is not None:
-        prefix = (
-            f"hold until {land}; prep {_format_schedule_time(scheduled.prep_at)}"
-        )
+        prefix = f"hold until {land}; prep {_format_schedule_time(scheduled.prep_at)}"
     else:
         prefix = f"hold until {land}"
     if not scheduled.auto_merge and not scheduled.merge_posted_at:
@@ -466,9 +460,14 @@ def _read_pr_worktree_title(pr: int) -> str:
     try:
         proc = subprocess.run(
             [
-                "git", "log", "-1", "--pretty=%s",
+                "git",
+                "log",
+                "-1",
+                "--pretty=%s",
                 "--first-parent",
-                "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
+                "--invert-grep",
+                "--grep=^\\[MERGEDOG\\]",
+                "HEAD",
             ],
             cwd=wt,
             capture_output=True,
@@ -531,9 +530,14 @@ def _read_pr_commit_parent(pr: int) -> tuple[str, str] | None:
     try:
         proc = subprocess.run(
             [
-                "git", "log", "-1", "--format=%H%x00%P",
+                "git",
+                "log",
+                "-1",
+                "--format=%H%x00%P",
                 "--first-parent",
-                "--invert-grep", "--grep=^\\[MERGEDOG\\]", "HEAD",
+                "--invert-grep",
+                "--grep=^\\[MERGEDOG\\]",
+                "HEAD",
             ],
             cwd=wt,
             capture_output=True,
@@ -597,9 +601,7 @@ def _stack_display_layout(
     for job, sha in sha_by_job.items():
         jobs_by_sha.setdefault(sha, []).append(job)
     unique_job_by_sha = {
-        sha: sha_jobs[0]
-        for sha, sha_jobs in jobs_by_sha.items()
-        if len(sha_jobs) == 1
+        sha: sha_jobs[0] for sha, sha_jobs in jobs_by_sha.items() if len(sha_jobs) == 1
     }
 
     parent_of: dict[JobKey, JobKey] = {}
@@ -689,9 +691,7 @@ def _status_updated_ts(structured: dict | None) -> float | None:
     if not isinstance(updated_at, str) or not updated_at:
         return None
     try:
-        return datetime.fromisoformat(
-            updated_at.replace("Z", "+00:00")
-        ).timestamp()
+        return datetime.fromisoformat(updated_at.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
 
@@ -1022,7 +1022,7 @@ def _status_has_cla_blocker(pr: int, structured: dict | None) -> bool:
 def _cla_blocked_status_message(status: str) -> str:
     prefix = "ready for human merge"
     if status.startswith(prefix):
-        return "waiting for contributor CLA" + status[len(prefix):]
+        return "waiting for contributor CLA" + status[len(prefix) :]
     return status or "waiting for contributor CLA"
 
 
@@ -1157,9 +1157,7 @@ def _is_halt_rc(rc: int | None) -> bool:
     return 0 < rc < 128
 
 
-def _reconcile_halt_records(
-    halted: dict[JobKey, int], running: set[JobKey]
-) -> None:
+def _reconcile_halt_records(halted: dict[JobKey, int], running: set[JobKey]) -> None:
     """Sync observed shepherd exits into the persisted job records.
 
     ``on_unmount`` also records exit codes, but only runs on a clean mux
@@ -1240,9 +1238,7 @@ def _spawn(
     log_path = _job_log_file(job)
     f = open(log_path, "a", buffering=1, encoding="utf-8")
     try:
-        f.write(
-            f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
-        )
+        f.write(f"\n=== mergedog start at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         command = [sys.executable, "-m", "mergedog"]
         command.extend([str(pr), *extra])
         p = subprocess.Popen(
@@ -1377,8 +1373,7 @@ class MuxApp(App):
             out = ["--ignore-sev" if self.ignore_sev else "--no-ignore-sev", *out]
         max_fix_commits = getattr(self, "max_fix_commits", MAX_FIX_COMMITS)
         if max_fix_commits != MAX_FIX_COMMITS and not any(
-            a == "--max-fix-commits" or a.startswith("--max-fix-commits=")
-            for a in out
+            a == "--max-fix-commits" or a.startswith("--max-fix-commits=") for a in out
         ):
             out = [f"--max-fix-commits={max_fix_commits}", *out]
         if self.gchat_to and not any(a.startswith("--gchat-to") for a in out):
@@ -1450,9 +1445,7 @@ class MuxApp(App):
         return f"[{label}] started"
 
     @work(thread=True, group="mergedog-label")
-    def _set_mergedog_label_async(
-        self, job: JobKey | int, *, present: bool
-    ) -> None:
+    def _set_mergedog_label_async(self, job: JobKey | int, *, present: bool) -> None:
         """Update mux membership on GitHub without blocking the TUI loop."""
         self._set_mergedog_label(job, present=present)
 
@@ -1471,8 +1464,7 @@ class MuxApp(App):
                 github.remove_label(pr, MERGEDOG_LABEL)
         except Exception as e:
             self.notify(
-                f"[{pr}] mergedog label {'add' if present else 'remove'} "
-                f"failed: {e}",
+                f"[{pr}] mergedog label {'add' if present else 'remove'} failed: {e}",
                 severity="warning",
             )
 
@@ -1500,9 +1492,7 @@ class MuxApp(App):
             records[job] = record
         _write_mux_job_records(records)
 
-    def _set_scheduled_land(
-        self, job: JobKey | int, scheduled: ScheduledLand
-    ) -> None:
+    def _set_scheduled_land(self, job: JobKey | int, scheduled: ScheduledLand) -> None:
         job = _coerce_job(job)
         self._scheduled_lands[job] = scheduled
         self._persist_mux_records()
@@ -1530,9 +1520,7 @@ class MuxApp(App):
             if p.poll() not in (None, 0, EXIT_PR_NOT_ACTIONABLE)
         }
         dead.update(
-            job
-            for job in getattr(self, "_parked_jobs", {})
-            if job not in self.procs
+            job for job in getattr(self, "_parked_jobs", {}) if job not in self.procs
         )
         return sorted(dead)
 
@@ -1566,8 +1554,7 @@ class MuxApp(App):
         jobs = [
             job
             for job in jobs
-            if (job in self.procs or job in parked_jobs)
-            and job not in cleanup_jobs
+            if (job in self.procs or job in parked_jobs) and job not in cleanup_jobs
         ]
         if not jobs:
             self.notify(empty, severity="warning")
@@ -1764,9 +1751,7 @@ class MuxApp(App):
                 scheduled.merge_posted_at = existing
                 self._scheduled_lands[job] = scheduled
                 self._persist_mux_records()
-                self.notify(
-                    f"[{pr}] scheduled merge command already present; watching"
-                )
+                self.notify(f"[{pr}] scheduled merge command already present; watching")
                 continue
 
             try:
@@ -1811,10 +1796,7 @@ class MuxApp(App):
             number = parse_ci_sev_number(rest[1])
             cfg = add_ignored_ci_sev(number)
             ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
-            return (
-                f"ignored ci: sev #{number} (persistent; "
-                f"ignored ci: sev: {ignored})"
-            )
+            return f"ignored ci: sev #{number} (persistent; ignored ci: sev: {ignored})"
         elif arg in ("remove", "rm", "del", "delete", "unignore"):
             if len(rest) != 2:
                 return "usage: ignore-sev remove <issue>"
@@ -1822,8 +1804,7 @@ class MuxApp(App):
             cfg = remove_ignored_ci_sev(number)
             ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
             return (
-                f"respecting ci: sev #{number} (persistent; "
-                f"ignored ci: sev: {ignored})"
+                f"respecting ci: sev #{number} (persistent; ignored ci: sev: {ignored})"
             )
         elif arg == "clear":
             if len(rest) != 1:
@@ -1840,10 +1821,7 @@ class MuxApp(App):
                 )
             cfg = add_ignored_ci_sev(number)
             ignored = format_ci_sev_ignored_numbers(cfg.ignored_numbers)
-            return (
-                f"ignored ci: sev #{number} (persistent; "
-                f"ignored ci: sev: {ignored})"
-            )
+            return f"ignored ci: sev #{number} (persistent; ignored ci: sev: {ignored})"
         self.ignore_sev = new
         state = "on" if new else "off"
         return (
@@ -1884,9 +1862,7 @@ class MuxApp(App):
             parts.append(f"prep rebase at {_format_schedule_time(scheduled.prep_at)}")
         else:
             parts.append("no prep rebase")
-        parts.append(
-            "auto-merge if clean" if scheduled.auto_merge else "manual merge"
-        )
+        parts.append("auto-merge if clean" if scheduled.auto_merge else "manual merge")
         return "; ".join(parts)
 
     def _do_hold(self, rest: list[str]) -> str:
@@ -2009,9 +1985,7 @@ class MuxApp(App):
             cleanup_status[job] = f"cleanup: queued ({index}/{total})"
 
     @work(thread=True, group="cleanup")
-    def _cleanup_completed_jobs(
-        self, jobs: list[JobKey], halted: set[JobKey]
-    ) -> None:
+    def _cleanup_completed_jobs(self, jobs: list[JobKey], halted: set[JobKey]) -> None:
         total = len(jobs)
         for index, job in enumerate(jobs, start=1):
             label = _job_label(job)
@@ -2113,9 +2087,7 @@ class MuxApp(App):
         started_at = getattr(self, "_job_started_at", {}).get(job)
         stale = _status_is_stale(structured, started_at=started_at, rc=rc)
         cla_blocked = not stale and _status_has_cla_blocker(pr, structured)
-        phase = _phase_label(
-            structured, rc=rc, stale=stale, cla_blocked=cla_blocked
-        )
+        phase = _phase_label(structured, rc=rc, stale=stale, cla_blocked=cla_blocked)
         status = _status_message(
             structured,
             rc=rc,
@@ -2138,8 +2110,7 @@ class MuxApp(App):
             if (
                 not scheduled.merge_posted_at
                 and now < scheduled.land_at
-                and phase
-                in {PHASE_YOUR_EASY_ACTION, PHASE_YOUR_REVIEW_ACTION}
+                and phase in {PHASE_YOUR_EASY_ACTION, PHASE_YOUR_REVIEW_ACTION}
                 and _schedule_can_defer_review(structured)
             ):
                 phase = PHASE_NO_ACTION
@@ -2452,10 +2423,8 @@ class MuxApp(App):
                 state = "exited_error"
             last = _last_log_line(log_path)
             title = self._title_for_job(job)
-            structured, stale, phase, status_message = (
-                self._job_display_status(
-                    job, rc=rc, log_path=log_path, last=last
-                )
+            structured, stale, phase, status_message = self._job_display_status(
+                job, rc=rc, log_path=log_path, last=last
             )
             row = {
                 "kind": kind,
@@ -2478,8 +2447,7 @@ class MuxApp(App):
             kind, pr = job
             log_path = _job_log_file(job)
             status_message = (
-                "halted before mux restart; not resumed "
-                f"(`restart {pr}` to re-run)"
+                f"halted before mux restart; not resumed (`restart {pr}` to re-run)"
             )
             scheduled = getattr(self, "_scheduled_lands", {}).get(job)
             if scheduled is not None:
@@ -2509,21 +2477,23 @@ class MuxApp(App):
         for job in scheduled_only:
             kind, pr = job
             scheduled = self._scheduled_lands[job]
-            rows.append({
-                "kind": kind,
-                "pr": pr,
-                "title": self._title_for_job(job),
-                "state": "scheduled",
-                "phase": PHASE_NO_ACTION,
-                "status": _format_scheduled_status(
-                    scheduled,
-                    base_status="not running",
-                ),
-                "last_log": _last_log_line(_job_log_file(job)),
-                "shepherd_status_stale": True,
-                "shepherd_status": read_status(pr),
-                SCHEDULED_LAND_KEY: scheduled.to_record(),
-            })
+            rows.append(
+                {
+                    "kind": kind,
+                    "pr": pr,
+                    "title": self._title_for_job(job),
+                    "state": "scheduled",
+                    "phase": PHASE_NO_ACTION,
+                    "status": _format_scheduled_status(
+                        scheduled,
+                        base_status="not running",
+                    ),
+                    "last_log": _last_log_line(_job_log_file(job)),
+                    "shepherd_status_stale": True,
+                    "shepherd_status": read_status(pr),
+                    SCHEDULED_LAND_KEY: scheduled.to_record(),
+                }
+            )
         return json.dumps(rows, indent=2)
 
     def _format_migrate(self) -> str:
@@ -2531,9 +2501,7 @@ class MuxApp(App):
         if not jobs:
             return "no PRs tracked"
         prs = [pr for _, pr in jobs]
-        state_files = [
-            str(state_file(pr)) for _, pr in jobs if state_file(pr).exists()
-        ]
+        state_files = [str(state_file(pr)) for _, pr in jobs if state_file(pr).exists()]
         repo_arg = f"--repo {shlex.quote(self.repo_slug)} "
         pr_args = " ".join(str(pr) for pr in prs)
         lines = [
@@ -2584,7 +2552,8 @@ class MuxApp(App):
         except FileNotFoundError:
             pass
         server = await asyncio.start_unix_server(
-            self._handle_ipc_connection, path=sock_path,
+            self._handle_ipc_connection,
+            path=sock_path,
         )
         self._ipc_server = server
         async with server:

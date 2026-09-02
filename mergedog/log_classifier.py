@@ -10,6 +10,7 @@ Algorithm (matching the Rust implementation):
     (last matching line wins for a given rule).
   - The highest-priority rule that matches anywhere wins overall.
 """
+
 from __future__ import annotations
 
 import re

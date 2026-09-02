@@ -6,6 +6,7 @@ server discovers the mux by attempting a non-blocking flock: if it
 succeeds, no mux is running; if it fails (EWOULDBLOCK), the mux is alive
 and the lock file contains the socket path.
 """
+
 from __future__ import annotations
 
 import asyncio

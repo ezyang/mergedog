@@ -1,14 +1,13 @@
 import unittest
 
 from mergedog.sanitize import (
-    sanitize_untrusted_text,
     sanitize_untrusted_markdown,
+    sanitize_untrusted_text,
     strip_html_comments,
     strip_invisible_unicode,
     unwrap_details,
 )
 from mergedog.taint import TaintedStr, taint
-
 
 ZWSP = chr(0x200B)
 RLO = chr(0x202E)
@@ -102,9 +101,7 @@ class TestStripInvisibleUnicode(unittest.TestCase):
 class TestUnwrapDetails(unittest.TestCase):
     def test_basic(self):
         self.assertEqual(
-            unwrap_details(
-                "<details><summary>click</summary>hidden text</details>"
-            ),
+            unwrap_details("<details><summary>click</summary>hidden text</details>"),
             "clickhidden text",
         )
 
@@ -148,10 +145,7 @@ class TestSanitizeUntrustedMarkdown(unittest.TestCase):
         self.assertEqual(sanitize_untrusted_markdown(text), "hello world\tagain")
 
     def test_idempotent(self):
-        text = (
-            f"<!--x-->{ZWSP}<details>y</details>"
-            "and some normal prose."
-        )
+        text = f"<!--x-->{ZWSP}<details>y</details>and some normal prose."
         once = sanitize_untrusted_markdown(text)
         twice = sanitize_untrusted_markdown(once)
         self.assertEqual(once, twice)
@@ -189,9 +183,7 @@ class TestTaintPreservation(unittest.TestCase):
         )
 
     def test_plain_str_stays_plain(self):
-        self.assertNotIsInstance(
-            sanitize_untrusted_markdown("clean text"), TaintedStr
-        )
+        self.assertNotIsInstance(sanitize_untrusted_markdown("clean text"), TaintedStr)
 
 
 if __name__ == "__main__":

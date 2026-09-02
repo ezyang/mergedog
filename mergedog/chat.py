@@ -7,6 +7,7 @@ Usage::
 This starts ``claude`` with the mergedog MCP wired up via
 ``--mcp-config`` so the user doesn't need to edit any settings files.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,14 +36,16 @@ def main() -> int:
     if mergedog_repo:
         mcp_args.extend(["--repo", mergedog_repo])
 
-    mcp_config = json.dumps({
-        "mcpServers": {
-            "mergedog": {
-                "command": python,
-                "args": mcp_args,
+    mcp_config = json.dumps(
+        {
+            "mcpServers": {
+                "mergedog": {
+                    "command": python,
+                    "args": mcp_args,
+                }
             }
         }
-    })
+    )
 
     prompt_file = Path(__file__).resolve().parent.parent / "docs" / "mcp-prompt.md"
 
@@ -50,7 +53,8 @@ def main() -> int:
 
     cmd = [
         "claude",
-        "--mcp-config", mcp_config,
+        "--mcp-config",
+        mcp_config,
     ]
     if prompt:
         cmd.extend(["--append-system-prompt", prompt])

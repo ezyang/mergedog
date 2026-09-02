@@ -1,8 +1,7 @@
 import unittest
 from unittest import mock
 
-from mergedog import github
-from mergedog import handoff
+from mergedog import github, handoff
 from mergedog.comments import (
     MERGEDOG_DISCLOSURE,
     MERGEDOG_DISCLOSURE_MARKER,
@@ -136,15 +135,12 @@ class TestHandoffComments(unittest.TestCase):
                 "dtensor-test / test-osdc",
             ],
             drci_summary=(
-                "Dr. CI detected failures:\n"
-                "- lintrunner-noclang-all / lint failed"
+                "Dr. CI detected failures:\n- lintrunner-noclang-all / lint failed"
             ),
         )
 
         self.assertIn("### CI notes at handoff", body)
-        self.assertIn(
-            "still-failing checks as unrelated/spurious", body
-        )
+        self.assertIn("still-failing checks as unrelated/spurious", body)
         self.assertIn("`lintrunner-noclang-all / lint`", body)
         self.assertIn("Latest Dr. CI summary", body)
         self.assertIn("lintrunner-noclang-all / lint failed", body)
@@ -230,15 +226,9 @@ class TestHandoffComments(unittest.TestCase):
 
         with mock.patch.object(github, "get_pr_comments", return_value=comments):
             self.assertTrue(github.has_mergedog_handoff_comment(101))
-            self.assertTrue(
-                github.has_mergedog_handoff_comment(
-                    101, head_sha="a" * 40
-                )
-            )
+            self.assertTrue(github.has_mergedog_handoff_comment(101, head_sha="a" * 40))
             self.assertFalse(
-                github.has_mergedog_handoff_comment(
-                    101, head_sha="b" * 40
-                )
+                github.has_mergedog_handoff_comment(101, head_sha="b" * 40)
             )
             self.assertEqual(
                 github.latest_mergedog_handoff_iso(101),
@@ -277,9 +267,7 @@ class TestHandoffComments(unittest.TestCase):
             },
         ]
         with mock.patch.object(github, "get_pr_comments", return_value=comments):
-            self.assertTrue(
-                github.has_mergedog_handoff_comment(101, author="mergedog")
-            )
+            self.assertTrue(github.has_mergedog_handoff_comment(101, author="mergedog"))
 
     def test_latest_handoff_iso_filters_spoofed_author(self):
         comments = [
@@ -493,9 +481,7 @@ class TestWatchPostHandoff(unittest.TestCase):
             ],
         ):
             self.assertEqual(
-                handoff._post_handoff_ci_status(
-                    101, suppressed_check_names={"lint"}
-                ),
+                handoff._post_handoff_ci_status(101, suppressed_check_names={"lint"}),
                 ("passed", 2, 2, 0, 1),
             )
 
@@ -579,9 +565,7 @@ class TestWatchPostHandoff(unittest.TestCase):
             ) as checks,
             mock.patch.object(handoff.time, "time", side_effect=[100.0, 120.0]),
         ):
-            handoff._post_handoff_ci_status_cached(
-                101, head_sha="abc", cache=cache
-            )
+            handoff._post_handoff_ci_status_cached(101, head_sha="abc", cache=cache)
             second = handoff._post_handoff_ci_status_cached(
                 101, head_sha="abc", cache=cache
             )
@@ -590,20 +574,21 @@ class TestWatchPostHandoff(unittest.TestCase):
         self.assertEqual(checks.call_count, 2)
 
     def test_watch_post_handoff_returns_conflict_from_github_merge_state(self):
-        with mock.patch.object(
-            handoff.github,
-            "get_pr",
-            return_value={
-                "number": 101,
-                "state": "OPEN",
-                "reviewDecision": "APPROVED",
-                "labels": [],
-                "mergeStateStatus": "DIRTY",
-            },
-        ), mock.patch.object(handoff.github, "get_pr_comments", return_value=[]):
-            result = handoff.watch_post_handoff(
-                101, "2026-05-08T13:00:00Z"
-            )
+        with (
+            mock.patch.object(
+                handoff.github,
+                "get_pr",
+                return_value={
+                    "number": 101,
+                    "state": "OPEN",
+                    "reviewDecision": "APPROVED",
+                    "labels": [],
+                    "mergeStateStatus": "DIRTY",
+                },
+            ),
+            mock.patch.object(handoff.github, "get_pr_comments", return_value=[]),
+        ):
+            result = handoff.watch_post_handoff(101, "2026-05-08T13:00:00Z")
 
         self.assertEqual(result, ("conflict", None, None))
 
@@ -625,18 +610,13 @@ class TestWatchPostHandoff(unittest.TestCase):
             },
         ]
 
-        with mock.patch.object(
-            handoff.github, "get_pr", side_effect=pr_states
-        ), mock.patch.object(
-            handoff.github, "get_pr_comments", return_value=[]
-        ), mock.patch.object(
-            handoff.github, "get_pr_checks_all", return_value=[]
-        ), mock.patch.object(
-            handoff.time, "sleep"
+        with (
+            mock.patch.object(handoff.github, "get_pr", side_effect=pr_states),
+            mock.patch.object(handoff.github, "get_pr_comments", return_value=[]),
+            mock.patch.object(handoff.github, "get_pr_checks_all", return_value=[]),
+            mock.patch.object(handoff.time, "sleep"),
         ):
-            result = handoff.watch_post_handoff(
-                101, "2026-05-08T13:00:00Z"
-            )
+            result = handoff.watch_post_handoff(101, "2026-05-08T13:00:00Z")
 
         self.assertEqual(result, ("closed", None, None))
 
@@ -677,7 +657,9 @@ class TestWatchPostHandoff(unittest.TestCase):
         self.assertEqual(write_status.call_args.kwargs["category"], "action")
         self.assertEqual(write_status.call_args.kwargs["action"], "inspecting_ci")
         self.assertEqual(write_status.call_args.kwargs["ci_failed"], 1)
-        self.assertIn("CI regressed after handoff", write_status.call_args.kwargs["message"])
+        self.assertIn(
+            "CI regressed after handoff", write_status.call_args.kwargs["message"]
+        )
 
     def test_handoff_status_surfaces_suppressed_failures(self):
         with mock.patch.object(handoff, "write_status") as write_status:
@@ -807,9 +789,7 @@ class TestWatchPostHandoff(unittest.TestCase):
             mock.patch.object(handoff, "write_status") as write_status,
             mock.patch.object(handoff.time, "sleep"),
         ):
-            result = handoff.watch_post_handoff(
-                101, "2026-05-08T13:00:00Z"
-            )
+            result = handoff.watch_post_handoff(101, "2026-05-08T13:00:00Z")
 
         self.assertEqual(result, ("closed", None, None))
         first = write_status.call_args_list[0].kwargs

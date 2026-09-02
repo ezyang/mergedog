@@ -2,7 +2,6 @@ import unittest
 
 from mergedog.context import render_context
 
-
 ZWSP = chr(0x200B)
 
 
@@ -14,7 +13,11 @@ class TestRenderContext(unittest.TestCase):
             title="Fix foo",
             body="Some description.",
             comments=[
-                {"author": "alice", "body": "looks good", "created_at": "2026-01-01T00:00:00Z"},
+                {
+                    "author": "alice",
+                    "body": "looks good",
+                    "created_at": "2026-01-01T00:00:00Z",
+                },
             ],
         )
         self.assertIn("PR #42", text)
@@ -43,15 +46,11 @@ class TestRenderContext(unittest.TestCase):
         self.assertIn("ok", text)
 
     def test_empty_body_handled(self):
-        text = render_context(
-            pr=1, url="u", title="t", body="", comments=[]
-        )
+        text = render_context(pr=1, url="u", title="t", body="", comments=[])
         self.assertIn("(no description)", text)
 
     def test_no_comments_section_when_empty(self):
-        text = render_context(
-            pr=1, url="u", title="t", body="b", comments=[]
-        )
+        text = render_context(pr=1, url="u", title="t", body="b", comments=[])
         self.assertNotIn("[COMMENT", text)
 
     def test_untrusted_omits_body_and_user_comments(self):

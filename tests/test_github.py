@@ -107,15 +107,15 @@ class TestGhRetries(unittest.TestCase):
             subprocess.CompletedProcess(["gh"], 0, "{}", ""),
         ]
 
-        with mock.patch.object(github, "run", side_effect=calls), mock.patch.object(
-            github.time, "sleep"
-        ), mock.patch.object(github, "log") as log:
+        with (
+            mock.patch.object(github, "run", side_effect=calls),
+            mock.patch.object(github.time, "sleep"),
+            mock.patch.object(github, "log") as log,
+        ):
             proc = github._gh(["pr", "view", "1"])
 
         self.assertEqual(proc.returncode, 0)
-        log.assert_any_call(
-            "  ! gh transient failure (attempt 1/6), retrying in 5s"
-        )
+        log.assert_any_call("  ! gh transient failure (attempt 1/6), retrying in 5s")
         log.assert_any_call("  gh recovered after transient failure")
 
     def test_logs_recovery_context_after_retry_success(self):
@@ -124,9 +124,11 @@ class TestGhRetries(unittest.TestCase):
             subprocess.CompletedProcess(["gh"], 0, "{}", ""),
         ]
 
-        with mock.patch.object(github, "run", side_effect=calls), mock.patch.object(
-            github.time, "sleep"
-        ), mock.patch.object(github, "log") as log:
+        with (
+            mock.patch.object(github, "run", side_effect=calls),
+            mock.patch.object(github.time, "sleep"),
+            mock.patch.object(github, "log") as log,
+        ):
             proc = github._gh(["pr", "view", "1"], log_context="watching post-handoff")
 
         self.assertEqual(proc.returncode, 0)
@@ -159,9 +161,7 @@ class TestGhRetries(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0)
         sleep.assert_not_called()
-        log.assert_any_call(
-            "  ! GitHub API rate limit exhausted; retrying in 0s"
-        )
+        log.assert_any_call("  ! GitHub API rate limit exhausted; retrying in 0s")
 
     def test_transient_cap_holds_after_rate_limit_retry(self):
         transient = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503")
@@ -202,9 +202,11 @@ class TestGhRetries(unittest.TestCase):
             for _ in range(github._GH_MAX_RETRIES)
         ]
 
-        with mock.patch.object(github, "run", side_effect=calls), mock.patch.object(
-            github.time, "sleep"
-        ) as sleep, mock.patch.object(github, "log") as log:
+        with (
+            mock.patch.object(github, "run", side_effect=calls),
+            mock.patch.object(github.time, "sleep") as sleep,
+            mock.patch.object(github, "log") as log,
+        ):
             with self.assertRaises(subprocess.CalledProcessError):
                 github._gh(["pr", "view", "1"])
 
@@ -228,15 +230,16 @@ class TestGhRetries(unittest.TestCase):
         ]
 
         try:
-            with mock.patch.object(
-                github, "run", side_effect=calls
-            ) as run, mock.patch.object(
-                github, "_find_working_gh_executable", return_value="/usr/local/bin/gh"
-            ), mock.patch.object(
-                github.shutil, "which", return_value="/broken/gh"
-            ), mock.patch.object(
-                github, "log"
-            ) as log:
+            with (
+                mock.patch.object(github, "run", side_effect=calls) as run,
+                mock.patch.object(
+                    github,
+                    "_find_working_gh_executable",
+                    return_value="/usr/local/bin/gh",
+                ),
+                mock.patch.object(github.shutil, "which", return_value="/broken/gh"),
+                mock.patch.object(github, "log") as log,
+            ):
                 proc = github._gh(["pr", "view", "1"])
 
             self.assertEqual(github._GH_COMMAND, ["/usr/local/bin/gh"])
@@ -255,8 +258,7 @@ class TestGhRetries(unittest.TestCase):
             ]
         )
         log.assert_any_call(
-            "  ! gh startup crash from /broken/gh; "
-            "retrying with /usr/local/bin/gh"
+            "  ! gh startup crash from /broken/gh; retrying with /usr/local/bin/gh"
         )
 
     def test_passes_proxy_env_to_gh_when_configured(self):
@@ -264,13 +266,14 @@ class TestGhRetries(unittest.TestCase):
             "HTTPS_PROXY": "http://proxy.example",
             "HTTP_PROXY": "http://proxy.example",
         }
-        with mock.patch.object(
-            github, "github_api_env_extra", return_value=env_extra
-        ), mock.patch.object(
-            github,
-            "run",
-            return_value=subprocess.CompletedProcess(["gh"], 0, "{}", ""),
-        ) as run:
+        with (
+            mock.patch.object(github, "github_api_env_extra", return_value=env_extra),
+            mock.patch.object(
+                github,
+                "run",
+                return_value=subprocess.CompletedProcess(["gh"], 0, "{}", ""),
+            ) as run,
+        ):
             github._gh(["pr", "view", "1"])
 
         run.assert_called_once_with(
@@ -289,8 +292,7 @@ class TestGhRetries(unittest.TestCase):
             github._gh(
                 [
                     "api",
-                    f"repos/{github.REPO}/commits/abc/check-runs"
-                    "?per_page=100&page=2",
+                    f"repos/{github.REPO}/commits/abc/check-runs?per_page=100&page=2",
                 ]
             )
 
@@ -535,9 +537,10 @@ class TestPrChecksFallback(unittest.TestCase):
     def test_uses_gh_pr_checks_when_present(self):
         checks = [{"name": "pull", "bucket": "pass"}]
 
-        with mock.patch.object(
-            github, "_gh_pr_checks_json", return_value=checks
-        ), mock.patch.object(github, "get_pr_head_sha") as head:
+        with (
+            mock.patch.object(github, "_gh_pr_checks_json", return_value=checks),
+            mock.patch.object(github, "get_pr_head_sha") as head,
+        ):
             self.assertIs(github.get_pr_checks_all(123), checks)
 
         head.assert_not_called()

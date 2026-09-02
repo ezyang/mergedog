@@ -1,12 +1,11 @@
 import unittest
 
 from mergedog.prompts import (
-    render_fix_prompt,
     render_cherry_pick_conflict_prompt,
+    render_fix_prompt,
     render_operator_fix_prompt,
     render_rebase_conflict_prompt,
 )
-
 
 _BASE_KWARGS = dict(
     url="https://github.com/pytorch/pytorch/pull/1",
@@ -149,7 +148,7 @@ class TestEarlierStackSection(unittest.TestCase):
             **_BASE_KWARGS,
             trunk_revert_context=(
                 "The following commits were recently reverted on trunk.\n\n"
-                "- Revert \"add fancy kernel\""
+                '- Revert "add fancy kernel"'
             ),
         )
         self.assertIn("--- begin trunk revert context ---", prompt)
@@ -162,7 +161,7 @@ class TestEarlierStackSection(unittest.TestCase):
         prompt = render_fix_prompt(
             **_BASE_KWARGS,
             extra_context="Prefer a minimal fix.",
-            trunk_revert_context="- Revert \"x\"",
+            trunk_revert_context='- Revert "x"',
         )
         self.assertIn("--- begin operator context ---", prompt)
         self.assertIn("Prefer a minimal fix.", prompt)

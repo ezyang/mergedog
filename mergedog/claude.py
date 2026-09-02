@@ -1,4 +1,5 @@
 """Invoke a local LLM CLI to investigate and (maybe) fix CI failures."""
+
 from __future__ import annotations
 
 import fcntl
@@ -8,15 +9,15 @@ import shlex
 import shutil
 import subprocess
 import threading
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator, Mapping
 
+from mergedog import repo as repo_mod
 from mergedog.config import LLMConfig, get_llm_config
 from mergedog.log import log
 from mergedog.paths import LINTRUNNER_VENV, REPO_DIR
 from mergedog.process import run
-from mergedog import repo as repo_mod
 from mergedog.repo import MERGEDOG_PREFIX, head_sha, head_subject
 from mergedog.sanitize import sanitize_untrusted_text
 
@@ -47,9 +48,7 @@ class LLMResult:
         yield self.transcript
 
 
-def _build_llm_invocation(
-    prompt: str, cwd: Path, config: LLMConfig
-) -> _LLMInvocation:
+def _build_llm_invocation(prompt: str, cwd: Path, config: LLMConfig) -> _LLMInvocation:
     prompt = sanitize_untrusted_text(prompt)
     model = config.effective_model
     if config.provider == "claude":
@@ -286,11 +285,15 @@ def _run_llm_streaming(
     assert proc.stdout is not None
     if invocation.stdin_input:
         assert proc.stdin is not None
+
         def _feed(stdin: object, data: str) -> None:
             stdin.write(data)
             stdin.close()
+
         threading.Thread(
-            target=_feed, args=(proc.stdin, invocation.stdin_input), daemon=True,
+            target=_feed,
+            args=(proc.stdin, invocation.stdin_input),
+            daemon=True,
         ).start()
     transcript: list[str] = []
     for line in proc.stdout:
@@ -347,8 +350,11 @@ def _ensure_lintrunner_setup() -> Path | None:
                     run(["uv", "venv", str(LINTRUNNER_VENV)], loud=True)
                 run(
                     [
-                        "uv", "pip", "install",
-                        "--python", str(LINTRUNNER_VENV / "bin" / "python"),
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        str(LINTRUNNER_VENV / "bin" / "python"),
                         "lintrunner",
                     ],
                     loud=True,
@@ -535,7 +541,9 @@ def _invoke(
             stale.unlink()
     log(f"invoking {agent} ({mode} mode)...")
     rc, transcript = _run_llm_streaming(
-        prompt, cwd=worktree, env_extra=repo_mod.author_env(name, email),
+        prompt,
+        cwd=worktree,
+        env_extra=repo_mod.author_env(name, email),
         config=llm_config,
     )
     if rc != 0:
@@ -557,13 +565,8 @@ def _invoke(
         log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
-    if (
-        expect_cherry_pick_resolution
-        and repo_mod.is_cherry_pick_in_progress(worktree)
-    ):
-        reason = (
-            "exited but the cherry-pick is still in progress; refusing to push"
-        )
+    if expect_cherry_pick_resolution and repo_mod.is_cherry_pick_in_progress(worktree):
+        reason = "exited but the cherry-pick is still in progress; refusing to push"
         log(f"{agent} {reason}")
         return LLMResult(False, None, transcript, reason)
 
@@ -620,9 +623,7 @@ def _invoke(
             log(f"{agent} signalled spurious failures (no commit)")
         else:
             log(f"{agent} made no commit (treating as no-op)")
-        return LLMResult(
-            True, None, transcript, spurious_reason=spurious_reason
-        )
+        return LLMResult(True, None, transcript, spurious_reason=spurious_reason)
 
     n = _commits_between(worktree, before, after)
     if n != 1 and not allow_multiple_commits:
@@ -708,8 +709,11 @@ def invoke_rebase_resolver(
 ) -> LLMResult:
     """Run the configured LLM in a mid-rebase worktree to resolve conflicts."""
     return _invoke(
-        worktree, prompt, mode="rebase-resolver",
-        expect_merge_commit=False, expect_rebase_resolution=True,
+        worktree,
+        prompt,
+        mode="rebase-resolver",
+        expect_merge_commit=False,
+        expect_rebase_resolution=True,
         allow_multiple_commits=allow_multiple_commits,
     )
 

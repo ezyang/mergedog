@@ -21,9 +21,7 @@ class TestTrustDBRoundTrip(unittest.TestCase):
             trust = self._load(tmp, 1)
             trust.trust("a" * 40)
             data = json.loads((tmp / "1.json").read_text())
-            self.assertEqual(
-                data["schema_version"], state_mod.SCHEMA_VERSION
-            )
+            self.assertEqual(data["schema_version"], state_mod.SCHEMA_VERSION)
 
     def test_unknown_fields_survive_round_trip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -38,9 +36,7 @@ class TestTrustDBRoundTrip(unittest.TestCase):
                 )
             )
             trust = self._load(tmp, 1)
-            self.assertEqual(
-                trust.extra_fields, {"field_from_the_future": {"x": 1}}
-            )
+            self.assertEqual(trust.extra_fields, {"field_from_the_future": {"x": 1}})
             trust.save()
             data = json.loads((tmp / "1.json").read_text())
             self.assertEqual(data["field_from_the_future"], {"x": 1})
@@ -74,9 +70,7 @@ class TestTrustDBRoundTrip(unittest.TestCase):
 
 class TestFixBudget(unittest.TestCase):
     def _trust(self, tmp: Path, **kwargs) -> TrustDB:
-        with mock.patch.object(
-            state_mod, "state_file", return_value=tmp / "1.json"
-        ):
+        with mock.patch.object(state_mod, "state_file", return_value=tmp / "1.json"):
             trust = TrustDB.load_or_create(1)
         for k, v in kwargs.items():
             setattr(trust, k, v)
@@ -120,9 +114,7 @@ class TestFixBudget(unittest.TestCase):
             shepherd._consume_fix_budget(trust)
 
             reloaded = self._trust(tmp)
-            count = shepherd._sync_fix_budget(
-                reloaded, "a" * 40, reassess=True
-            )
+            count = shepherd._sync_fix_budget(reloaded, "a" * 40, reassess=True)
             self.assertEqual(count, 0)
 
     def test_self_pr_keeps_budget_across_head_moves(self):
@@ -136,9 +128,7 @@ class TestFixBudget(unittest.TestCase):
 
             # Self-PR ack is the (moving) head; budget must not reset.
             reloaded = self._trust(tmp)
-            count = shepherd._sync_fix_budget(
-                reloaded, "b" * 40, self_pr=True
-            )
+            count = shepherd._sync_fix_budget(reloaded, "b" * 40, self_pr=True)
             self.assertEqual(count, 1)
             self.assertEqual(reloaded.fix_budget_ack_sha, "a" * 40)
 

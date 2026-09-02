@@ -22,3 +22,19 @@ packages = ["mergedog"]
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "PLW", "RUF"]
+ignore = [
+    "E501",    # long lines: prompts and log messages are often wide
+    "SIM117",  # nested with-statements read fine in tests
+    "PLW0603", # module-level state is used deliberately for process globals
+    "RUF012",  # Textual class attributes (CSS, BINDINGS) are mutable by convention
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mergedog"]
