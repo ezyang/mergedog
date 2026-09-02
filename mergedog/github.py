@@ -44,8 +44,11 @@ _GH_STARTUP_CRASH_MESSAGES = (
     "runtime: lfstack.push invalid packing",
 )
 _GH_FALLBACK_PATHS = ("/usr/local/bin/gh",)
-_GH_MAX_RETRIES = 3
-_GH_RETRY_DELAY = 5  # seconds
+# Escalating backoff for transient network/proxy failures. A brief proxy
+# blip used to exhaust 3x5s and HALT every live shepherd at once; this
+# schedule rides out ~5.5 minutes of outage before giving up.
+_GH_RETRY_DELAYS = (5, 15, 45, 90, 180)  # seconds
+_GH_MAX_RETRIES = len(_GH_RETRY_DELAYS) + 1
 _GH_COMMAND = ["gh"]
 _GH_GOVERNOR_DEFAULT_MAX_PER_MINUTE = 20
 _GH_GOVERNOR_DEFAULT_MAX_PER_HOUR = 3000
@@ -641,11 +644,12 @@ def _gh(
             if check:
                 _raise_gh_failure(proc, args)
             return proc
+        delay = _GH_RETRY_DELAYS[min(attempt, len(_GH_RETRY_DELAYS)) - 1]
         log(
             f"  ! gh transient failure (attempt {attempt}/{_GH_MAX_RETRIES}), "
-            f"retrying in {_GH_RETRY_DELAY}s"
+            f"retrying in {delay}s"
         )
-        time.sleep(_GH_RETRY_DELAY)
+        time.sleep(delay)
 
 
 def _gh_json(args: list[str], *, log_context: str | None = None) -> Any:

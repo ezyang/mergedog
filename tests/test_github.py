@@ -114,7 +114,7 @@ class TestGhRetries(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0)
         log.assert_any_call(
-            "  ! gh transient failure (attempt 1/3), retrying in 5s"
+            "  ! gh transient failure (attempt 1/6), retrying in 5s"
         )
         log.assert_any_call("  gh recovered after transient failure")
 
@@ -164,16 +164,15 @@ class TestGhRetries(unittest.TestCase):
         )
 
     def test_transient_cap_holds_after_rate_limit_retry(self):
-        calls = [
-            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
-            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+        transient = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503")
+        calls = [transient] * (github._GH_MAX_RETRIES - 1) + [
             subprocess.CompletedProcess(
                 ["gh"],
                 1,
                 "{}",
                 "gh: API rate limit exceeded for user ID 13564 (HTTP 403)",
             ),
-            subprocess.CompletedProcess(["gh"], 1, "", "HTTP 503"),
+            transient,
         ]
 
         with (
@@ -189,8 +188,8 @@ class TestGhRetries(unittest.TestCase):
             proc = github._gh(["pr", "view", "1"], check=False)
 
         self.assertEqual(proc.returncode, 1)
-        self.assertEqual(run.call_count, 4)
-        log.assert_any_call("  ! gh transient failure after 3 attempts")
+        self.assertEqual(run.call_count, github._GH_MAX_RETRIES + 1)
+        log.assert_any_call("  ! gh transient failure after 6 attempts")
 
     def test_logs_stderr_after_transient_retries_exhausted(self):
         calls = [
@@ -210,7 +209,7 @@ class TestGhRetries(unittest.TestCase):
                 github._gh(["pr", "view", "1"])
 
         self.assertEqual(sleep.call_count, github._GH_MAX_RETRIES - 1)
-        log.assert_any_call("  ! gh transient failure after 3 attempts")
+        log.assert_any_call("  ! gh transient failure after 6 attempts")
         log.assert_any_call("  ! gh pr view 1")
         log.assert_any_call("    stderr: error connecting to api.github.com")
         log.assert_any_call("    stderr: check your internet connection")
